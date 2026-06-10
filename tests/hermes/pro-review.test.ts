@@ -1716,25 +1716,25 @@ function currentCutoverCheckReport(
 		generatedAt,
 		status,
 		exitCode: ok ? 0 : 1,
-			mode: {
-				strict: true,
-				dryRun,
-				completeParityCutover: true,
+		mode: {
+			strict: true,
+			dryRun,
+			completeParityCutover: true,
+		},
+		gates: [
+			{
+				name: "workflow.scope",
+				status: ok ? "pass" : "fail",
+				detail: ok ? "included workflows are scoped" : "no included workflows",
 			},
-			gates: [
-				{
-					name: "workflow.scope",
-					status: ok ? "pass" : "fail",
-					detail: ok ? "included workflows are scoped" : "no included workflows",
-				},
-				{
-					name: "parity.rosterCovered",
-					status: ok ? "pass" : "fail",
-					detail: ok
-						? "complete parity roster covered by proof bundle"
-						: "complete parity roster is not covered",
-				},
-			],
+			{
+				name: "parity.rosterCovered",
+				status: ok ? "pass" : "fail",
+				detail: ok
+					? "complete parity roster covered by proof bundle"
+					: "complete parity roster is not covered",
+			},
+		],
 		workflowIds: ok ? ["workflow.private.telegram"] : [],
 		evidencePaths: [],
 		decisionIds: [],
@@ -1862,7 +1862,7 @@ function cliHeadlessPassLookingUnsignedEvidence(): Record<string, unknown> {
 	const runtime = {
 		kind: "contained-docker",
 		containerName: "tc-hermes-contained",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		containerId: "tc-hermes-contained-container-id",
 		image:
 			"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",

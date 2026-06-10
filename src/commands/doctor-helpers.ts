@@ -700,12 +700,7 @@ export async function checkSkills(cwd: string = process.cwd()): Promise<CheckRes
  */
 export async function checkSandbox(): Promise<CheckResult[]> {
 	const checks: CheckResult[] = [];
-	const {
-		getSandboxMode,
-		getSandboxRuntimeVersion,
-		isSandboxRuntimeAtLeast,
-		MIN_SANDBOX_RUNTIME_VERSION,
-	} = await import("../sandbox/index.js");
+	const { getSandboxMode } = await import("../sandbox/index.js");
 
 	const mode = getSandboxMode();
 	checks.push(
@@ -714,37 +709,10 @@ export async function checkSandbox(): Promise<CheckResult[]> {
 			"Sandbox",
 			`mode=${mode}`,
 			mode === "docker"
-				? "Docker container provides isolation; SDK sandbox disabled."
-				: "Native: SDK sandbox (bubblewrap / Seatbelt) provides isolation.",
+				? "Docker container provides relay isolation; LLM/persona runtime uses contained Hermes."
+				: "Native relay process; LLM/persona runtime uses contained Hermes.",
 		),
 	);
-
-	if (mode === "native") {
-		const version = getSandboxRuntimeVersion() as string | null;
-		if (!version) {
-			checks.push(
-				fail(
-					"sandbox.runtime",
-					"Sandbox",
-					"@anthropic-ai/sandbox-runtime not found",
-					"Native mode requires the SDK sandbox runtime to enforce isolation.",
-					"npm install -g @anthropic-ai/sandbox-runtime",
-				),
-			);
-		} else if (!isSandboxRuntimeAtLeast()) {
-			checks.push(
-				warn(
-					"sandbox.runtime",
-					"Sandbox",
-					`sandbox-runtime ${version} found`,
-					`Upgrade to >= ${MIN_SANDBOX_RUNTIME_VERSION} (fixes CVE-2025-66479).`,
-					"npm install -g @anthropic-ai/sandbox-runtime@latest",
-				),
-			);
-		} else {
-			checks.push(pass("sandbox.runtime", "Sandbox", `sandbox-runtime ${version} (patched)`));
-		}
-	}
 
 	return checks;
 }
@@ -775,14 +743,7 @@ export async function checkDockerContainers(): Promise<CheckResult[]> {
 		];
 	}
 
-	const expected = [
-		"telclaude",
-		"telclaude-agent",
-		"agent-social",
-		"google-services",
-		"totp",
-		"vault",
-	];
+	const expected = ["telclaude", "google-services", "totp", "vault"];
 
 	let output = "";
 	try {

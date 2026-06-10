@@ -680,8 +680,8 @@ export function scanSkill(skillDir: string, options?: ScanSkillOptions): ScanRes
 	// dangling link, which would otherwise short-circuit the whole scan.
 	//
 	// A symlink alone is not inherently malicious — this repo uses
-	// `.claude/skills/<name>` → `.agents/skills/<name>` as the canonical
-	// layout so skills can be authored once and surfaced to the SDK via a
+	// `.claude/skills/<name>` -> `.agents/skills/<name>` as the canonical
+	// layout so skills can be authored once and surfaced to runtimes via a
 	// mount point. The concern is a symlink whose realpath escapes the
 	// repo root (e.g., `../../../../etc/passwd`): that indicates either a
 	// malicious skill bundle or an accidental misconfiguration, and still

@@ -209,7 +209,7 @@ export function collectConfigFindings(
 		});
 	}
 
-	// 7. Exposed sensitive env vars (when running as relay — not in agent containers)
+	// 7. Exposed sensitive env vars (when running as relay — not in runtime containers)
 	const sensitiveEnvVars = [
 		"TELEGRAM_BOT_TOKEN",
 		"ANTHROPIC_API_KEY",

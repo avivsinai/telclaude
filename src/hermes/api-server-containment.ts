@@ -21,7 +21,7 @@ export const DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH =
 export const DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE =
 	"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7";
 export const DEFAULT_HERMES_API_SERVER_CONTAINER_NAME = "tc-hermes-contained";
-export const DEFAULT_HERMES_API_SERVER_NETWORK = "telclaude-hermes-relay";
+export const DEFAULT_HERMES_API_SERVER_NETWORK = "telclaude-hermes-private";
 export const DEFAULT_HERMES_API_SERVER_PORT = 8642;
 export const DEFAULT_HERMES_API_SERVER_HERMES_HOME = "/home/hermes/.hermes";
 export const DEFAULT_HERMES_RELAY_INTERNAL_HOST = "telclaude";

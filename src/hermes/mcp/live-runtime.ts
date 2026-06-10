@@ -40,7 +40,7 @@ import {
 export const DEFAULT_TELCLAUDE_LIVE_MCP_HOST = "127.0.0.1";
 export const DEFAULT_TELCLAUDE_LIVE_MCP_PORT = 8793;
 export const DEFAULT_TELCLAUDE_LIVE_MCP_PATH = "/mcp";
-export const DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK = "telclaude-hermes-relay";
+export const DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK = "telclaude-hermes-private";
 
 export type TelclaudeLiveMcpRuntimeConfig = {
 	readonly enabled: boolean;
@@ -48,13 +48,20 @@ export type TelclaudeLiveMcpRuntimeConfig = {
 	readonly port: number;
 	readonly path: string;
 	readonly networkName: string;
+	readonly additionalBinds?: readonly TelclaudeLiveMcpBindConfig[];
 	readonly allowedPeerAddresses?: readonly string[];
 	readonly runtimeTransportToken?: string;
+};
+
+export type TelclaudeLiveMcpBindConfig = {
+	readonly host: string;
+	readonly networkName: string;
 };
 
 export type TelclaudeLiveMcpRuntime = {
 	readonly enabled: boolean;
 	readonly endpoint: TelclaudeLiveMcpListenEndpoint | null;
+	readonly endpoints: readonly TelclaudeLiveMcpListenEndpoint[];
 	readonly registry: TelclaudeMcpAuthorityRegistry | null;
 	readonly ledger: TelclaudeMcpSideEffectLedger | null;
 	issueProbeTokenBundle(
@@ -136,6 +143,7 @@ export type TelclaudeLiveMcpRuntimeAdminHandle = {
 export type TelclaudeLiveMcpRuntimeAdminStarter = {
 	start(context: {
 		readonly endpoint: TelclaudeLiveMcpListenEndpoint;
+		readonly endpoints: readonly TelclaudeLiveMcpListenEndpoint[];
 		issueProbeTokenBundle(
 			input: TelclaudeLiveMcpRuntimeProbeTokenInput,
 		): TelclaudeLiveMcpProbeTokenBundle;
@@ -175,6 +183,7 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 			port: DEFAULT_TELCLAUDE_LIVE_MCP_PORT,
 			path: DEFAULT_TELCLAUDE_LIVE_MCP_PATH,
 			networkName: DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
+			additionalBinds: undefined,
 			allowedPeerAddresses: undefined,
 			runtimeTransportToken: undefined,
 		};
@@ -188,6 +197,7 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 			env.TELCLAUDE_HERMES_LIVE_MCP_NETWORK,
 			DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
 		),
+		additionalBinds: parseAdditionalBinds(env.TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS),
 		allowedPeerAddresses: parsePeerAllowlist(env.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS),
 		runtimeTransportToken: requiredLiveMcpRelayToken(env.TELCLAUDE_HERMES_MCP_RELAY_TOKEN),
 	};
@@ -218,28 +228,47 @@ export async function startTelclaudeLiveMcpRuntime(
 		options.relayClients ??
 		options.createRelayClients?.({ ledger }) ??
 		createFailClosedTelclaudeLiveMcpRelayClients();
-	const liveServer = createTelclaudeLiveMcpRelayHttpServer({
-		registry,
-		ledger,
-		relayClients,
-		bindHost: options.config.host,
-		networkName: options.config.networkName,
-		sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
-		resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
-		resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
-		outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
-		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
-		nowMs: options.nowMs,
-	});
-	const nodeServer = createTelclaudeLiveMcpNodeHttpServer(liveServer, {
-		path: options.config.path,
-		resolveConnection: (request) => resolver.resolveConnection(request),
-	});
-	const endpoint = await listenTelclaudeLiveMcpRelayHttpServer(liveServer, nodeServer, {
-		host: options.config.host,
-		port: options.config.port,
-		path: options.config.path,
-	});
+	const bindConfigs = liveMcpBindConfigs(options.config);
+	const endpoints: TelclaudeLiveMcpListenEndpoint[] = [];
+	try {
+		for (const bind of bindConfigs) {
+			const liveServer = createTelclaudeLiveMcpRelayHttpServer({
+				registry,
+				ledger,
+				relayClients,
+				bindHost: bind.host,
+				networkName: bind.networkName,
+				sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
+				resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
+				resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+				outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
+				providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
+				nowMs: options.nowMs,
+			});
+			const nodeServer = createTelclaudeLiveMcpNodeHttpServer(liveServer, {
+				path: options.config.path,
+				resolveConnection: (request) => resolver.resolveConnection(request),
+			});
+			endpoints.push(
+				await listenTelclaudeLiveMcpRelayHttpServer(liveServer, nodeServer, {
+					host: bind.host,
+					port: options.config.port,
+					path: options.config.path,
+				}),
+			);
+		}
+	} catch (error) {
+		await closeEndpoints(endpoints);
+		resolver.clear();
+		registry.clear();
+		throw error;
+	}
+	const [endpoint] = endpoints;
+	if (!endpoint) {
+		resolver.clear();
+		registry.clear();
+		throw new Error("live MCP runtime did not create a listen endpoint");
+	}
 
 	let adminHandle: TelclaudeLiveMcpRuntimeAdminHandle | null = null;
 	let stopped = false;
@@ -317,13 +346,14 @@ export async function startTelclaudeLiveMcpRuntime(
 		adminHandle = options.admin
 			? await options.admin.start({
 					endpoint,
+					endpoints,
 					issueProbeTokenBundle,
 					openCanaryWindow,
 					closeCanaryWindow,
 				})
 			: null;
 	} catch (error) {
-		await endpoint.close();
+		await closeEndpoints(endpoints);
 		resolver.clear();
 		registry.clear();
 		throw error;
@@ -332,6 +362,7 @@ export async function startTelclaudeLiveMcpRuntime(
 	return {
 		enabled: true,
 		endpoint,
+		endpoints,
 		registry,
 		ledger,
 		issueProbeTokenBundle,
@@ -355,7 +386,7 @@ export async function startTelclaudeLiveMcpRuntime(
 				await adminHandle?.stop();
 			} finally {
 				try {
-					await endpoint.close();
+					await closeEndpoints(endpoints);
 				} finally {
 					resolver.clear();
 					registry.clear();
@@ -394,6 +425,7 @@ function disabledRuntime(): TelclaudeLiveMcpRuntime {
 	return {
 		enabled: false,
 		endpoint: null,
+		endpoints: [],
 		registry: null,
 		ledger: null,
 		issueProbeTokenBundle() {
@@ -456,6 +488,21 @@ function csv(value: string | undefined): string[] | undefined {
 	return entries.length > 0 ? entries : undefined;
 }
 
+function parseAdditionalBinds(value: string | undefined): TelclaudeLiveMcpBindConfig[] | undefined {
+	const entries = csv(value);
+	if (!entries) return undefined;
+	return entries.map((entry) => {
+		const separator = entry.lastIndexOf("@");
+		if (separator <= 0 || separator >= entry.length - 1) {
+			throw new Error("TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS entries must use host@network");
+		}
+		return {
+			host: nonEmptyEnv(entry.slice(0, separator), ""),
+			networkName: nonEmptyEnv(entry.slice(separator + 1), ""),
+		};
+	});
+}
+
 function parsePeerAllowlist(value: string | undefined): string[] | undefined {
 	const entries = csv(value);
 	if (!entries) return undefined;
@@ -469,16 +516,24 @@ function parsePeerAllowlist(value: string | undefined): string[] | undefined {
 }
 
 function assertLiveMcpRuntimeConfig(config: TelclaudeLiveMcpRuntimeConfig): void {
-	assertLiveMcpBindHost(config);
+	for (const bind of liveMcpBindConfigs(config)) {
+		assertLiveMcpBindHost(bind.host);
+	}
 	assertPeerAllowlistForBindHost(config);
 	if (config.enabled && !config.runtimeTransportToken?.trim()) {
 		throw new Error("TELCLAUDE_HERMES_MCP_RELAY_TOKEN is required when live MCP is enabled");
 	}
 }
 
-function assertLiveMcpBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
-	if (!config.enabled) return;
-	const normalized = normalizeHostAddress(config.host);
+function liveMcpBindConfigs(config: TelclaudeLiveMcpRuntimeConfig): TelclaudeLiveMcpBindConfig[] {
+	return [
+		{ host: config.host, networkName: config.networkName },
+		...(config.additionalBinds ?? []),
+	];
+}
+
+function assertLiveMcpBindHost(host: string): void {
+	const normalized = normalizeHostAddress(host);
 	if (normalized === "0.0.0.0" || normalized === "::" || normalized === "") {
 		throw new Error("TELCLAUDE_HERMES_LIVE_MCP_HOST must not bind an unspecified interface");
 	}
@@ -488,7 +543,12 @@ function assertLiveMcpBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
 }
 
 function assertPeerAllowlistForBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
-	if (!config.enabled || !requiresPeerAllowlist(config.host)) return;
+	if (
+		!config.enabled ||
+		!liveMcpBindConfigs(config).some((bind) => requiresPeerAllowlist(bind.host))
+	) {
+		return;
+	}
 	if (config.allowedPeerAddresses && config.allowedPeerAddresses.length > 0) return;
 	throw new Error(
 		"TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS is required when live MCP binds outside loopback",
@@ -517,4 +577,18 @@ function normalizePeerAddress(value: string): string {
 	if (trimmed.startsWith("::ffff:")) return trimmed.slice("::ffff:".length);
 	if (trimmed === "::1") return "127.0.0.1";
 	return trimmed;
+}
+
+async function closeEndpoints(endpoints: readonly TelclaudeLiveMcpListenEndpoint[]): Promise<void> {
+	const errors: unknown[] = [];
+	for (const endpoint of [...endpoints].reverse()) {
+		try {
+			await endpoint.close();
+		} catch (error) {
+			errors.push(error);
+		}
+	}
+	if (errors.length > 0) {
+		throw errors[0];
+	}
 }

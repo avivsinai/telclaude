@@ -33,7 +33,7 @@ services:
     image: telclaude:latest
     container_name: telclaude
 
-    # Wait for sidecars and agent to be ready
+    # Wait for sidecars to be ready
     depends_on:
       totp:
         condition: service_healthy
@@ -41,8 +41,6 @@ services:
         condition: service_healthy
       google-services:
         condition: service_healthy
-      telclaude-agent:
-        condition: service_started
 
     environment:
       # ── Credentials now live in vault ──────────────────────────────────────
@@ -55,12 +53,12 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
 
-      # Anthropic proxy token — agents use this to authenticate with the relay's Anthropic proxy
+      # Anthropic proxy token — runtime workers use this to authenticate with the relay's Anthropic proxy
       - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
       # OpenAI Codex relay-proxy HMAC signing secret — RELAY ONLY (never mounted
-      # into agent containers). The relay mints short-lived, peer-bound per-job
-      # tokens for /codex work units; the agent never holds this secret.
+      # into runtime containers). The relay mints short-lived, peer-bound per-job
+      # tokens for /codex work units; runtime workers never hold this secret.
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:-}
 
       # Secrets encryption — enables keychain fallback (decrypts secrets.json for vault import)
@@ -76,11 +74,7 @@ services:
       - CLAUDE_CONFIG_DIR=/home/telclaude-auth
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
       - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
-      - TELCLAUDE_PRIVATE_CLAUDE_HOME=/home/telclaude-private-profile
-      - TELCLAUDE_SOCIAL_CLAUDE_HOME=/home/telclaude-social-profile
       - TELCLAUDE_SKILL_CATALOG_DIR=/home/telclaude-skill-catalog
-      - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
-      - TELCLAUDE_SOCIAL_AGENT_URL=http://agent-social:8789
       # X/Twitter — relay routes through its own credential proxy
       - X_USER_ID=${X_USER_ID:-}
       - TELCLAUDE_X_PROXY_URL=http://localhost:8792/api.x.com
@@ -106,13 +100,13 @@ services:
       # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      # Internal hosts allowed through firewall (relay needs to reach agents)
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services}
+      # Internal hosts allowed through firewall
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services}
       # Optional external WhatsApp bridge; attach it only to telclaude-relay-whatsapp.
       - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-}
 
-      # Drop privileges after firewall init (gosu -> node user)
-      # Docker mode: SDK sandbox disabled, container provides isolation
+      # Drop privileges after firewall init (gosu -> node user).
+      # LLM/persona execution runs through the Hermes overlay.
       - TELCLAUDE_RUN_AS_ROOT=0
 
       # Node environment
@@ -128,9 +122,6 @@ services:
 
       # Claude auth/profile state (OAuth tokens + settings) — relay-only
       - telclaude-claude-auth:/home/telclaude-auth:rw
-      # Relay manages the real persona profiles for official `claude plugin ...` lifecycle commands.
-      - telclaude-skills-telegram:/home/telclaude-private-profile:rw
-      - telclaude-skills-social:/home/telclaude-social-profile:rw
       # Shared skill catalog (active + draft) across relay, private, and social.
       - telclaude-skill-catalog:/home/telclaude-skill-catalog:rw
 
@@ -147,8 +138,8 @@ services:
       - media-inbox:/media/inbox:rw
       - media-outbox:/media/outbox:rw
 
-    # Start as root for firewall init, then drop to node via gosu
-    # Docker mode: SDK sandbox disabled, container provides isolation
+    # Start as root for firewall init, then drop to node via gosu.
+    # LLM/persona execution runs through the Hermes overlay.
     user: "0:0"
 
     # Explicit capability management (no privileged mode)
@@ -187,14 +178,12 @@ services:
           memory: 512M
 
     networks:
-      - agent-relay-net
       - runner-relay-net
       - relay-totp-net
       - relay-vault-net
       - relay-google-net
       - relay-whatsapp-net
       - relay-egress
-      - social-relay-net
       - relay-israel-net
 
     restart: unless-stopped
@@ -211,229 +200,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Agent Worker (SDK + Tools, no secrets)
-  # ─────────────────────────────────────────────────────────────────────────────
-  telclaude-agent:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.agent
-      args:
-        USER_UID: 1000
-        USER_GID: 1000
-    image: telclaude-agent:latest
-    container_name: telclaude-agent
-
-
-    environment:
-      # Agent server
-      - TELCLAUDE_AGENT_PORT=8788
-      - TELCLAUDE_AGENT_WORKDIR=/workspace
-      - TELCLAUDE_CONFIG=/data/telclaude.json
-      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-
-      # Relay capability broker + Anthropic API proxy
-      # Agent has NO credentials - all API calls go through relay
-      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      # Use relay proxy for Anthropic API (agent has no credentials)
-      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      # Internal token used to access the proxy (relay verifies + injects real creds)
-      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
-      # RPC auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
-      - TELEGRAM_RPC_AGENT_PRIVATE_KEY=${TELEGRAM_RPC_AGENT_PRIVATE_KEY:-}
-      - TELEGRAM_RPC_RELAY_PUBLIC_KEY=${TELEGRAM_RPC_RELAY_PUBLIC_KEY:-}
-
-      # Git proxy for secure git operations (token never exposed to agent)
-      - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
-      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
-
-      # HTTP credential proxy — agents route OpenAI/media API calls through relay
-      - TELCLAUDE_CREDENTIAL_PROXY_URL=http://telclaude:8792
-
-      # Media paths (inbox/outbox split)
-      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
-      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
-
-      # Data dir override (agent is stateless; uses tmpfs instead of /data volume)
-      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
-
-      # Private profile state stays local; standalone skills come from the shared catalog,
-      # while official Claude plugins remain profile-local.
-      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
-      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      - TELCLAUDE_SKILL_CATALOG_DIR=/home/telclaude-skill-catalog
-
-      # SECURITY: Network firewall for tool egress control (Docker mode)
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      # Internal hosts allowed through firewall (agent needs relay + sidecars)
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
-      # Skip provider hosts in firewall — agents must route through relay proxy
-      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
-      # Skip operator-added domains — model/provider egress must remain relay-owned
-      - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
-
-      # Drop privileges after firewall init
-      - TELCLAUDE_RUN_AS_ROOT=0
-
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-      - NODE_ENV=production
-
-    command: ["agent", "-v"]
-
-    volumes:
-      # Workspace: Your projects folder (Claude works here)
-      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
-
-      # Policy config (no secrets — providers, network rules, etc.)
-      - ./telclaude.json:/data/telclaude.json:ro
-
-      # Private profile state (settings/cache, official plugins) stays isolated.
-      - telclaude-skills-telegram:/home/telclaude-skills:rw
-      # Shared operator-managed standalone skill catalog.
-      - telclaude-skill-catalog:/home/telclaude-skill-catalog:rw
-
-      # Shared media volumes (inbox/outbox split)
-      - media-inbox:/media/inbox:ro
-      - media-outbox:/media/outbox:ro
-
-    user: "0:0"
-
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN
-      - DAC_OVERRIDE
-      - CHOWN
-      - FOWNER
-      - SETUID
-      - SETGID
-
-    security_opt:
-      - no-new-privileges:true
-      - apparmor:telclaude-agent
-
-    read_only: true
-    tmpfs:
-      - /tmp:size=512M,mode=1777
-      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
-      - /run/telclaude:size=1M,mode=0755
-
-    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
-    mem_limit: 4G
-    cpus: 4
-
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 4G
-        reservations:
-          cpus: '1'
-          memory: 512M
-
-    networks:
-      - agent-relay-net
-      - agent-egress
-
-    restart: unless-stopped
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Social Agent Worker (shared persona for all social services)
-  # Part of the generic social services architecture (src/social/).
-  # ─────────────────────────────────────────────────────────────────────────────
-  agent-social:
-    image: telclaude-agent:latest
-    container_name: telclaude-agent-social
-
-    environment:
-      - TELCLAUDE_AGENT_PORT=8789
-      - TELCLAUDE_AGENT_WORKDIR=/social/sandbox
-      - TELCLAUDE_CONFIG=/data/telclaude.json
-      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      # Social agent needs generous first-chunk timeout for skill-heavy queries
-      # (proactive posting loads social-posting skill, browses, researches)
-      - TELCLAUDE_AGENT_FIRST_CHUNK_TIMEOUT_MS=180000
-      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      # Use relay proxy for Anthropic API (agent has no credentials)
-      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      # Internal token used to access the proxy
-      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
-      # Ensure Claude Code state lives under a dedicated public profile
-      - HOME=/social
-      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
-      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      - TELCLAUDE_SKILL_CATALOG_DIR=/home/telclaude-skill-catalog
-      # Social auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
-      - SOCIAL_RPC_AGENT_PRIVATE_KEY=${SOCIAL_RPC_AGENT_PRIVATE_KEY:-}
-      - SOCIAL_RPC_RELAY_PUBLIC_KEY=${SOCIAL_RPC_RELAY_PUBLIC_KEY:-}
-      - TELCLAUDE_CREDENTIAL_PROXY_URL=http://telclaude:8792
-      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
-      - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
-      - TELCLAUDE_RUN_AS_ROOT=0
-      - TELCLAUDE_INTERNAL_HOSTS=telclaude
-      # Opt-in permissive network for social browsing (default: restricted)
-      - TELCLAUDE_NETWORK_MODE=${TELCLAUDE_SOCIAL_NETWORK_MODE:-restricted}
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-      - NODE_ENV=production
-
-    command: ["agent", "-v"]
-
-    volumes:
-      - social-sandbox:/social/sandbox:rw
-      - ./telclaude.json:/data/telclaude.json:ro
-      - social-memory:/social/memory:ro
-      - telclaude-skills-social:/home/telclaude-skills:rw
-      - telclaude-skill-catalog:/home/telclaude-skill-catalog:ro
-
-    user: "0:0"
-
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN
-      - DAC_OVERRIDE
-      - CHOWN
-      - FOWNER
-      - SETUID
-      - SETGID
-
-    security_opt:
-      - no-new-privileges:true
-      - apparmor:telclaude-social
-
-    read_only: true
-    tmpfs:
-      - /tmp:size=512M,mode=1777
-      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
-      - /run/telclaude:size=1M,mode=0755
-
-    mem_limit: 4G
-    cpus: 4
-
-    deploy:
-      resources:
-        limits:
-          cpus: "4"
-          memory: 4G
-        reservations:
-          cpus: "1"
-          memory: 512M
-
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8789/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-
-    networks:
-      - social-relay-net
-      - social-egress
-
-    restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Google Services Sidecar
@@ -744,7 +510,7 @@ volumes:
       device: tmpfs
       o: size=1M,uid=1000,gid=1000
 
-  # Shared media inbox (agent RO, relay RW) - size capped
+  # Shared media inbox - size capped
   media-inbox:
     name: telclaude-media-inbox
     driver: local
@@ -753,7 +519,7 @@ volumes:
       device: tmpfs
       o: size=512M,uid=1000,gid=1000,mode=0700
 
-  # Shared media outbox (relay RW, agent RO) - persistent for generated content
+  # Shared media outbox - persistent for generated content
   media-outbox:
     name: telclaude-media-outbox
 
@@ -761,22 +527,11 @@ volumes:
   google-data:
     name: telclaude-google-data
 
-  # Social isolated workspace (agent-social RW)
-  social-sandbox:
-    name: telclaude-social-sandbox
-
-  # Social shared memory (relay RW, agents RO)
+  # Social shared memory (relay RW)
   social-memory:
     name: telclaude-social-memory
 
-  # Per-agent Claude profile state (settings/cache). Skills live in the shared catalog below.
-  telclaude-skills-telegram:
-    name: telclaude-skills-telegram
-
-  telclaude-skills-social:
-    name: telclaude-skills-social
-
-  # Shared operator-managed skill catalog (active + draft) across all personas.
+  # Shared operator-managed skill catalog (active + draft) across all Hermes personas.
   telclaude-skill-catalog:
     name: telclaude-skill-catalog
     external: true
@@ -785,11 +540,6 @@ volumes:
 # Networks
 # ═══════════════════════════════════════════════════════════════════════════════
 networks:
-  agent-relay-net:
-    name: telclaude-agent-relay
-    driver: bridge
-    internal: true
-
   relay-totp-net:
     name: telclaude-relay-totp
     driver: bridge
@@ -800,21 +550,8 @@ networks:
     driver: bridge
     internal: true
 
-  agent-egress:
-    name: telclaude-agent-egress
-    driver: bridge
-
   relay-egress:
     name: telclaude-relay-egress
-    driver: bridge
-
-  social-relay-net:
-    name: telclaude-social-relay
-    driver: bridge
-    internal: true
-
-  social-egress:
-    name: telclaude-social-egress
     driver: bridge
 
   relay-google-net:

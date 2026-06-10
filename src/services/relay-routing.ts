@@ -4,7 +4,7 @@
  */
 
 /**
- * True when running inside an agent container (TELCLAUDE_CAPABILITIES_URL set).
+ * True when running inside contained runtime compute (TELCLAUDE_CAPABILITIES_URL set).
  */
 export function isAgentSide(): boolean {
 	return Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);

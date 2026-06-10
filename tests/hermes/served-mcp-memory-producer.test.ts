@@ -77,7 +77,7 @@ function bridgeFetcher(): typeof fetch {
 			params?: { name?: string; arguments?: Record<string, unknown> };
 		};
 		if (payload.method === "initialize") {
-			const social = String(url).includes("agent-social");
+			const social = String(url).includes("tc-hermes-social-sentinel");
 			const peerAddress = social ? "172.30.92.12" : "172.30.92.11";
 			return fakeResponse(
 				{
@@ -123,7 +123,7 @@ function bridgeFetcher(): typeof fetch {
 		if (tool === "tc_memory_search") {
 			const query = String(args.query ?? "");
 			if (query.includes("social-sentinel")) {
-				const social = String(url).includes("agent-social");
+				const social = String(url).includes("tc-hermes-social-sentinel");
 				return fakeResponse({
 					result: {
 						entries: social
@@ -147,7 +147,7 @@ describe("runServedMcpMemoryProbe", () => {
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
 			expectedSocialSentinelPeerAddress: "172.30.92.12",
-			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			socialSentinelEndpoint: { url: "http://tc-hermes-social-sentinel/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -166,7 +166,7 @@ describe("runServedMcpMemoryProbe", () => {
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
 			expectedSocialSentinelPeerAddress: "172.30.92.12",
-			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			socialSentinelEndpoint: { url: "http://tc-hermes-social-sentinel/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -200,7 +200,7 @@ describe("runServedMcpMemoryProbe", () => {
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.99",
 			expectedSocialSentinelPeerAddress: "172.30.92.12",
-			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			socialSentinelEndpoint: { url: "http://tc-hermes-social-sentinel/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -247,7 +247,7 @@ describe("runServedMcpMemoryProbe", () => {
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
 			expectedSocialSentinelPeerAddress: "172.30.92.12",
-			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			socialSentinelEndpoint: { url: "http://tc-hermes-social-sentinel/mcp" },
 			fetchImpl: malformedCrossSearch,
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -264,7 +264,7 @@ describe("runServedMcpMemoryProbe", () => {
 				params?: { name?: string; arguments?: Record<string, unknown> };
 			};
 			if (
-				String(url).includes("agent-social") &&
+				String(url).includes("tc-hermes-social-sentinel") &&
 				payload.params?.name === "tc_memory_search" &&
 				String(payload.params.arguments?.query ?? "").includes("social-sentinel")
 			) {
@@ -277,7 +277,7 @@ describe("runServedMcpMemoryProbe", () => {
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
 			expectedSocialSentinelPeerAddress: "172.30.92.12",
-			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			socialSentinelEndpoint: { url: "http://tc-hermes-social-sentinel/mcp" },
 			fetchImpl: droppedOffDomainSentinel,
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -302,14 +302,14 @@ describe("runServedMcpMemoryProbe", () => {
 		const socialUrls: string[] = [];
 		const privateFetcher = (async (url: unknown, init?: RequestInit) => {
 			privateUrls.push(String(url));
-			if (String(url).includes("agent-social")) {
+			if (String(url).includes("tc-hermes-social-sentinel")) {
 				return fakeResponse({ error: { code: -32001, message: "wrong origin" } });
 			}
 			return bridgeFetcher()(url as RequestInfo | URL, init);
 		}) as unknown as typeof fetch;
 		const socialFetcher = (async (url: unknown, init?: RequestInit) => {
 			socialUrls.push(String(url));
-			if (!String(url).includes("agent-social")) {
+			if (!String(url).includes("tc-hermes-social-sentinel")) {
 				return fakeResponse({ error: { code: -32001, message: "wrong origin" } });
 			}
 			return bridgeFetcher()(url as RequestInfo | URL, init);
@@ -320,7 +320,7 @@ describe("runServedMcpMemoryProbe", () => {
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
 			expectedSocialSentinelPeerAddress: "172.30.92.12",
-			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			socialSentinelEndpoint: { url: "http://tc-hermes-social-sentinel/mcp" },
 			fetchImpl: privateFetcher,
 			socialSentinelFetchImpl: socialFetcher,
 			now: new Date("2026-06-05T20:00:00.000Z"),
@@ -330,6 +330,6 @@ describe("runServedMcpMemoryProbe", () => {
 		expect(privateUrls.length).toBeGreaterThan(0);
 		expect(privateUrls.every((url) => url.includes("tc-hermes-contained"))).toBe(true);
 		expect(socialUrls.length).toBeGreaterThan(0);
-		expect(socialUrls.every((url) => url.includes("agent-social"))).toBe(true);
+		expect(socialUrls.every((url) => url.includes("tc-hermes-social-sentinel"))).toBe(true);
 	});
 });

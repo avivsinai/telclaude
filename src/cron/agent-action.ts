@@ -1,18 +1,14 @@
-import { executeRemoteQuery } from "../agent/client.js";
 import type { TelclaudeConfig } from "../config/config.js";
 import { resolveChatProfile } from "../config/profiles.js";
 import { formatHomeTarget, getHomeTarget } from "../config/sessions.js";
-import {
-	executeHermesPrivateQuery,
-	shouldUseHermesPrivateRuntime,
-} from "../hermes/private-execute.js";
+import { executeHermesQuery } from "../hermes/private-execute.js";
 import { buildHermesPrivateRuntimeProviderContext } from "../hermes/private-runtime-provider-context.js";
 import { getChildLogger } from "../logging.js";
 import {
 	buildTelegramMemoryBundle,
 	buildTelegramMemoryPolicyPrompt,
 } from "../memory/telegram-memory.js";
-import { executePooledQuery, type PooledQueryOptions, type StreamChunk } from "../sdk/client.js";
+import type { StreamChunk } from "../runtime/stream.js";
 import { sendTelegramMessage } from "../telegram/outbound.js";
 import { runCronPreprocess } from "./preprocess.js";
 import { detectCronSuppression } from "./suppression.js";
@@ -26,21 +22,13 @@ export type CronTelegramDestination = {
 };
 
 type ScheduledAgentActionDeps = {
-	executeHermes?: typeof executeHermesPrivateQuery;
-	executeRemote?: (
-		prompt: string,
-		options: PooledQueryOptions,
-	) => AsyncGenerator<StreamChunk, void, unknown>;
-	executeLocal?: (
-		prompt: string,
-		options: PooledQueryOptions,
-	) => AsyncGenerator<StreamChunk, void, unknown>;
+	executeHermes?: typeof executeHermesQuery;
 	runPreprocess?: typeof runCronPreprocess;
 	sendMessage?: typeof sendTelegramMessage;
 };
 
 function cronWorkspaceRoot(): string {
-	return process.env.TELCLAUDE_AGENT_WORKDIR ?? process.cwd();
+	return process.env.TELCLAUDE_WORKDIR ?? process.cwd();
 }
 
 export function resolveCronDeliveryDestination(job: CronJob): CronTelegramDestination | null {
@@ -190,13 +178,6 @@ export async function executeScheduledAgentPromptAction(
 		}
 	}
 
-	const abortController = new AbortController();
-	if (signal.aborted) {
-		abortController.abort(signal.reason);
-	} else {
-		signal.addEventListener("abort", () => abortController.abort(signal.reason), { once: true });
-	}
-
 	const chatContext = `<chat-context chat-id="${destination.chatId}"${destination.threadId === undefined ? "" : ` thread-id="${destination.threadId}"`} />`;
 	const scheduleContext = [
 		"<scheduled-task>",
@@ -212,10 +193,7 @@ export async function executeScheduledAgentPromptAction(
 		query: job.action.prompt,
 		includeRecentHistory: true,
 	});
-	const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
-	const hermesProviderContext = useHermesPrivateRuntime
-		? buildHermesPrivateRuntimeProviderContext(cfg)
-		: undefined;
+	const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(cfg);
 	const systemPromptAppend = [
 		chatContext,
 		scheduleContext,
@@ -229,47 +207,24 @@ export async function executeScheduledAgentPromptAction(
 		.filter(Boolean)
 		.join("\n\n");
 
-	const queryOptions: PooledQueryOptions = {
+	const queryStream = (deps.executeHermes ?? executeHermesQuery)(job.action.prompt, {
 		cwd: process.cwd(),
 		tier: "WRITE_LOCAL",
 		poolKey: `cron:${job.id}`,
-		userId: job.ownerId ?? `cron:${job.id}`,
+		telclaudeSessionId: `cron:${job.id}`,
+		profileId: activeProfile.profile.id,
 		enableSkills: true,
+		allowedSkills: job.action.allowedSkills,
 		timeoutMs: cfg.cron.timeoutSeconds * 1000,
+		userId: job.ownerId ?? `cron:${job.id}`,
+		chatId: destination.chatId,
+		threadId: destination.threadId,
 		systemPromptAppend,
 		compiledMemoryMd: memoryBundle.compiledMemoryMd,
-		abortController,
-		betas: cfg.sdk?.betas,
-	};
-	if (job.action.allowedSkills !== undefined) {
-		queryOptions.allowedSkills = job.action.allowedSkills;
-	}
-
-	const queryStream = useHermesPrivateRuntime
-		? (deps.executeHermes ?? executeHermesPrivateQuery)(job.action.prompt, {
-				cwd: queryOptions.cwd,
-				tier: queryOptions.tier,
-				poolKey: queryOptions.poolKey,
-				telclaudeSessionId: `cron:${job.id}`,
-				profileId: activeProfile.profile.id,
-				enableSkills: true,
-				allowedSkills: queryOptions.allowedSkills,
-				timeoutMs: cfg.cron.timeoutSeconds * 1000,
-				userId: queryOptions.userId,
-				chatId: destination.chatId,
-				threadId: destination.threadId,
-				systemPromptAppend,
-				compiledMemoryMd: memoryBundle.compiledMemoryMd,
-				mcpAuthority: {
-					providerScopes: hermesProviderContext?.providerScopes ?? [],
-				},
-			})
-		: process.env.TELCLAUDE_AGENT_URL
-			? (deps.executeRemote ?? executeRemoteQuery)(job.action.prompt, {
-					...queryOptions,
-					scope: "telegram",
-				})
-			: (deps.executeLocal ?? executePooledQuery)(job.action.prompt, queryOptions);
+		mcpAuthority: {
+			providerScopes: hermesProviderContext.providerScopes,
+		},
+	});
 
 	const queryResult = await collectQueryResponse(queryStream);
 	if (!queryResult.success) {

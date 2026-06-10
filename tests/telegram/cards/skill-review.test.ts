@@ -14,16 +14,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let CardKind: typeof import("../../../src/telegram/cards/types.js").CardKind;
-let skillReviewRenderer: typeof import(
-	"../../../src/telegram/cards/renderers/skill-review.js"
-).skillReviewRenderer;
+let skillReviewRenderer: typeof import("../../../src/telegram/cards/renderers/skill-review.js").skillReviewRenderer;
 let resetDatabase: typeof import("../../../src/storage/db.js").resetDatabase;
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
 
-type SkillReviewCardState = import(
-	"../../../src/telegram/cards/types.js"
-).SkillReviewCardState;
+type SkillReviewCardState = import("../../../src/telegram/cards/types.js").SkillReviewCardState;
 
 function baseCard(state: SkillReviewCardState) {
 	return {
@@ -104,9 +100,7 @@ describe("skill review card", () => {
 	});
 
 	it("renders the trusted badge when trust=trusted", () => {
-		const card = baseCard(
-			makeState({ trust: "trusted", trustDetail: "sha256:abcdef1234…" }),
-		);
+		const card = baseCard(makeState({ trust: "trusted", trustDetail: "sha256:abcdef1234…" }));
 		const render = skillReviewRenderer.render(card);
 		expect(render.text).toContain("trusted");
 		expect(render.text).toContain("sha256:abcdef");
@@ -120,9 +114,7 @@ describe("skill review card", () => {
 					{ severity: "high", count: 1 },
 					{ severity: "medium", count: 1 },
 				],
-				topFindings: [
-					{ severity: "high", message: "Shell exec directive", file: "SKILL.md" },
-				],
+				topFindings: [{ severity: "high", message: "Shell exec directive", file: "SKILL.md" }],
 			}),
 		);
 		const render = skillReviewRenderer.render(card);
@@ -164,9 +156,7 @@ describe("skill review card", () => {
 	});
 
 	it("surfaces auto-install patterns in the rendered text", () => {
-		const card = baseCard(
-			makeState({ autoInstallPatterns: ["brew install jq", "npx foo"] }),
-		);
+		const card = baseCard(makeState({ autoInstallPatterns: ["brew install jq", "npx foo"] }));
 		const render = skillReviewRenderer.render(card);
 		expect(render.text).toContain("Auto-install");
 		expect(render.text).toContain("brew install");

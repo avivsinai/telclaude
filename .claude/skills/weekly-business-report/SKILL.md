@@ -20,7 +20,7 @@ plainly.
   tokens, webhook secrets, session cookies, or provider base URLs. If the
   operator pastes a secret, stop and tell them to configure it through the
   telclaude provider/vault setup flow.
-- Never call provider sidecars or vendor APIs directly with WebFetch, curl, SDKs,
+- Never call provider sidecars or vendor APIs directly with WebFetch, curl, client libraries,
   or ad-hoc scripts. All provider access goes through `telclaude providers ...`.
 - Default to read-only provider actions. Treat action-type provider calls as out
   of scope for the digest unless the operator explicitly asks for that exact

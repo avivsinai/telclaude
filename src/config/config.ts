@@ -64,7 +64,6 @@ const TELEGRAM_NUDGES_DEFAULTS = {
 	maxPerHour: 5,
 	digestIntervalHours: 24,
 } as const;
-const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
 const SOCIAL_SERVICE_DEFAULTS = {
 	enabled: false,
 	heartbeatEnabled: true,
@@ -101,7 +100,7 @@ const StreamingConfigSchema = z.object({
 	showInlineKeyboard: z.boolean().default(false),
 });
 
-// Reply configuration schema (SDK-based)
+// Reply configuration schema
 const ReplyConfigSchema = z
 	.object({
 		enabled: z.boolean().default(REPLY_DEFAULTS.enabled),
@@ -119,12 +118,6 @@ const InboundConfigSchema = z
 		reply: ReplyConfigSchema,
 	})
 	.default({ reply: REPLY_DEFAULTS });
-
-// SDK configuration schema (for Claude Agent SDK options)
-const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
-const SdkConfigSchema = z.object({
-	betas: z.array(SdkBetaEnum).default([]),
-});
 
 const ProviderScopeIdSchema = z
 	.string()
@@ -251,7 +244,7 @@ export type SecurityProfile = z.infer<typeof SecurityProfileSchema>;
 // Security observer configuration
 const ObserverConfigSchema = z.object({
 	enabled: z.boolean().default(true),
-	maxLatencyMs: z.number().int().positive().default(300000), // 5 minutes - SDK calls can be slow
+	maxLatencyMs: z.number().int().positive().default(300000), // 5 minutes - Hermes calls can be slow
 	dangerThreshold: z.number().min(0).max(1).default(0.7),
 	fallbackOnTimeout: z.enum(["allow", "block", "escalate"]).default("block"),
 });
@@ -513,13 +506,10 @@ const SocialServiceConfigSchema = z.object({
 		.positive()
 		.default(SOCIAL_SERVICE_DEFAULTS.heartbeatIntervalHours),
 	adminChatId: z.union([z.string(), z.number()]).optional(),
-	agentUrl: z.string().optional(),
 	/** Enable skills for autonomous heartbeat activity (Phase 3 only). Default: false */
 	enableSkills: z.boolean().default(false),
-	/** Future: filter which skills load for this service */
+	/** Hermes social skill allowlist for trusted social activity. */
 	allowedSkills: z.array(z.string()).optional(),
-	/** Operator-curated agent-authored skills under agent/social/<service>. Default: none. */
-	agentSkillsAllowed: z.array(z.string()).default([]),
 	/** When to send Telegram notifications on heartbeat. Default: "activity" */
 	notifyOnHeartbeat: z.enum(["always", "activity", "never"]).default("activity"),
 });
@@ -578,7 +568,6 @@ const TelclaudeConfigSchema = z.object({
 	telegram: TelegramConfigSchema.default(TELEGRAM_DEFAULTS),
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
-	sdk: SdkConfigSchema.default(SDK_DEFAULTS),
 	hermes: HermesConfigSchema.default(HERMES_DEFAULTS),
 	// Multimedia capabilities
 	openai: OpenAIConfigSchema.default({}),
@@ -621,7 +610,6 @@ export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
 export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
-export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 export type HermesConfig = z.infer<typeof HermesConfigSchema>;
 export type OperatorProfileConfig = z.infer<typeof OperatorProfileConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
@@ -847,9 +835,6 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 				polling: {
 					timeout: 30,
 				},
-			},
-			sdk: {
-				betas: [],
 			},
 			hermes: {
 				privateRuntime: {

@@ -63,7 +63,7 @@ The no-fork Hermes wrapper runs a pinned upstream Hermes runtime as the private 
 | **1. Screening** | Fast Path + Observer | Blocks dangerous prompts before execution |
 | **2. Policy** | Rate Limiter + Approvals | Prevents abuse, human-in-loop for risky ops |
 | **3. Permissions** | Tier System | Controls which tools Claude can use |
-| **4. Enforcement** | Isolation boundary | SDK sandbox (native) or relay+agent containers + firewall |
+| **4. Enforcement** | Isolation boundary | contained Hermes runtime, relay-owned MCP/capability services, and Docker firewall |
 | **5. Runtime attestation** | No-fork proof + served-MCP authority | Hermes runtime is pinned and unmodified; its capabilities and side effects flow only through relay-owned MCP tools |
 
 ---
@@ -110,14 +110,14 @@ Maximum privilege tier. No tool restrictions.
 
 ## Isolation Boundary (Mode-Dependent)
 
-All Claude queries execute inside a single isolation boundary:
+All LLM/persona runtime execution uses the contained Hermes boundary:
 
-- **Docker mode**: relay+agent containers + firewall (SDK sandbox disabled)
-- **Native mode**: SDK sandbox via Seatbelt (`sandbox-exec`) on macOS or bubblewrap on Linux
+- **Docker/prod**: relay + sidecars + `tc-hermes-contained` / `tc-hermes-social` overlay with firewall and internal-only networks
+- **Native relay dev**: the relay process may run natively, but Telegram/social/cron/observer execution still targets Hermes
 
 ### Blocked Paths
 
-In native mode, the SDK sandbox prevents access to:
+The contained runtime never mounts high-value host paths. Application policy and Docker mounts block access to:
 
 - `~/.telclaude/` — Configuration and secrets
 - `~/.ssh/` — SSH keys
@@ -126,18 +126,18 @@ In native mode, the SDK sandbox prevents access to:
 - `~/.config/` — Application secrets
 - `/etc/passwd`, `/etc/shadow` — System files
 
-In Docker mode, the relay container does not mount the workspace; the agent container mounts only the workspace and media volumes. Application guards still block sensitive paths if they appear.
+In Docker mode, the relay container does not mount the workspace and the contained Hermes runtimes receive only curated runtime surfaces. Application guards still block sensitive paths if they appear.
 
 ### Write Restrictions
 
-- **READ_ONLY**: No writes allowed (policy + sandbox in native mode)
-- **WRITE_LOCAL/FULL_ACCESS**: Writes limited to current working directory + private temp (`~/.telclaude/sandbox-tmp`) in native mode; Docker mode relies on container filesystem boundaries and policy checks.
+- **READ_ONLY**: No writes allowed.
+- **WRITE_LOCAL/FULL_ACCESS**: Writes are constrained by Hermes authority, relay policy, container filesystem boundaries, and explicit side-effect approval.
 
 ---
 
 ## Hermes Private Runtime (No-Fork Wrapper)
 
-When the private-runtime overlay is enabled (`TELCLAUDE_HERMES_PRIVATE_RUNTIME=1`), the relay routes private-persona work to a pinned upstream Hermes runtime instead of executing the Claude SDK directly. The relay remains the security boundary; Hermes is treated as untrusted compute. Enforcement rests on four mechanisms:
+The relay routes persona work to a pinned upstream Hermes runtime. The relay remains the security boundary; Hermes is treated as untrusted compute. Enforcement rests on four mechanisms:
 
 ### 1. No-Fork Proof
 
@@ -145,16 +145,16 @@ The wrapper must prove the Hermes checkout is unmodified upstream — not a fork
 
 ### 2. Contained Runtime Posture (Docker)
 
-The `docker-compose.hermes.yml` overlay runs only two containers — `telclaude` (relay) and `tc-hermes-contained` (Hermes) — on an **internal**, non-routable bridge network (`192.0.2.0/24`). The contained runtime:
+The `docker-compose.hermes.yml` overlay runs the relay plus separate private and social Hermes containers — `telclaude`, `tc-hermes-contained`, and `tc-hermes-social` — on **separate internal**, non-routable bridge networks. The relay joins both networks (`telclaude-hermes-private` and `telclaude-hermes-social`); `tc-hermes-contained` and `tc-hermes-social` do not share L3/TCP reachability with each other. The contained runtimes:
 
 - Uses a pinned image digest (`nousresearch/hermes-agent@sha256:…`), runs as non-root (`10000:10000`), drops all capabilities, and sets `no-new-privileges`.
 - Has a read-only root filesystem with `noexec` tmpfs for `/tmp`, `/home/hermes`, and `/run`.
-- Mounts the relay source read-only and a curated skill allowlist read-only; it never mounts the workspace or any credential volume.
+- Mounts the relay source read-only and a curated skill allowlist read-only (`hermes-contained-skills.allowlist` for private/cron/observer, `hermes-social-skills.allowlist` for social); it never mounts the workspace or any credential volume.
 - Has model-provider hostnames (`api.openai.com`, `api.anthropic.com`, `chatgpt.com`, `generativelanguage.googleapis.com`, etc.) pinned to a blocked address (`192.0.2.1`), so direct model egress fails at the network layer.
 
 ### 3. Served-MCP Authority Model
 
-Hermes does not receive an SDK tool allowlist. Instead, the relay hosts a **live MCP server** (HTTP, `transport: http_relay_internal_network`, relay-internal only, `runsInHermesContainer: false`) exposing a fixed set of relay-owned tools — provider read/prepare-write/execute-write, memory search/write, attachment get, outbound prepare/execute, and audit note. Every call is bound to an opaque, connection-scoped authority handle resolved in the relay-side registry (15-minute default TTL). The server strips any client-supplied authority, connection, session, profile, or `memorySource` fields, so the runtime cannot widen its own scope. Provider scope, outbound channels, and memory trust level are derived from the authority, never from runtime input. A private (telegram-profile) authority cannot read social memory; a social or bare-legacy source cannot satisfy a private read.
+Hermes does not receive raw local tool grants. Instead, the relay hosts a **live MCP server** (HTTP, `transport: http_relay_internal_network`, relay-internal only, `runsInHermesContainer: false`) exposing a fixed set of relay-owned tools — provider read/prepare-write/execute-write, memory search/write, attachment get, outbound prepare/execute, and audit note. Every call is bound to an opaque, connection-scoped authority handle resolved in the relay-side registry (15-minute default TTL). The server strips any client-supplied authority, connection, session, profile, or `memorySource` fields, so the runtime cannot widen its own scope. Provider scope, outbound channels, and memory trust level are derived from the authority, never from runtime input. A private (telegram-profile) authority cannot read social memory; a social or bare-legacy source cannot satisfy a private read.
 
 ### 4. Two-Phase Side Effects
 
@@ -229,7 +229,7 @@ When deploying telclaude:
 - [ ] **Google services**: Confirm agents have no route to `google-services` container
 - [ ] **Hermes runtime**: Run `telclaude hermes prove --upstream-clean` (no-fork proof) — checkout pinned, clean, no source replacement
 - [ ] **Hermes runtime**: Run `telclaude hermes cutover-check --strict` before any production cutover; resolve every gate (no-fork, network probes, parity roster) rather than scoping around it
-- [ ] **Hermes runtime**: Generate `TELCLAUDE_HERMES_API_SERVER_KEY` as an ephemeral per-deploy secret; confirm `tc-hermes-contained` runs on the internal network with model-provider hosts blocked and no credential volumes mounted
+- [ ] **Hermes runtime**: Generate `TELCLAUDE_HERMES_API_SERVER_KEY` and `TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY` as ephemeral per-deploy secrets; confirm `tc-hermes-contained` and `tc-hermes-social` run on the internal network with model-provider hosts blocked and no credential volumes mounted
 
 ### Admin Claim Security
 

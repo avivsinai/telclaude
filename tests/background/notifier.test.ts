@@ -26,9 +26,7 @@ describe("completion notification routing", () => {
 	});
 
 	it("sends a BackgroundJobCard to the originating chat when an Api is provided", async () => {
-		const { createJob, emitCompletionNotification } = await import(
-			"../../src/background/index.js"
-		);
+		const { createJob, emitCompletionNotification } = await import("../../src/background/index.js");
 		const { getActiveCardsByEntity } = await import("../../src/telegram/cards/store.js");
 		const { registerAllCardRenderers } = await import(
 			"../../src/telegram/cards/renderers/index.js"
@@ -82,9 +80,7 @@ describe("completion notification routing", () => {
 
 	it("silently drops when neither chat nor admin fallback is available and no bot token is set", async () => {
 		// Loaded config has no bot token; getAdminChatIds returns empty in an empty DB.
-		const { createJob, emitCompletionNotification } = await import(
-			"../../src/background/index.js"
-		);
+		const { createJob, emitCompletionNotification } = await import("../../src/background/index.js");
 
 		const job = createJob({
 			title: "orphan",
@@ -99,9 +95,7 @@ describe("completion notification routing", () => {
 	});
 
 	it("surfaces failures via the card path too (error shows)", async () => {
-		const { createJob, emitCompletionNotification } = await import(
-			"../../src/background/index.js"
-		);
+		const { createJob, emitCompletionNotification } = await import("../../src/background/index.js");
 		const { registerAllCardRenderers } = await import(
 			"../../src/telegram/cards/renderers/index.js"
 		);

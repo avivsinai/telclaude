@@ -39,7 +39,7 @@ describe("telegram memory capture", () => {
 		captureTelegramTurnMemory({
 			chatId: "123",
 			sessionKey: "session-123",
-			sessionId: "sdk-123",
+			sessionId: "hermes-123",
 			userText: "Please remember that my preferred editor is Zed.",
 			assistantText: "Remembered.",
 			profileId: "engineer",
@@ -58,7 +58,7 @@ describe("telegram memory capture", () => {
 			source: "telegram:engineer",
 			chatId: "123",
 			sessionKey: "session-123",
-			sessionId: "sdk-123",
+			sessionId: "hermes-123",
 		});
 	});
 });

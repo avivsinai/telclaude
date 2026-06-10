@@ -33,7 +33,7 @@ Per-chat binding lives in the sessions table and survives restarts. Operators sw
 
 Memory is scoped per profile (`source: "telegram:<profile-id>"`). Switching profiles switches what memory the agent sees. Cross-profile reads are runtime-asserted off — the assertion is the invariant, not a check we want to relax.
 
-The profile binding is backend-independent. A profile resolves the same SOUL append, skill allowlist, default model, and `telegram:<profile-id>` memory source whether the private turn runs through the Claude SDK or the contained Hermes private runtime (`shouldUseHermesPrivateRuntime()` in `src/hermes/private-execute.ts`, applied in `src/telegram/auto-reply.ts`). Profiles are a Telclaude-side overlay above the execution backend, not part of it.
+The profile binding is runtime-independent inside the documented Hermes private path. A profile resolves the same SOUL append, skill allowlist, default model, and `telegram:<profile-id>` memory source for every private turn. Profiles are a Telclaude-side overlay above the contained Hermes execution backend, not part of it.
 
 ## Router profile convention
 

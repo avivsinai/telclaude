@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getAction, getActionsForService, getAllActions } from "../../src/google-services/actions.js";
+import {
+	getAction,
+	getActionsForService,
+	getAllActions,
+} from "../../src/google-services/actions.js";
 
 describe("action registry", () => {
 	it("finds gmail search action", () => {

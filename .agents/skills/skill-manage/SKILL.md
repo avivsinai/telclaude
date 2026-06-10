@@ -64,7 +64,7 @@ Instructions.
 EOF
 ```
 
-New social-targeted skills are not usable by the social runtime until the operator adds the skill name to that service's `agentSkillsAllowed` config.
+New social-targeted skills are not usable by the social runtime until the operator adds the skill name to that service's `allowedSkills` config.
 
 ## Patch
 

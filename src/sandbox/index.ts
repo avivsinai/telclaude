@@ -2,10 +2,11 @@
  * Sandbox module exports.
  *
  * Simplified architecture:
- * - Docker mode: SDK sandbox disabled, Docker container provides isolation
- * - Native mode: SDK sandbox enabled (bubblewrap/Seatbelt)
+ * - Docker mode: relay container provides process-level isolation.
+ * - Native mode: relay is host-local; LLM/persona execution still routes
+ *   through contained Hermes.
  *
- * Application-level security (canUseTool, PreToolUse hooks) provides defense-in-depth.
+ * Application-level security and relay/Hermes containment provide defense-in-depth.
  */
 
 // Constants for application-level security checks
@@ -15,7 +16,7 @@ export {
 	DENY_WRITE_PATHS,
 	SENSITIVE_READ_PATHS,
 } from "./config.js";
-// Domain builders (for SDK sandbox network config)
+// Domain builders (for firewall/network policy config)
 export {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -35,7 +36,6 @@ export {
 	getSandboxMode,
 	isDockerEnvironment,
 	type SandboxMode,
-	shouldEnableSdkSandbox,
 } from "./mode.js";
 // Network proxy (for isBlockedHost in canUseTool)
 export {
@@ -53,12 +53,3 @@ export {
 	type NetworkSelfTestResult,
 	runNetworkSelfTest,
 } from "./network-proxy.js";
-// SDK settings builder (for allowedTools per tier)
-export { buildSdkPermissionsForTier } from "./sdk-settings.js";
-
-// Version helper
-export {
-	getSandboxRuntimeVersion,
-	isSandboxRuntimeAtLeast,
-	MIN_SANDBOX_RUNTIME_VERSION,
-} from "./version.js";

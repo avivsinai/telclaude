@@ -3,7 +3,7 @@
  *
  * This is the display catalog for the W2 picker plus the runtime execution
  * capability metadata. The picker may show catalog-only providers, but the
- * SDK query path must only execute providers marked as executable.
+ * Hermes runtime path must only execute providers marked as executable.
  */
 
 import type { ModelPickerProvider } from "../telegram/cards/types.js";
@@ -12,7 +12,7 @@ export const MODEL_CATALOG: ModelPickerProvider[] = [
 	{
 		id: "anthropic",
 		label: "Anthropic",
-		execution: { executable: true, kind: "claude-sdk" },
+		execution: { executable: true, kind: "hermes" },
 		models: [
 			{
 				id: "claude-opus-4-5-20250929",

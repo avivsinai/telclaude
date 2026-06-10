@@ -29,16 +29,9 @@ import { getSandboxMode } from "../sandbox/index.js";
 
 const logger = getChildLogger({ module: "cmd-gateway" });
 
-// The six containers we expect in a full Docker deployment. Order here
+// The base containers we expect in a full Docker deployment. Order here
 // drives table row order.
-const EXPECTED_SERVICES = [
-	"telclaude",
-	"telclaude-agent",
-	"agent-social",
-	"google-services",
-	"totp",
-	"vault",
-] as const;
+const EXPECTED_SERVICES = ["telclaude", "google-services", "totp", "vault"] as const;
 
 // Health-wait tuning — `docker compose up -d` returns as soon as containers
 // start, but healthchecks can take a few seconds. Poll every POLL_MS up to

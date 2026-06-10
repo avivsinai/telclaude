@@ -121,11 +121,13 @@ describe("card create helpers", () => {
 				revision: first.revision + 1,
 			}),
 		);
-		expect(getActiveCardsByEntity({
-			kind: second.kind,
-			chatId: second.chatId,
-			entityRef: second.entityRef,
-		})).toHaveLength(1);
+		expect(
+			getActiveCardsByEntity({
+				kind: second.kind,
+				chatId: second.chatId,
+				entityRef: second.entityRef,
+			}),
+		).toHaveLength(1);
 		expect(getCard(second.cardId)).toEqual(
 			expect.objectContaining({
 				status: "active",
@@ -162,11 +164,13 @@ describe("card create helpers", () => {
 				revision: first.revision,
 			}),
 		);
-		expect(getActiveCardsByEntity({
-			kind: first.kind,
-			chatId: first.chatId,
-			entityRef: first.entityRef,
-		})).toHaveLength(1);
+		expect(
+			getActiveCardsByEntity({
+				kind: first.kind,
+				chatId: first.chatId,
+				entityRef: first.entityRef,
+			}),
+		).toHaveLength(1);
 		expect(getCard(first.cardId)).toEqual(
 			expect.objectContaining({
 				status: "active",

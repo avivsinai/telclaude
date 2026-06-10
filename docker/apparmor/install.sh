@@ -18,8 +18,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALL_PROFILES=(
   telclaude-vault
   telclaude-relay
-  telclaude-agent
-  telclaude-social
 )
 
 if [ "$(id -u)" -ne 0 ]; then

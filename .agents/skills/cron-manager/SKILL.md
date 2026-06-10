@@ -33,7 +33,7 @@ Choose exactly one action:
 
 Prompt options:
 
-- `--skill <name>` can be repeated to restrict scheduled skill use. Use `--skill` for unattended routines that need tools; passing no `--skill` preserves legacy private-agent behavior.
+- `--skill <name>` can be repeated to restrict scheduled skill use. Use `--skill` for unattended routines that need tools; passing no `--skill` preserves the default private-agent skill policy.
 - `--preprocess-command <path-or-executable>` runs an executable before the prompt, with optional repeated `--preprocess-arg <value>`, `--preprocess-cwd <path>`, `--preprocess-timeout-ms <ms>`, and `--preprocess-max-stdout-bytes <bytes>`.
 - Preprocessors receive JSON on stdin and non-empty stdout is injected as untrusted read-only data. Empty stdout runs the agent without preprocess context; `[IDLE]` or `[SILENT]` skips the agent run.
 - Scheduled agent output containing `[IDLE]` or `[SILENT]` is treated as successful no-delivery output.

@@ -127,7 +127,7 @@ describe("runSkillsAllowlistProbe", () => {
 		expect(report.productionEnable).toBe(true);
 	});
 
-	it("uses filesystem paths for profile proof and SDK runtime names for hook proof", async () => {
+	it("uses filesystem paths for profile proof and Hermes runtime names for hook proof", async () => {
 		const scenarios: Parameters<SkillsAllowlistRunner>[0][] = [];
 		const evidence = await runSkillsAllowlistProbe({
 			allowRun: true,

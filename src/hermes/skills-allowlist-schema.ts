@@ -21,7 +21,7 @@ export const SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES = [
 	"runtime_skills_match_allowlist",
 	// Upstream Hermes self-improvement skill creation is disabled at the source.
 	"skill_creation_nudge_disabled",
-	// The production PreToolUse skill hook is registered in runtime SDK options.
+	// The production runtime tool policy registers the PreToolUse skill gate.
 	"pretooluse_hook_registered",
 	// Positive/negative controls prove hook behavior, not only profile files.
 	"allowlisted_skill_invocation_allowed",
@@ -61,7 +61,7 @@ const SkillsAllowlistCheckSchema = z
 		// Every runtime/profile check must be observed through docker exec inside the
 		// contained Hermes runtime. The redaction check is evaluator-owned and may omit it.
 		observationLayer: z.literal("docker_exec").optional(),
-		// Enforcement checks must prove the primary SDK hook, not canUseTool fallback.
+		// Enforcement checks must prove the primary PreToolUse gate, not a fallback.
 		enforcementLayer: z.literal("pretooluse").optional(),
 	})
 	.strict();

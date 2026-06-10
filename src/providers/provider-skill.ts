@@ -392,13 +392,13 @@ function resolveSkillLocation(): SkillLocation {
 	};
 }
 
-// Cached provider summary for injection into system prompts (SDK queries).
+// Cached provider summary for injection into system prompts (Hermes runtime queries).
 // Contains only provider IDs, base URLs, and service lists — no free-form schema
 // text — to prevent prompt-injection via compromised provider /v1/schema responses.
 let cachedProviderSummary: string | null = null;
 
-// Full schema markdown cached for serving to agents via config.providers.
-// Agents can't fetch schema directly (firewall blocks provider access).
+// Full schema markdown cached for runtime context via config.providers.
+// Hermes cannot fetch schema directly (firewall blocks provider access).
 let cachedSchemaMarkdown: string | null = null;
 
 /**

@@ -11,14 +11,14 @@ import { getDb } from "../storage/db.js";
 
 export type PersonaKind = "private" | "social";
 export type PersonaHealth = "ok" | "degraded" | "not_configured";
-export type AgentReachability = "reachable" | "unreachable" | "not_configured" | "unknown";
+export type RuntimeReachability = "configured" | "not_configured" | "unknown";
 export type SkillPolicy = "trusted_all_active" | "disabled" | "explicit_allowlist" | "fail_closed";
 
-export type PersonaAgentStatus = {
+export type PersonaRuntimeStatus = {
 	configured: boolean;
 	source: string;
 	endpoint: string | null;
-	reachability: AgentReachability;
+	reachability: RuntimeReachability;
 	checkedAt: string | null;
 	error: string | null;
 };
@@ -84,10 +84,10 @@ export type PersonaStatus = {
 	health: PersonaHealth;
 	summary: string;
 	profile: PersonaProfileStatus;
-	agent: PersonaAgentStatus;
+	runtime: PersonaRuntimeStatus;
 	modelProvider: {
-		claudeSdkModel: string;
-		sdkBetas: string[];
+		hermesModel: string;
+		inferenceProvider: string;
 		anthropicProxy: "configured" | "not_configured";
 		credentialProxy: "configured" | "not_configured";
 	};
@@ -107,8 +107,8 @@ export type PersonaStatus = {
 		type: string;
 		enabled: boolean;
 		heartbeatEnabled: boolean;
-		agentConfigured: boolean;
-		agentSource: string;
+		runtimeConfigured: boolean;
+		runtimeSource: string;
 		enableSkills: boolean;
 		allowedSkills: string[];
 		skillFailClosed: boolean;
@@ -135,7 +135,7 @@ export type PersonaStatusBuildInput = {
 	socialPlugins?: PersonaPluginStatus;
 	cronJobs?: CronJob[];
 	latestSocialActivityAtMs?: number | null;
-	agentReachability?: Partial<Record<PersonaKind, PersonaAgentStatus>>;
+	runtimeReachability?: Partial<Record<PersonaKind, PersonaRuntimeStatus>>;
 };
 
 export type PersonaStatusCollectOptions = {
@@ -143,7 +143,7 @@ export type PersonaStatusCollectOptions = {
 	env?: NodeJS.ProcessEnv;
 	cwd?: string;
 	nowMs?: number;
-	probeAgents?: boolean;
+	probeRuntime?: boolean;
 	probeTimeoutMs?: number;
 };
 
@@ -153,14 +153,14 @@ type ProfileResolution = {
 	source: string;
 };
 
-type AgentResolution = {
+type RuntimeResolution = {
 	configured: boolean;
 	source: string;
 	url: string | null;
 };
 
-const DEFAULT_PRIVATE_AGENT_WORKDIR = "/workspace";
-const DEFAULT_SOCIAL_AGENT_WORKDIR = "/social/sandbox";
+const DEFAULT_PRIVATE_WORKDIR = "/workspace";
+const DEFAULT_SOCIAL_SANDBOX_DIR = "/social/sandbox";
 
 function normalizeDir(raw: string): string {
 	return raw.replace(/[/\\]+$/, "");
@@ -200,77 +200,52 @@ function resolvePrivateClaudeHome(env: NodeJS.ProcessEnv = process.env): Profile
 }
 
 function resolveSocialClaudeHome(env: NodeJS.ProcessEnv = process.env): ProfileResolution {
-	if (!env.TELCLAUDE_SOCIAL_CLAUDE_HOME) {
-		return {
-			configured: false,
-			claudeHome: null,
-			source: "TELCLAUDE_SOCIAL_CLAUDE_HOME missing",
-		};
-	}
 	return {
 		configured: true,
-		claudeHome: resolvePath(env.TELCLAUDE_SOCIAL_CLAUDE_HOME),
-		source: "TELCLAUDE_SOCIAL_CLAUDE_HOME",
+		claudeHome: env.TELCLAUDE_HERMES_HOME ? resolvePath(env.TELCLAUDE_HERMES_HOME) : null,
+		source: env.TELCLAUDE_HERMES_HOME ? "TELCLAUDE_HERMES_HOME" : "Hermes social profile",
 	};
 }
 
-function serviceEnvKey(serviceId: string, suffix: string): string {
-	return `TELCLAUDE_${serviceId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${suffix}`;
-}
-
-function resolvePrivateAgent(env: NodeJS.ProcessEnv = process.env): AgentResolution {
-	const url = env.TELCLAUDE_AGENT_URL ?? null;
+function resolveHermesRuntime(
+	env: NodeJS.ProcessEnv = process.env,
+	domain: PersonaKind = "private",
+): RuntimeResolution {
+	const baseUrlEnv =
+		domain === "social" ? "TELCLAUDE_HERMES_SOCIAL_API_BASE_URL" : "TELCLAUDE_HERMES_API_BASE_URL";
+	const apiKeyEnv =
+		domain === "social" ? "TELCLAUDE_HERMES_SOCIAL_API_KEY" : "TELCLAUDE_HERMES_API_KEY";
+	const label = domain === "social" ? "Hermes social runtime" : "Hermes runtime";
+	const baseUrl = env[baseUrlEnv]?.trim() ?? "";
+	const apiKey = env[apiKeyEnv]?.trim() ?? "";
+	const url = baseUrl || null;
 	return {
-		configured: Boolean(url),
-		source: url ? "TELCLAUDE_AGENT_URL" : "not configured",
+		configured: Boolean(baseUrl && apiKey),
+		source: baseUrl && apiKey ? `${baseUrlEnv} + ${apiKeyEnv}` : `${label} not configured`,
 		url,
 	};
 }
 
-function resolveSocialAgentForService(
+function resolveSocialRuntimeForService(
 	service: TelclaudeConfig["socialServices"][number],
 	env: NodeJS.ProcessEnv = process.env,
-): AgentResolution {
-	if (service.agentUrl) {
-		return { configured: true, source: "service config", url: service.agentUrl };
-	}
-	const perServiceKey = serviceEnvKey(service.id, "AGENT_URL");
-	if (env[perServiceKey]) {
-		return { configured: true, source: perServiceKey, url: env[perServiceKey] ?? null };
-	}
-	if (env.TELCLAUDE_SOCIAL_AGENT_URL) {
-		return {
-			configured: true,
-			source: "TELCLAUDE_SOCIAL_AGENT_URL",
-			url: env.TELCLAUDE_SOCIAL_AGENT_URL,
-		};
-	}
-	if (env.TELCLAUDE_AGENT_URL) {
-		return {
-			configured: true,
-			source: "TELCLAUDE_AGENT_URL fallback",
-			url: env.TELCLAUDE_AGENT_URL,
-		};
-	}
-	return { configured: false, source: "not configured", url: null };
+): RuntimeResolution {
+	const runtime = resolveHermesRuntime(env, "social");
+	return {
+		...runtime,
+		source: runtime.configured ? `Hermes social runtime for social:${service.id}` : runtime.source,
+	};
 }
 
-function resolveSocialAgent(
+function resolveSocialRuntime(
 	config: TelclaudeConfig,
 	env: NodeJS.ProcessEnv = process.env,
-): AgentResolution {
+): RuntimeResolution {
 	const service = config.socialServices.find((entry) => entry.enabled) ?? config.socialServices[0];
 	if (service) {
-		return resolveSocialAgentForService(service, env);
+		return resolveSocialRuntimeForService(service, env);
 	}
-	if (env.TELCLAUDE_SOCIAL_AGENT_URL) {
-		return {
-			configured: true,
-			source: "TELCLAUDE_SOCIAL_AGENT_URL",
-			url: env.TELCLAUDE_SOCIAL_AGENT_URL,
-		};
-	}
-	return { configured: false, source: "not configured", url: null };
+	return resolveHermesRuntime(env, "social");
 }
 
 function summarizeEndpoint(url: string | null, config: TelclaudeConfig): string | null {
@@ -282,28 +257,28 @@ function summarizeEndpoint(url: string | null, config: TelclaudeConfig): string 
 	}
 }
 
-function defaultAgentStatus(
-	resolution: AgentResolution,
+function defaultRuntimeStatus(
+	resolution: RuntimeResolution,
 	config: TelclaudeConfig,
-): PersonaAgentStatus {
+): PersonaRuntimeStatus {
 	return {
 		configured: resolution.configured,
 		source: resolution.source,
 		endpoint: summarizeEndpoint(resolution.url, config),
-		reachability: resolution.configured ? "unknown" : "not_configured",
+		reachability: resolution.configured ? "configured" : "not_configured",
 		checkedAt: null,
 		error: null,
 	};
 }
 
-async function probeAgent(
-	resolution: AgentResolution,
+async function probeRuntime(
+	resolution: RuntimeResolution,
 	nowMs: number,
 	timeoutMs: number,
 	config: TelclaudeConfig,
-): Promise<PersonaAgentStatus> {
+): Promise<PersonaRuntimeStatus> {
 	if (!resolution.url) {
-		return defaultAgentStatus(resolution, config);
+		return defaultRuntimeStatus(resolution, config);
 	}
 
 	const controller = new AbortController();
@@ -312,19 +287,19 @@ async function probeAgent(
 		const healthUrl = new URL("/health", resolution.url);
 		const response = await fetch(healthUrl, { signal: controller.signal });
 		return {
-			configured: true,
+			configured: resolution.configured,
 			source: resolution.source,
 			endpoint: summarizeEndpoint(resolution.url, config),
-			reachability: response.ok ? "reachable" : "unreachable",
+			reachability: response.ok && resolution.configured ? "configured" : "not_configured",
 			checkedAt: new Date(nowMs).toISOString(),
 			error: response.ok ? null : `health returned HTTP ${response.status}`,
 		};
 	} catch (err) {
 		return {
-			configured: true,
+			configured: resolution.configured,
 			source: resolution.source,
 			endpoint: summarizeEndpoint(resolution.url, config),
-			reachability: "unreachable",
+			reachability: "not_configured",
 			checkedAt: new Date(nowMs).toISOString(),
 			error: redactStatusText(String(err), config),
 		};
@@ -397,6 +372,15 @@ function collectPluginsForPersona(
 			error: redactStatusText(err instanceof Error ? err.message : String(err), config),
 		};
 	}
+}
+
+function hermesSocialPluginStatus(): PersonaPluginStatus {
+	return {
+		configured: true,
+		enabled: [],
+		installed: [],
+		error: null,
+	};
 }
 
 function collectLatestSocialActivityAtMs(): number | null {
@@ -528,10 +512,11 @@ function buildSocialSkills(
 	};
 }
 
-function buildModelProviderStatus(config: TelclaudeConfig, env: NodeJS.ProcessEnv) {
+function buildModelProviderStatus(env: NodeJS.ProcessEnv) {
 	return {
-		claudeSdkModel: "SDK default",
-		sdkBetas: config.sdk?.betas ?? [],
+		hermesModel:
+			env.HERMES_INFERENCE_MODEL ?? env.TELCLAUDE_HERMES_INFERENCE_MODEL ?? "Hermes default",
+		inferenceProvider: env.HERMES_INFERENCE_PROVIDER ?? "openai-codex",
 		anthropicProxy:
 			env.ANTHROPIC_BASE_URL || env.ANTHROPIC_AUTH_TOKEN ? "configured" : "not_configured",
 		credentialProxy: env.TELCLAUDE_CREDENTIAL_PROXY_URL ? "configured" : "not_configured",
@@ -539,8 +524,7 @@ function buildModelProviderStatus(config: TelclaudeConfig, env: NodeJS.ProcessEn
 }
 
 function buildPrivateFilesystem(env: NodeJS.ProcessEnv, cwd: string): PersonaFilesystemStatus {
-	const workspace =
-		env.TELCLAUDE_AGENT_WORKDIR ?? (env.WORKSPACE_PATH ? DEFAULT_PRIVATE_AGENT_WORKDIR : cwd);
+	const workspace = env.TELCLAUDE_WORKDIR ?? (env.WORKSPACE_PATH ? DEFAULT_PRIVATE_WORKDIR : cwd);
 	const mounts = [
 		`workspace:${workspace}:rw`,
 		env.TELCLAUDE_MEDIA_INBOX_DIR ? "media-inbox:configured" : "media-inbox:default/unknown",
@@ -554,7 +538,7 @@ function buildPrivateFilesystem(env: NodeJS.ProcessEnv, cwd: string): PersonaFil
 }
 
 function buildSocialFilesystem(env: NodeJS.ProcessEnv): PersonaFilesystemStatus {
-	const sandbox = env.TELCLAUDE_SOCIAL_AGENT_WORKDIR ?? DEFAULT_SOCIAL_AGENT_WORKDIR;
+	const sandbox = env.TELCLAUDE_SOCIAL_SANDBOX_DIR ?? DEFAULT_SOCIAL_SANDBOX_DIR;
 	return {
 		workspace: "not_mounted",
 		summary: "no workspace mount; isolated social sandbox only",
@@ -569,15 +553,15 @@ function buildSocialFilesystem(env: NodeJS.ProcessEnv): PersonaFilesystemStatus 
 
 function socialServicesStatus(config: TelclaudeConfig, env: NodeJS.ProcessEnv) {
 	return config.socialServices.map((service) => {
-		const agent = resolveSocialAgentForService(service, env);
+		const runtime = resolveSocialRuntimeForService(service, env);
 		const skillPolicy = socialServiceSkillPolicy(service);
 		return {
 			id: service.id,
 			type: service.type,
 			enabled: service.enabled,
 			heartbeatEnabled: service.heartbeatEnabled,
-			agentConfigured: agent.configured,
-			agentSource: agent.source,
+			runtimeConfigured: runtime.configured,
+			runtimeSource: runtime.source,
 			enableSkills: service.enableSkills,
 			allowedSkills: skillPolicy.allowed,
 			skillFailClosed: skillPolicy.failClosed,
@@ -603,40 +587,43 @@ function countIssues(statuses: PersonaStatus[]): number {
 }
 
 function summarizePrivate(status: {
-	agent: PersonaAgentStatus;
+	runtime: PersonaRuntimeStatus;
 	plugins: PersonaPluginStatus;
 }): string {
-	if (status.agent.reachability === "unreachable") return "private agent unreachable";
+	if (status.runtime.reachability === "not_configured")
+		return "private Hermes runtime not configured";
 	if (status.plugins.error) return "private plugin metadata has errors";
 	return "private persona metadata healthy";
 }
 
 function summarizeSocial(status: {
 	profile: PersonaProfileStatus;
-	agent: PersonaAgentStatus;
+	runtime: PersonaRuntimeStatus;
 	skills: PersonaSkillStatus;
 	plugins: PersonaPluginStatus;
 }): string {
 	if (!status.profile.configured) return "social profile is not configured; fail-closed";
-	if (status.agent.reachability === "unreachable") return "social agent unreachable";
+	if (status.runtime.reachability === "not_configured")
+		return "social Hermes runtime not configured";
 	if (status.skills.failClosed) return "social skills are fail-closed";
 	if (status.plugins.error) return "social plugin metadata has errors";
 	return "social persona metadata healthy";
 }
 
-function privateHealth(agent: PersonaAgentStatus, plugins: PersonaPluginStatus): PersonaHealth {
-	if (agent.reachability === "unreachable" || plugins.error) return "degraded";
+function privateHealth(runtime: PersonaRuntimeStatus, plugins: PersonaPluginStatus): PersonaHealth {
+	if (runtime.reachability === "not_configured" || plugins.error) return "degraded";
 	return "ok";
 }
 
 function socialHealth(
 	profile: PersonaProfileStatus,
-	agent: PersonaAgentStatus,
+	runtime: PersonaRuntimeStatus,
 	skills: PersonaSkillStatus,
 	plugins: PersonaPluginStatus,
 ): PersonaHealth {
 	if (!profile.configured) return "not_configured";
-	if (agent.reachability === "unreachable" || skills.failClosed || plugins.error) return "degraded";
+	if (runtime.reachability === "not_configured" || skills.failClosed || plugins.error)
+		return "degraded";
 	return "ok";
 }
 
@@ -650,23 +637,14 @@ export function buildPersonaStatusSnapshot(input: PersonaStatusBuildInput): Pers
 	const privateProfile = resolvePrivateClaudeHome(env);
 	const socialProfile = resolveSocialClaudeHome(env);
 
-	const privateAgentResolution = resolvePrivateAgent(env);
-	const socialAgentResolution = resolveSocialAgent(config, env);
-	const privateAgent =
-		input.agentReachability?.private ?? defaultAgentStatus(privateAgentResolution, config);
-	const socialAgent =
-		input.agentReachability?.social ?? defaultAgentStatus(socialAgentResolution, config);
+	const privateRuntimeResolution = resolveHermesRuntime(env);
+	const socialRuntimeResolution = resolveSocialRuntime(config, env);
+	const privateRuntime =
+		input.runtimeReachability?.private ?? defaultRuntimeStatus(privateRuntimeResolution, config);
+	const socialRuntime =
+		input.runtimeReachability?.social ?? defaultRuntimeStatus(socialRuntimeResolution, config);
 	const privatePlugins = input.privatePlugins ?? collectPluginsForPersona("private", env, config);
-	const socialPlugins =
-		input.socialPlugins ??
-		(socialProfile.configured
-			? collectPluginsForPersona("social", env, config)
-			: {
-					configured: false,
-					enabled: [],
-					installed: [],
-					error: "TELCLAUDE_SOCIAL_CLAUDE_HOME is not configured",
-				});
+	const socialPlugins = input.socialPlugins ?? hermesSocialPluginStatus();
 	const privateSkills = buildPrivateSkills(activeSkillNames);
 	const socialSkills = buildSocialSkills(config, activeSkillNames, socialProfile.configured);
 
@@ -677,23 +655,23 @@ export function buildPersonaStatusSnapshot(input: PersonaStatusBuildInput): Pers
 	const socialHeartbeat = latestCronJob(cronJobs, (job) => job.action.kind === "social-heartbeat");
 	const privateStatusBase = {
 		profile: privateProfile,
-		agent: privateAgent,
+		runtime: privateRuntime,
 		plugins: privatePlugins,
 	};
 	const socialStatusBase = {
 		profile: socialProfile,
-		agent: socialAgent,
+		runtime: socialRuntime,
 		skills: socialSkills,
 		plugins: socialPlugins,
 	};
 
 	const privateStatus: PersonaStatus = {
 		persona: "private",
-		health: privateHealth(privateAgent, privatePlugins),
+		health: privateHealth(privateRuntime, privatePlugins),
 		summary: summarizePrivate(privateStatusBase),
 		profile: privateProfile,
-		agent: privateAgent,
-		modelProvider: buildModelProviderStatus(config, env),
+		runtime: privateRuntime,
+		modelProvider: buildModelProviderStatus(env),
 		skills: privateSkills,
 		plugins: privatePlugins,
 		memory: {
@@ -722,11 +700,11 @@ export function buildPersonaStatusSnapshot(input: PersonaStatusBuildInput): Pers
 	const socialFilesystem = buildSocialFilesystem(env);
 	const socialStatus: PersonaStatus = {
 		persona: "social",
-		health: socialHealth(socialProfile, socialAgent, socialSkills, socialPlugins),
+		health: socialHealth(socialProfile, socialRuntime, socialSkills, socialPlugins),
 		summary: summarizeSocial(socialStatusBase),
 		profile: socialProfile,
-		agent: socialAgent,
-		modelProvider: buildModelProviderStatus(config, env),
+		runtime: socialRuntime,
+		modelProvider: buildModelProviderStatus(env),
 		skills: socialSkills,
 		plugins: socialPlugins,
 		memory: {
@@ -768,17 +746,17 @@ export async function collectPersonaStatus(
 	const env = options.env ?? process.env;
 	const cwd = options.cwd ?? process.cwd();
 	const nowMs = options.nowMs ?? Date.now();
-	const privateAgentResolution = resolvePrivateAgent(env);
-	const socialAgentResolution = resolveSocialAgent(config, env);
-	let agentReachability: Partial<Record<PersonaKind, PersonaAgentStatus>> | undefined;
+	const privateRuntimeResolution = resolveHermesRuntime(env);
+	const socialRuntimeResolution = resolveSocialRuntime(config, env);
+	let runtimeReachability: Partial<Record<PersonaKind, PersonaRuntimeStatus>> | undefined;
 
-	if (options.probeAgents !== false) {
+	if (options.probeRuntime !== false) {
 		const timeoutMs = options.probeTimeoutMs ?? 1500;
-		const [privateAgent, socialAgent] = await Promise.all([
-			probeAgent(privateAgentResolution, nowMs, timeoutMs, config),
-			probeAgent(socialAgentResolution, nowMs, timeoutMs, config),
+		const [privateRuntime, socialRuntime] = await Promise.all([
+			probeRuntime(privateRuntimeResolution, nowMs, timeoutMs, config),
+			probeRuntime(socialRuntimeResolution, nowMs, timeoutMs, config),
 		]);
-		agentReachability = { private: privateAgent, social: socialAgent };
+		runtimeReachability = { private: privateRuntime, social: socialRuntime };
 	}
 
 	let cronJobs: CronJob[] = [];
@@ -796,7 +774,7 @@ export async function collectPersonaStatus(
 		activeSkillNames: listActiveSkillNames(cwd),
 		cronJobs,
 		latestSocialActivityAtMs: collectLatestSocialActivityAtMs(),
-		agentReachability,
+		runtimeReachability,
 	});
 }
 
@@ -807,10 +785,10 @@ function formatList(values: string[], emptyLabel: string, limit = 8): string {
 	return remaining > 0 ? `${shown}, +${remaining} more` : shown;
 }
 
-function formatAgent(agent: PersonaAgentStatus): string {
-	const suffix = agent.error ? `; error=${agent.error}` : "";
-	const endpoint = agent.endpoint ? `; endpoint=${agent.endpoint}` : "";
-	return `${agent.reachability} via ${agent.source}${endpoint}${suffix}`;
+function formatRuntime(runtime: PersonaRuntimeStatus): string {
+	const suffix = runtime.error ? `; error=${runtime.error}` : "";
+	const endpoint = runtime.endpoint ? `; endpoint=${runtime.endpoint}` : "";
+	return `${runtime.reachability} via ${runtime.source}${endpoint}${suffix}`;
 }
 
 function formatProfile(profile: PersonaProfileStatus): string {
@@ -831,9 +809,9 @@ function formatPersona(status: PersonaStatus): string[] {
 	const lines = [
 		`${status.persona}: ${status.health} (${status.summary})`,
 		`${indent}Claude home: ${formatProfile(status.profile)}`,
-		`${indent}Agent: ${formatAgent(status.agent)}`,
-		`${indent}Model/provider: model=${status.modelProvider.claudeSdkModel}; betas=${
-			status.modelProvider.sdkBetas.length ? status.modelProvider.sdkBetas.join(",") : "none"
+		`${indent}Runtime: ${formatRuntime(status.runtime)}`,
+		`${indent}Model/provider: model=${status.modelProvider.hermesModel}; provider=${
+			status.modelProvider.inferenceProvider
 		}; anthropicProxy=${status.modelProvider.anthropicProxy}; credentialProxy=${
 			status.modelProvider.credentialProxy
 		}`,
@@ -869,8 +847,8 @@ function formatPersona(status: PersonaStatus): string[] {
 						: service.enableSkills
 							? `skills=${service.allowedSkills.length}`
 							: "skills=disabled";
-					return `${service.id}:${service.enabled ? "enabled" : "disabled"}:${skillState}:agent=${
-						service.agentConfigured ? service.agentSource : "not configured"
+					return `${service.id}:${service.enabled ? "enabled" : "disabled"}:${skillState}:runtime=${
+						service.runtimeConfigured ? service.runtimeSource : "not configured"
 					}`;
 				})
 				.join("; ")}`,

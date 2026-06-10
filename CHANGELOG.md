@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Docker Claude binary path (TC-OC-06)** — `buildSdkOptions` now passes `pathToClaudeCodeExecutable=/usr/local/bin/claude` in Docker mode so the SDK uses the installed CLI instead of the bundled `@anthropic-ai/claude-agent-sdk-linux-x64-musl` optional dep, which is not executable in the Debian-based image. Resolves "Claude Code native binary not found" `ReferenceError` on private heartbeats and pooled queries. Override via `TELCLAUDE_CLAUDE_CODE_EXECUTABLE`; native sandbox mode is unaffected.
+- **Docker Claude binary path (TC-OC-06)** — resolved a pre-Hermes Docker runtime issue where Claude Code launched the wrong bundled binary instead of `/usr/local/bin/claude`, producing "Claude Code native binary not found" errors on private heartbeats and pooled queries.
 - **Stale Anthropic firewall entries** — Dropped `code.anthropic.com`, `www.code.anthropic.com`, and `console.code.anthropic.com` from `ANTHROPIC_DOMAINS` and `FIREWALL_WILDCARD_EXPANSIONS`. The hosts never resolved and produced "could not resolve" warnings on every firewall-refresh; Claude Code traffic uses `claude.ai`/`console.claude.ai`, which remain allowlisted.
 - **gifgrep build input** — Pinned the Docker build copy for the gifgrep skill assets.
 
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Signed cron webhooks** — Loopback-only Fastify receiver with Stripe-style HMAC (`x-telclaude-webhook-signature: t=<unix>,v1=<hex>`), replay guard via `webhook_deliveries` `(slug, signature_digest)` atomic INSERT OR IGNORE, ingress + per-webhook + global rate limits, `trustedProxies`, CIDR allowlist, body never JSON-parsed (raw buffer + SHA-256 audit).
 - **Cron preprocess + `[IDLE]`/`[SILENT]` suppression** — Subprocess sandbox with command allowlist, env-scrubbed, cwd-confined, output cap, timeout.
 - **Skill invocation telemetry** — Metadata-only `skill_invocations` table (no raw args/outputs), fire-and-forget recording from `createSkillAllowlistHook` post-decision, auth-scope-authoritative source field, 365-day TTL prune.
-- **Model fallback (TC-OC-05)** — Four-state `ModelRoute` (`default | override | profile | fallback`), executable vs catalog-only providers, two-layer SDK guards (`isExecutableModelId` at agent server, `assertExecutableModelId` at `buildSdkOptions`), `/system` surfaces `model_fallback_active`, `/model reset` clears stale chat prefs.
+- **Model fallback (TC-OC-05)** — Four-state `ModelRoute` (`default | override | profile | fallback`), executable vs catalog-only providers, two-layer model guards, `/system` surfaces `model_fallback_active`, `/model reset` clears stale chat prefs.
 - **Maintenance hygiene** — Shared `src/maintenance/log-rotation.ts` with exact-timestamp regex (preserves manual backups), audit log rotation (10 MiB / 5 retain), `webhook_deliveries` 24h TTL, `webhook_hits` 30d TTL, `skill_invocations` 365d TTL, stale lock dirs / `.SKILL.md.*.tmp/.bak` / `.telclaude-rename-*` / `os.tmpdir/telclaude-skill-manage-*` cleanup on startup + 60s timer.
 - **Provider scaffold + `/skills sign`** — `telclaude providers init <id>` generates inert sidecar boilerplate (`src/<id>-services/` + `docker/Dockerfile.<id>`). `/skills sign` Telegram bridge routes through vault-backed `signSkillByName`.
 - **Operator playbook + router profile + workflow presets** — `docs/operator-playbook.md` four-level maturity ladder; `assets/profile-templates/router/SOUL.md` reference; `docs/profiles.md` router-profile convention; `daily-brief` / `meeting-prep` / `weekly-business-report` / `humanizer` skill pairs (`.claude/` + `.agents/`).
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Memory source field** — Private telegram source becomes `telegram:<profile-id>`. Bare `telegram` migrates once to `telegram:default` and is rejected on new writes; legacy reads still tolerated via `isTelegramMemorySource`.
 - **Three-layer write isolation** for memory RPC — HTTP scope + `hasExplicitTelegramSourceClaim` rejection + RPC-layer `isTelegramMemorySource` guard.
-- **SDK chat-scoped exec-policy** — `createGraduatedApprovalHook` passes `chatId` + `isAdmin` into approval-policy resolver on both initial and follow-up decisions.
+- **Chat-scoped exec policy** — approval policy resolution includes `chatId` + `isAdmin` on both initial and follow-up decisions.
 
 ### Security
 
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Docker Go version pin** — Bumped `GO_VERSION` from 1.23.6 to 1.25.4 so `gifgrep@latest` (v0.3.0, requires Go ≥ 1.25.0) installs cleanly in `telclaude-agent` image build.
+- **Docker Go version pin** — Bumped `GO_VERSION` from 1.23.6 to 1.25.4 so `gifgrep@latest` (v0.3.0, requires Go >= 1.25.0) installs cleanly in image builds.
 
 ## [0.6.3] - 2026-04-23
 
@@ -278,8 +278,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Security architecture**: Single isolation boundary by mode (SDK sandbox in native mode; Docker container + firewall in Docker mode)
-  - SDK sandbox provides OS-level isolation for Bash in native mode and blocks RFC1918/metadata endpoints
+- **Security architecture**: Single isolation boundary by mode (native relay process or Docker container + firewall in Docker mode)
+  - Local isolation blocks RFC1918/metadata endpoints
   - WebFetch/WebSearch are filtered by PreToolUse hooks + `canUseTool` allowlists
 - Docker firewall (`init-firewall.sh`) now matches the allowlist (added OpenAI, more package registries, documentation sites)
 - Docker firewall explicitly blocks metadata endpoints and RFC1918 before allowing whitelisted domains
@@ -287,11 +287,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fixed SDK hang when using custom env with sandbox enabled (don't pass custom env in sandbox mode)
+- Fixed runtime hang when using a custom environment with isolation enabled.
 - Fixed command injection vulnerability in git-proxy-init (use execFileSync with argument arrays)
 - Fixed SSRF vulnerability in git-proxy (added host allowlist, only github.com allowed)
 - Fixed TOCTOU race condition in quickstart config file creation (atomic write pattern)
-- Image generation now works correctly through Claude's Bash tool (SDK sandbox properly configured with OpenAI domain)
+- Image generation now works correctly through Claude's Bash tool with the OpenAI domain allowlisted.
 - WebFetch/WebSearch network isolation now enforced via hooks/allowlists in all modes
 
 ## [0.3.0] - 2025-12-17

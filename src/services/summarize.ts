@@ -1,6 +1,6 @@
 /**
  * URL content extraction service using @steipete/summarize-core.
- * Dual-mode: relay direct via createLinkPreviewClient() or agent→relay proxy.
+ * Dual-mode: relay direct via createLinkPreviewClient() or runtime-to-relay proxy.
  */
 
 import type { SummarizeConfig } from "../config/config.js";
@@ -135,7 +135,7 @@ export async function summarizeUrl(
 	url: string,
 	options?: SummarizeOptions,
 ): Promise<SummarizeResult> {
-	// Route through relay when running on agent container
+	// Route through relay when running inside contained runtime compute.
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 		logger.debug({ url: url.slice(0, 80) }, "routing summarize through relay");
 		return relaySummarize({

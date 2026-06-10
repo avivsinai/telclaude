@@ -4,12 +4,13 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const allowlistPath = path.join(repoRoot, "docker/hermes-contained-skills.allowlist");
+const socialAllowlistPath = path.join(repoRoot, "docker/hermes-social-skills.allowlist");
 const entrypointPath = path.join(repoRoot, "docker/hermes-contained-entrypoint.sh");
 const composePath = path.join(repoRoot, "docker/docker-compose.hermes.yml");
 
 describe("Hermes contained profile provisioning", () => {
 	it("uses a deterministic curated skill allowlist", () => {
-		const entries = readAllowlist();
+		const entries = readAllowlist(allowlistPath);
 		const uniqueEntries = new Set(entries);
 
 		expect(entries.length).toBeGreaterThan(50);
@@ -20,6 +21,25 @@ describe("Hermes contained profile provisioning", () => {
 		}
 		expect(entries).not.toContain("mlops/evaluation/lm-evaluation-harness");
 		expect(entries).not.toContain("red-teaming/godmode");
+	});
+
+	it("uses a narrower deterministic social skill allowlist", () => {
+		const privateEntries = readAllowlist(allowlistPath);
+		const socialEntries = readAllowlist(socialAllowlistPath);
+		const uniqueEntries = new Set(socialEntries);
+
+		expect(socialEntries.length).toBeGreaterThan(10);
+		expect(socialEntries.length).toBeLessThan(privateEntries.length);
+		expect(uniqueEntries.size).toBe(socialEntries.length);
+		expect(socialEntries).toContain("social-media/xurl");
+		expect(socialEntries).toContain("creative/humanizer");
+		expect(socialEntries).not.toContain("github/github-auth");
+		expect(socialEntries).not.toContain("productivity/google-workspace");
+		expect(socialEntries).not.toContain("software-development/plan");
+		for (const entry of socialEntries) {
+			expect(entry).not.toMatch(/^\/|(^|\/)\.\.($|\/)|\/\//);
+			expect(entry).not.toMatch(/\s/);
+		}
 	});
 
 	it("resets HERMES_HOME skills and points Hermes bundled sync at the curated tree", () => {
@@ -92,6 +112,9 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain(
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 		);
+		expect(compose).toContain(
+			"./hermes-social-skills.allowlist:/tmp/telclaude-hermes-social-skills.allowlist:ro",
+		);
 		expect(compose).toContain("..:/opt/data/telclaude-runner:ro");
 		expect(compose).toContain('user: "10000:10000"');
 		expect(compose).toContain("cap_drop:");
@@ -100,12 +123,14 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toMatch(
 			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-192\.0\.2\.10\}/,
 		);
+		expect(compose).toContain("TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-private");
+		expect(compose).toContain("telclaude-hermes-social");
 	});
 });
 
-function readAllowlist(): string[] {
+function readAllowlist(filePath: string): string[] {
 	return fs
-		.readFileSync(allowlistPath, "utf8")
+		.readFileSync(filePath, "utf8")
 		.split(/\r?\n/)
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0 && !line.startsWith("#"));

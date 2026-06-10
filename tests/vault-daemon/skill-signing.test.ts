@@ -80,9 +80,9 @@ describe("vault sign-skill / verify-skill protocol", () => {
 		expect(
 			SignSkillResponseSchema.safeParse({ type: "sign-skill", signature: "sig" }).success,
 		).toBe(true);
-		expect(
-			VerifySkillResponseSchema.safeParse({ type: "verify-skill", valid: true }).success,
-		).toBe(true);
+		expect(VerifySkillResponseSchema.safeParse({ type: "verify-skill", valid: true }).success).toBe(
+			true,
+		);
 	});
 
 	it("wraps sign-skill / verify-skill in the vault response union", () => {

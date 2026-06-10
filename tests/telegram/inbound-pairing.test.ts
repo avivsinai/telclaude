@@ -92,7 +92,7 @@ vi.mock("../../src/logging.js", () => ({
 }));
 
 vi.mock("../../src/sandbox/mode.js", () => ({
-	shouldEnableSdkSandbox: () => true,
+	getSandboxMode: () => "native",
 }));
 
 import {

@@ -18,7 +18,7 @@ describe("infra/unhandled-rejections categorize", () => {
 	});
 
 	it("classifies config errors from configuration patterns", () => {
-		expect(categorize(new Error("TELCLAUDE_AGENT_URL is not configured"))).toBe("config");
+		expect(categorize(new Error("TELCLAUDE_HERMES_API_BASE_URL is not configured"))).toBe("config");
 		expect(categorize(new Error("missing required env var: TELEGRAM_BOT_TOKEN"))).toBe("config");
 	});
 

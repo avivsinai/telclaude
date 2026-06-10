@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
-import { shutdownTokenClient } from "../../src/agent/token-client.js";
+import { shutdownTokenClient } from "../../src/relay/rpc-auth-client.js";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
 import { generateKeyPair } from "../../src/internal-auth.js";
 
@@ -20,7 +20,7 @@ describe("Hermes rollback rehearsal CLI", () => {
 		const operatorKeys = generateKeyPair();
 		const relay = await startProbeServer((_req, res) => {
 			res.setHeader("Content-Type", "application/json");
-			res.end(JSON.stringify(legacyRuntimeState()));
+			res.end(JSON.stringify(hermesRuntimeState()));
 		});
 
 		shutdownTokenClient();
@@ -110,16 +110,13 @@ async function startProbeServer(
 	};
 }
 
-function legacyRuntimeState() {
+function hermesRuntimeState() {
 	return {
 		ok: true,
-		effectiveMode: "legacy",
-		effectiveValue: "0",
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
-		controlMode: "legacy",
-		controlSource: "runtime-config",
-		fallbackPath: "telclaude.private-runtime.legacy",
+		effectiveMode: "hermes",
+		effectiveValue: "1",
+		controlMode: "hermes",
+		controlSource: "hermes-only",
 	};
 }
 

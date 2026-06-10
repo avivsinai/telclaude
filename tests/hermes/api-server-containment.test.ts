@@ -434,7 +434,7 @@ function passingNetworkObservation(): NonNullable<
 		directModelProviderDenied: true,
 		dnsPrivateDenied: true,
 		authoritativeBoundary: "docker_internal_network",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		tamper: {
 			runtimeUid: "10000",
 			runtimeUser: "hermes",

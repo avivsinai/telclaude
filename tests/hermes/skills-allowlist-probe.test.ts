@@ -131,9 +131,9 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 			properties: { ...ev.properties, runtime_skills_match_allowlist: false },
 		});
 		expect(report.status).toBe("fail");
-		expect(report.gates.find((g) => g.name === "skills.runtime_skills_match_allowlist")?.status).toBe(
-			"fail",
-		);
+		expect(
+			report.gates.find((g) => g.name === "skills.runtime_skills_match_allowlist")?.status,
+		).toBe("fail");
 	});
 
 	it("fails when runtime skill creation nudges are not proven disabled", () => {
@@ -181,9 +181,8 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 		});
 		expect(fallbackOnly.status).toBe("fail");
 		expect(
-			fallbackOnly.gates.find(
-				(g) => g.name === "skills.nonallowlisted_skill_invocation_denied",
-			)?.detail,
+			fallbackOnly.gates.find((g) => g.name === "skills.nonallowlisted_skill_invocation_denied")
+				?.detail,
 		).toContain("PreToolUse");
 	});
 

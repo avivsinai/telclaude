@@ -34,7 +34,7 @@ describe("XTwitterClient.fetchNotifications", () => {
 
 		await expect(client.fetchNotifications()).rejects.toMatchObject({
 			message: expect.stringContaining(
-				"X mentions failed (502): [{\"message\":\"Bad gateway: upstream request failed\"",
+				'X mentions failed (502): [{"message":"Bad gateway: upstream request failed"',
 			),
 			status: 502,
 			statusCode: 502,

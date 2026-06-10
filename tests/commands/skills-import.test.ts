@@ -105,14 +105,9 @@ describe("skills import-openclaw", () => {
 		writeOpenClawSkill(
 			sourceRoot,
 			"hello-skill",
-			[
-				"---",
-				"name: hello-skill",
-				"description: clean import",
-				"---",
-				"",
-				"Skill body.",
-			].join("\n"),
+			["---", "name: hello-skill", "description: clean import", "---", "", "Skill body."].join(
+				"\n",
+			),
 		);
 
 		await runSkillsCli(["skills", "import-openclaw", sourceRoot]);

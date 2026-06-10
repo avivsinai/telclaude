@@ -1,7 +1,7 @@
 /**
  * Circuit breaker pattern for observer timeouts.
  *
- * Prevents cascading failures when the observer (Claude SDK) is slow or failing.
+ * Prevents cascading failures when the Hermes-backed observer is slow or failing.
  * States:
  * - CLOSED: Normal operation, requests pass through
  * - OPEN: Failures exceeded threshold, requests fail fast

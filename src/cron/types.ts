@@ -27,8 +27,8 @@ export type CronAction =
 			kind: "agent-prompt";
 			prompt: string;
 			/**
-			 * Explicit SDK skill allowlist for scheduled prompts.
-			 * Undefined preserves legacy private-agent behavior. [] denies all skills.
+			 * Explicit Hermes skill allowlist for scheduled prompts.
+			 * Undefined uses the active profile policy. [] denies all skills.
 			 */
 			allowedSkills?: string[];
 			preprocess?: CronPreprocessCommand;

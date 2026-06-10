@@ -194,12 +194,7 @@ const config = {
 
 		describe("Dangerous patterns (immediate BLOCK)", () => {
 			it("blocks destructive file operations", () => {
-				const dangerous = [
-					"rm -rf /",
-					"rm -rf ~/",
-					"chmod 777 /etc/passwd",
-					"> /etc/passwd",
-				];
+				const dangerous = ["rm -rf /", "rm -rf ~/", "chmod 777 /etc/passwd", "> /etc/passwd"];
 
 				for (const cmd of dangerous) {
 					const result = fastPathClassify(cmd);

@@ -19,7 +19,11 @@ function createMockTokenManager(overrides?: {
 	return {
 		getAccessToken:
 			overrides?.getAccessToken ??
-			(async () => ({ ok: true as const, token: "mock-access-token", expiresAt: Date.now() + 3600 })),
+			(async () => ({
+				ok: true as const,
+				token: "mock-access-token",
+				expiresAt: Date.now() + 3600,
+			})),
 		getPublicKey: overrides?.getPublicKey ?? (async () => "mock-public-key"),
 	} as TokenManager;
 }

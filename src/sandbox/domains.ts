@@ -133,7 +133,7 @@ export function buildAllowedDomainNames(additionalDomains: string[] = []): strin
 }
 
 /**
- * Default domain patterns for sandbox-runtime config.
+ * Default domain patterns for firewall/network policy config.
  */
 export const DEFAULT_ALLOWED_DOMAIN_NAMES = DEFAULT_ALLOWED_DOMAINS.map((rule) => rule.domain);
 
@@ -148,7 +148,7 @@ export function domainMatchesPattern(domain: string, pattern: string): boolean {
 	const normalizedPattern = pattern.toLowerCase();
 
 	if (normalizedPattern.startsWith("*.")) {
-		// Match subdomains only (align with @anthropic-ai/sandbox-runtime behavior)
+		// Match subdomains only; the wildcard does not include the base domain.
 		const baseDomain = normalizedPattern.slice(2); // "example.com"
 		return normalizedDomain.endsWith(`.${baseDomain}`);
 	}

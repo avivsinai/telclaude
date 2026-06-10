@@ -45,14 +45,14 @@ describe("operator profile resolution", () => {
 		setChatActiveProfileId(123, "engineer", 1_234);
 
 		const resolved = resolveChatProfile(123, {
-			profiles: [{ id: "engineer", label: "Engineer", allowedSkills: ["integration-test"] }],
+			profiles: [{ id: "engineer", label: "Engineer", allowedSkills: ["telegram-reply"] }],
 		} as never);
 
 		expect(resolved.profile).toMatchObject({
 			id: "engineer",
 			label: "Engineer",
 			implicit: false,
-			allowedSkills: ["integration-test"],
+			allowedSkills: ["telegram-reply"],
 		});
 	});
 

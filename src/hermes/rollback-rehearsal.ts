@@ -4,10 +4,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
-import {
-	relayGetHermesPrivateRuntimeState,
-	relaySetHermesPrivateRuntimeMode,
-} from "../relay/capabilities-client.js";
+import { relayGetHermesPrivateRuntimeState } from "../relay/capabilities-client.js";
 import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
@@ -19,10 +16,9 @@ import {
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
-import {
-	HERMES_PRIVATE_RUNTIME_FALLBACK_PATH,
-	type HermesPrivateRuntimeControlMode,
-	type HermesPrivateRuntimeControlSource,
+import type {
+	HermesPrivateRuntimeControlMode,
+	HermesPrivateRuntimeControlSource,
 } from "./private-runtime-control.js";
 
 export const DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH =
@@ -31,12 +27,9 @@ export const DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH =
 export type HermesRollbackRelayState = {
 	readonly ok: true;
 	readonly effectiveMode: HermesPrivateRuntimeControlMode;
-	readonly effectiveValue: "1" | "0";
-	readonly rolloutAllowed: boolean;
-	readonly rolloutEnvValue?: string;
+	readonly effectiveValue: "1";
 	readonly controlMode: HermesPrivateRuntimeControlMode;
 	readonly controlSource: HermesPrivateRuntimeControlSource;
-	readonly fallbackPath: string;
 	readonly relayProof?: HermesRollbackRelayProof;
 };
 
@@ -52,7 +45,6 @@ export type HermesRollbackRelayProof = {
 
 export type HermesRollbackRelayClient = {
 	getStatus(): Promise<HermesRollbackRelayState>;
-	setMode(mode: HermesPrivateRuntimeControlMode): Promise<HermesRollbackRelayState>;
 };
 
 type RollbackCheck = NonNullable<RollbackRehearsal["checks"]>[number];
@@ -96,11 +88,9 @@ export async function runHermesRollbackRehearsal(input: {
 	}
 	const relay = input.relay ?? createHermesRollbackRelayClient();
 	let before: HermesRollbackRelayState | undefined;
-	let afterControl: HermesRollbackRelayState | undefined;
 	let after: HermesRollbackRelayState | undefined;
 	try {
 		before = await relay.getStatus();
-		afterControl = await relay.setMode("legacy");
 		after = await relay.getStatus();
 	} catch (error) {
 		checks.push(
@@ -109,27 +99,11 @@ export async function runHermesRollbackRehearsal(input: {
 				`relay durable control surface failed: ${error instanceof Error ? error.message : String(error)}`,
 			),
 		);
-		return buildEvidence(
-			input.evidencePath,
-			now(),
-			checks,
-			relayPublicKey,
-			before,
-			after,
-			afterControl,
-		);
+		return buildEvidence(input.evidencePath, now(), checks, relayPublicKey, before, after);
 	}
-	if (!before || !afterControl || !after) {
+	if (!before || !after) {
 		checks.push(fail("rollback.controlSurface", "relay control surface returned no state"));
-		return buildEvidence(
-			input.evidencePath,
-			now(),
-			checks,
-			relayPublicKey,
-			before,
-			after,
-			afterControl,
-		);
+		return buildEvidence(input.evidencePath, now(), checks, relayPublicKey, before, after);
 	}
 
 	const relayProofFailures = [
@@ -137,11 +111,6 @@ export async function runHermesRollbackRehearsal(input: {
 			method: "POST",
 			path: "/v1/hermes.private-runtime.status",
 			body: "{}",
-		}),
-		...relayProofEvidenceFailures("afterControl", afterControl, {
-			method: "POST",
-			path: "/v1/hermes.private-runtime.mode",
-			body: JSON.stringify({ mode: "legacy" }),
 		}),
 		...relayProofEvidenceFailures("after", after, {
 			method: "POST",
@@ -163,28 +132,26 @@ export async function runHermesRollbackRehearsal(input: {
 				),
 	);
 	checks.push(
-		after.effectiveValue === "0" && after.effectiveMode === "legacy"
-			? pass("rollback.flagAfter", "relay observed Hermes private runtime disabled after rollback")
+		after.effectiveValue === "1" && after.effectiveMode === "hermes"
+			? pass("rollback.flagAfter", "relay observed Hermes private runtime still enabled")
 			: fail(
 					"rollback.flagAfter",
 					`relay observed ${after.effectiveValue}/${after.effectiveMode} after rollback`,
 				),
 	);
 	checks.push(
-		after.fallbackPath === HERMES_PRIVATE_RUNTIME_FALLBACK_PATH
-			? pass("rollback.fallbackPath", "pre-Hermes fallback path observed")
-			: fail("rollback.fallbackPath", `unexpected fallback path ${after.fallbackPath}`),
-	);
-	checks.push(
-		afterControl.controlMode === "legacy" && afterControl.controlSource === "runtime-config"
-			? pass("rollback.controlSurface", "relay durable runtime config accepted legacy mode")
-			: fail(
+		before.controlMode === "hermes" &&
+			after.controlMode === "hermes" &&
+			before.controlSource === "hermes-only" &&
+			after.controlSource === "hermes-only"
+			? pass(
 					"rollback.controlSurface",
-					`relay control returned ${afterControl.controlMode}/${afterControl.controlSource}`,
-				),
+					"Hermes-only private runtime exposes no mutable mode selector",
+				)
+			: fail("rollback.controlSurface", "private runtime control surface is not Hermes-only"),
 	);
 	checks.push(
-		after.controlSource === "runtime-config"
+		after.controlSource === "hermes-only"
 			? pass(
 					"rollback.observedSources",
 					"rollback observations came from relay effective-mode status",
@@ -192,15 +159,7 @@ export async function runHermesRollbackRehearsal(input: {
 			: fail("rollback.observedSources", `after rollback source was ${after.controlSource}`),
 	);
 
-	return buildEvidence(
-		input.evidencePath,
-		now(),
-		checks,
-		relayPublicKey,
-		before,
-		after,
-		afterControl,
-	);
+	return buildEvidence(input.evidencePath, now(), checks, relayPublicKey, before, after);
 }
 
 export function writeHermesRollbackRehearsalEvidence(
@@ -216,7 +175,6 @@ export function writeHermesRollbackRehearsalEvidence(
 function createHermesRollbackRelayClient(): HermesRollbackRelayClient {
 	return {
 		getStatus: () => relayGetHermesPrivateRuntimeState(),
-		setMode: (mode) => relaySetHermesPrivateRuntimeMode({ mode }),
 	};
 }
 
@@ -227,7 +185,6 @@ function buildEvidence(
 	relayPublicKey?: RollbackRehearsal["relayPublicKey"],
 	before?: HermesRollbackRelayState,
 	after?: HermesRollbackRelayState,
-	afterControl?: HermesRollbackRelayState,
 ): RollbackRehearsal {
 	return {
 		schemaVersion: 1,
@@ -236,19 +193,17 @@ function buildEvidence(
 		allowedToRun: true,
 		observedBeforeValue: before?.effectiveValue,
 		observedAfterValue: after?.effectiveValue,
-		observedFallbackPath: after?.fallbackPath ?? before?.fallbackPath,
 		observedAt,
 		controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
 		observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
 		observedBeforeSource: before ? "relay-effective-mode" : undefined,
 		observedAfterSource: after ? "relay-effective-mode" : undefined,
-		observedAfterControlSource: afterControl?.controlSource,
+		observedAfterControlSource: after?.controlSource,
 		relayPublicKey,
 		signedRelayTranscripts:
-			before?.relayProof && afterControl?.relayProof && after?.relayProof
+			before?.relayProof && after?.relayProof
 				? {
 						before: before.relayProof,
-						afterControl: afterControl.relayProof,
 						after: after.relayProof,
 					}
 				: undefined,
@@ -395,7 +350,7 @@ function rollbackRelayPublicKeySourceArtifactFailure(
 }
 
 function relayProofEvidenceFailures(
-	label: "before" | "afterControl" | "after",
+	label: "before" | "after",
 	state: HermesRollbackRelayState | undefined,
 	expectedRequest: { method: string; path: string; body: string },
 ): string[] {
@@ -445,33 +400,16 @@ function parseRelayStateBody(
 	try {
 		const parsed = JSON.parse(responseBody) as Partial<ReturnType<typeof unsignedRelayState>>;
 		if (parsed.ok !== true) return undefined;
-		if (parsed.effectiveMode !== "hermes" && parsed.effectiveMode !== "legacy") return undefined;
-		if (parsed.effectiveValue !== "1" && parsed.effectiveValue !== "0") return undefined;
-		if (typeof parsed.rolloutAllowed !== "boolean") return undefined;
-		if (parsed.rolloutEnvValue !== undefined && typeof parsed.rolloutEnvValue !== "string") {
-			return undefined;
-		}
-		if (parsed.controlMode !== "hermes" && parsed.controlMode !== "legacy") return undefined;
-		if (
-			parsed.controlSource !== "env-disabled" &&
-			parsed.controlSource !== "runtime-config" &&
-			parsed.controlSource !== "runtime-config-default" &&
-			parsed.controlSource !== "runtime-config-invalid"
-		) {
-			return undefined;
-		}
-		if (typeof parsed.fallbackPath !== "string" || parsed.fallbackPath.length === 0) {
-			return undefined;
-		}
+		if (parsed.effectiveMode !== "hermes") return undefined;
+		if (parsed.effectiveValue !== "1") return undefined;
+		if (parsed.controlMode !== "hermes") return undefined;
+		if (parsed.controlSource !== "hermes-only") return undefined;
 		return {
 			ok: true,
 			effectiveMode: parsed.effectiveMode,
 			effectiveValue: parsed.effectiveValue,
-			rolloutAllowed: parsed.rolloutAllowed,
-			rolloutEnvValue: parsed.rolloutEnvValue,
 			controlMode: parsed.controlMode,
 			controlSource: parsed.controlSource,
-			fallbackPath: parsed.fallbackPath,
 		};
 	} catch {
 		return undefined;
@@ -483,11 +421,8 @@ function unsignedRelayState(state: HermesRollbackRelayState) {
 		ok: state.ok,
 		effectiveMode: state.effectiveMode,
 		effectiveValue: state.effectiveValue,
-		rolloutAllowed: state.rolloutAllowed,
-		rolloutEnvValue: state.rolloutEnvValue,
 		controlMode: state.controlMode,
 		controlSource: state.controlSource,
-		fallbackPath: state.fallbackPath,
 	};
 }
 

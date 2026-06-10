@@ -159,9 +159,7 @@ describe("skills-doctor", () => {
 			draftRoots: [draftRoot],
 		});
 		expect(report.duplicates).toContain("shared-name");
-		const draftEntry = report.entries.find(
-			(e) => e.name === "shared-name" && e.kind === "draft",
-		);
+		const draftEntry = report.entries.find((e) => e.name === "shared-name" && e.kind === "draft");
 		expect(draftEntry?.issues.join(" ")).toMatch(/Duplicate/);
 	});
 

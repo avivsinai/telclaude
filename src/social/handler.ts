@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
-import { executeRemoteQuery } from "../agent/client.js";
 import type { SocialServiceConfig } from "../config/config.js";
+import { executeHermesQuery } from "../hermes/private-execute.js";
 import { isTransientNetworkError } from "../infra/network-errors.js";
 import { retryAsync } from "../infra/retry.js";
 import { TimeoutError, withTimeout } from "../infra/timeout.js";
@@ -8,7 +8,7 @@ import { getChildLogger } from "../logging.js";
 import { isTelegramMemorySource } from "../memory/source.js";
 import { createEntries, getEntries, markEntryPosted } from "../memory/store.js";
 import type { MemoryEntry, MemorySource, TrustLevel } from "../memory/types.js";
-import type { QueryResult, StreamChunk } from "../sdk/client.js";
+import type { QueryResult, StreamChunk } from "../runtime/stream.js";
 import { sanitizeInlineContent, wrapExternalContent } from "../security/external-content.js";
 import { filterOutput } from "../security/output-filter.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
@@ -126,34 +126,20 @@ function getDefaultTimeoutMs(serviceId: string): number {
 	return Number(process.env[envKey] ?? 120_000);
 }
 
-function resolveAgentUrl(serviceId: string, serviceConfig?: SocialServiceConfig): string {
-	// Per-service URL takes priority (config)
-	if (serviceConfig?.agentUrl) {
-		return serviceConfig.agentUrl;
-	}
-	// Per-service env var: TELCLAUDE_{SERVICE}_AGENT_URL
-	const serviceEnvKey = `TELCLAUDE_${serviceId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_AGENT_URL`;
-	const serviceUrl = process.env[serviceEnvKey];
-	if (serviceUrl) {
-		return serviceUrl;
-	}
-	// Shared social agent: TELCLAUDE_SOCIAL_AGENT_URL
-	if (process.env.TELCLAUDE_SOCIAL_AGENT_URL) {
-		return process.env.TELCLAUDE_SOCIAL_AGENT_URL;
-	}
-	// Fallback: generic agent URL
-	const agentUrl = process.env.TELCLAUDE_AGENT_URL;
-	if (!agentUrl) {
-		throw new Error(
-			`${serviceEnvKey}, TELCLAUDE_SOCIAL_AGENT_URL, or TELCLAUDE_AGENT_URL is not configured`,
-		);
-	}
-	return agentUrl;
+function resolveHermesSocialWorkdir(_serviceId: string): string {
+	return "/social/sandbox";
 }
 
-function resolveAgentWorkdir(serviceId: string): string {
-	const envKey = `TELCLAUDE_${serviceId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_AGENT_WORKDIR`;
-	return process.env[envKey] ?? process.env.TELCLAUDE_AGENT_WORKDIR ?? "/social/sandbox";
+function buildSocialMcpAuthority(serviceId: string) {
+	return {
+		domain: "social" as const,
+		memorySource: SOCIAL_MEMORY_SOURCE,
+		writableNamespace: SOCIAL_MEMORY_SOURCE,
+		providerScopes: [],
+		outboundChannels: [serviceId],
+		endpointId: `telclaude-social-${serviceId}`,
+		networkNamespace: "telclaude-social",
+	};
 }
 
 /**
@@ -362,35 +348,33 @@ async function collectResponseText(
 async function runSocialQuery(
 	bundle: SocialPromptBundle,
 	serviceId: string,
-	agentUrl: string,
 	options?: {
 		poolKey?: string;
 		userId?: string;
 		enableSkills?: boolean;
 		allowedSkills?: string[];
-		agentSkillsAllowed?: string[];
 		timeoutMs?: number;
 	},
 ): Promise<string> {
 	const defaultPoolKey = `${serviceId}:social`;
 	const defaultUserId = `social:${serviceId}`;
 	const timeoutMs = options?.timeoutMs ?? getDefaultTimeoutMs(serviceId);
+	const poolKey = options?.poolKey ?? defaultPoolKey;
 
-	const stream = executeRemoteQuery(bundle.prompt, {
-		agentUrl,
-		scope: "social",
-		cwd: resolveAgentWorkdir(serviceId),
+	const stream = executeHermesQuery(bundle.prompt, {
+		cwd: resolveHermesSocialWorkdir(serviceId),
 		tier: "SOCIAL",
-		poolKey: options?.poolKey ?? defaultPoolKey,
+		poolKey,
+		telclaudeSessionId: poolKey,
+		profileId: `social:${serviceId}`,
 		userId: options?.userId ?? defaultUserId,
-		telemetrySource: "social",
-		telemetryServiceId: serviceId,
 		// SECURITY: disable skills by default for untrusted social inputs
 		enableSkills: options?.enableSkills ?? false,
 		allowedSkills: options?.allowedSkills,
-		agentSkillsAllowed: options?.agentSkillsAllowed,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs,
+		runtimeDomain: "social",
+		mcpAuthority: buildSocialMcpAuthority(serviceId),
 	});
 
 	const result = await collectResponseText(stream);
@@ -426,10 +410,8 @@ async function postReplyWithRetry(
 async function runProactiveQuery(
 	bundle: SocialPromptBundle,
 	serviceId: string,
-	agentUrl: string,
 	options?: {
 		allowedSkills?: string[];
-		agentSkillsAllowed?: string[];
 	},
 ): Promise<{ text: string; structuredOutput?: unknown }> {
 	const proactivePoolKey = `${serviceId}:proactive`;
@@ -437,21 +419,20 @@ async function runProactiveQuery(
 	// Skills + cold-start need more than default 120s — match operator query timeout
 	const timeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 300_000);
 
-	const stream = executeRemoteQuery(bundle.prompt, {
-		agentUrl,
-		scope: "social",
-		cwd: resolveAgentWorkdir(serviceId),
+	const stream = executeHermesQuery(bundle.prompt, {
+		cwd: resolveHermesSocialWorkdir(serviceId),
 		tier: "SOCIAL",
 		poolKey: proactivePoolKey,
+		telclaudeSessionId: proactivePoolKey,
+		profileId: `social:${serviceId}`,
 		userId: proactiveUserId,
-		telemetrySource: "social",
-		telemetryServiceId: serviceId,
 		// Proactive posts are user-promoted (trusted) — enable skills for research
 		enableSkills: true,
 		allowedSkills: options?.allowedSkills,
-		agentSkillsAllowed: options?.agentSkillsAllowed,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs,
+		runtimeDomain: "social",
+		mcpAuthority: buildSocialMcpAuthority(serviceId),
 	});
 
 	const result = await collectResponseText(stream);
@@ -493,14 +474,6 @@ async function runHeartbeatPhases(
 ): Promise<SocialHandlerResult> {
 	logger.info({ serviceId }, "social heartbeat received");
 
-	let agentUrl: string;
-	try {
-		agentUrl = resolveAgentUrl(serviceId, serviceConfig);
-	} catch (err) {
-		logger.error({ error: String(err), serviceId }, "social agent url not configured");
-		return { ok: false, message: `${serviceId} agent url not configured` };
-	}
-
 	// Phase 1: Handle notifications
 	let notifications: SocialNotification[] = [];
 	let notificationsFailed = 0;
@@ -534,7 +507,7 @@ async function runHeartbeatPhases(
 	let notificationsProcessed = 0;
 	for (const notification of notifications) {
 		try {
-			await handleSocialNotification(notification, serviceId, client, agentUrl);
+			await handleSocialNotification(notification, serviceId, client);
 			notificationsProcessed++;
 		} catch (err) {
 			notificationsFailed++;
@@ -555,10 +528,8 @@ async function runHeartbeatPhases(
 		proactiveResult = await handleProactivePosting(
 			serviceId,
 			client,
-			agentUrl,
 			timeline,
 			serviceConfig?.allowedSkills,
-			serviceConfig?.agentSkillsAllowed,
 		);
 	} catch (err) {
 		proactiveError = String(err);
@@ -574,13 +545,7 @@ async function runHeartbeatPhases(
 	let autonomousResult: { acted: boolean; summary: string } = { acted: false, summary: "" };
 	let autonomousError: string | undefined;
 	try {
-		autonomousResult = await handleAutonomousActivity(
-			serviceId,
-			agentUrl,
-			serviceConfig,
-			client,
-			timeline,
-		);
+		autonomousResult = await handleAutonomousActivity(serviceId, serviceConfig, client, timeline);
 	} catch (err) {
 		const errStr = String(err);
 		// TypeError: terminated is a common crash when the stream
@@ -664,7 +629,6 @@ export async function handleSocialNotification(
 	notification: SocialNotification,
 	serviceId: string,
 	client: SocialServiceClient,
-	agentUrl: string,
 ): Promise<SocialHandlerResult> {
 	const postId = extractPostId(notification);
 	if (!postId) {
@@ -674,7 +638,7 @@ export async function handleSocialNotification(
 
 	const bundle = buildNotificationPrompt(notification, serviceId);
 	const poolKey = `${serviceId}:notification:${notification.id}`;
-	const responseText = await runSocialQuery(bundle, serviceId, agentUrl, { poolKey });
+	const responseText = await runSocialQuery(bundle, serviceId, { poolKey });
 	const trimmed = responseText.trim();
 
 	if (!trimmed) {
@@ -732,8 +696,6 @@ export async function queryPublicPersona(
 	serviceId: string,
 	serviceConfig?: SocialServiceConfig,
 ): Promise<string> {
-	const agentUrl = resolveAgentUrl(serviceId, serviceConfig);
-
 	// Fetch timeline if the backend supports it (currently xtwitter only)
 	let client: SocialServiceClient | null = null;
 	if (serviceId === "xtwitter") {
@@ -770,12 +732,11 @@ export async function queryPublicPersona(
 	// Operator queries are interactive (user waiting) and may use skills/browser.
 	// Use a longer timeout than the default heartbeat timeout.
 	const operatorTimeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 300_000);
-	return runSocialQuery(bundle, serviceId, agentUrl, {
+	return runSocialQuery(bundle, serviceId, {
 		poolKey: `${serviceId}:operator-query`,
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
 		allowedSkills: serviceConfig?.allowedSkills,
-		agentSkillsAllowed: serviceConfig?.agentSkillsAllowed,
 		timeoutMs: operatorTimeoutMs,
 	});
 }
@@ -842,12 +803,6 @@ export async function refineSocialDraftText(params: {
 	}
 
 	const serviceId = params.serviceId ?? draft.metadata?.serviceId ?? "social";
-	let agentUrl: string;
-	try {
-		agentUrl = resolveAgentUrl(serviceId);
-	} catch (err) {
-		return { ok: false, reason: String(err) };
-	}
 
 	const bundle = buildSocialPromptBundle(
 		[
@@ -871,17 +826,20 @@ export async function refineSocialDraftText(params: {
 		serviceId,
 	);
 
-	const stream = executeRemoteQuery(bundle.prompt, {
-		agentUrl,
-		scope: "social",
-		cwd: resolveAgentWorkdir(serviceId),
+	const poolKey = `${serviceId}:draft-refine:${draft.id}`;
+	const stream = executeHermesQuery(bundle.prompt, {
+		cwd: resolveHermesSocialWorkdir(serviceId),
 		tier: "SOCIAL",
-		poolKey: `${serviceId}:draft-refine:${draft.id}`,
+		poolKey,
+		telclaudeSessionId: poolKey,
+		profileId: `social:${serviceId}`,
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
 		allowedSkills: params.allowedSkills,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs: Math.max(getDefaultTimeoutMs(serviceId), 300_000),
+		runtimeDomain: "social",
+		mcpAuthority: buildSocialMcpAuthority(serviceId),
 	});
 	const queryResult = await collectResponseText(stream);
 	if (!queryResult.success) {
@@ -1342,10 +1300,8 @@ async function retireFailedProactiveIdea(params: {
 async function handleProactivePosting(
 	serviceId: string,
 	client: SocialServiceClient,
-	agentUrl: string,
 	timeline?: SocialTimelinePost[],
 	allowedSkills?: string[],
-	agentSkillsAllowed?: string[],
 ): Promise<{ posted: boolean; message: string }> {
 	const rateLimiter = getMultimediaRateLimiter();
 	const proactiveUserId = `social:${serviceId}:proactive`;
@@ -1453,9 +1409,8 @@ async function handleProactivePosting(
 		}
 
 		const bundle = buildProactivePostPrompt(idea, serviceId, timeline);
-		const queryResult = await runProactiveQuery(bundle, serviceId, agentUrl, {
+		const queryResult = await runProactiveQuery(bundle, serviceId, {
 			allowedSkills,
-			agentSkillsAllowed,
 		});
 
 		// Parse structured output from text response (JSON block).
@@ -1703,14 +1658,12 @@ async function handleProactivePosting(
  */
 async function handleAutonomousActivity(
 	serviceId: string,
-	agentUrl: string,
 	serviceConfig?: SocialServiceConfig,
 	client?: SocialServiceClient,
 	prefetchedTimeline?: SocialTimelinePost[],
 ): Promise<{ acted: boolean; summary: string }> {
 	const enableSkills = serviceConfig?.enableSkills ?? false;
 	const allowedSkills = serviceConfig?.allowedSkills;
-	const agentSkillsAllowed = serviceConfig?.agentSkillsAllowed;
 	const timeline = prefetchedTimeline ?? (await fetchTimelineSafe(client, serviceId));
 	const bundle = buildAutonomousPrompt(serviceId, timeline, {
 		supportsQuotePost: Boolean(client?.quotePost),
@@ -1723,12 +1676,11 @@ async function handleAutonomousActivity(
 	// Cold-start + browser tool use needs generous timeout for autonomous activity
 	const timeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 600_000);
 
-	const responseText = await runSocialQuery(bundle, serviceId, agentUrl, {
+	const responseText = await runSocialQuery(bundle, serviceId, {
 		poolKey: autonomousPoolKey,
 		userId: autonomousUserId,
 		enableSkills,
 		allowedSkills,
-		agentSkillsAllowed,
 		timeoutMs,
 	});
 

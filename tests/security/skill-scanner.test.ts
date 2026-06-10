@@ -10,7 +10,7 @@ import { scanSkill } from "../../src/security/skill-scanner.js";
  * Bug #13: the original rule flagged any symlinked skill directory as
  * `symlink-root: critical`. This repo intentionally uses
  * `.claude/skills/<name>` → `.agents/skills/<name>` symlinks so skills
- * can be authored once and surfaced via the SDK-discovered mount point.
+ * can be authored once and surfaced via the runtime-discovered mount point.
  *
  * The relaxed rule:
  *   - A symlink whose realpath stays inside the repo root: no finding.

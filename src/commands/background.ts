@@ -1,16 +1,16 @@
 /**
  * `telclaude background` CLI commands.
  *
- * The `spawn` subcommand is the primary integration surface for agents: an
- * agent running under Bash (WRITE_LOCAL / SOCIAL / FULL_ACCESS) invokes
+ * The `spawn` subcommand is the primary integration surface for runtime work:
+ * code running under Bash (WRITE_LOCAL / SOCIAL / FULL_ACCESS) invokes
  * `telclaude background spawn --title "..." -- <command…>` to register a
  * long-running task. The command persists the job, returns a short id, and
  * exits immediately so the turn is never blocked.
  *
  * Tier gating is belt-and-suspenders: the Bash layer already refuses the call
  * for READ_ONLY users (no Bash access), and here we reject READ_ONLY too in
- * case the CLI is invoked by a non-agent actor. Callers identify their tier
- * via `TELCLAUDE_REQUEST_USER_ID` env (set by the SDK client for Docker mode)
+ * case the CLI is invoked by a non-runtime actor. Callers identify their tier
+ * via `TELCLAUDE_REQUEST_USER_ID` env (set by runtime launch context)
  * or an explicit `--tier` flag.
  */
 

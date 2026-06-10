@@ -8,10 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-	DASHBOARD_SESSION_TTL_MS,
-	DashboardSessionStore,
-} from "../../src/dashboard/sessions.js";
+import { DASHBOARD_SESSION_TTL_MS, DashboardSessionStore } from "../../src/dashboard/sessions.js";
 
 describe("DashboardSessionStore", () => {
 	it("TTL constant is exactly 15 minutes", () => {

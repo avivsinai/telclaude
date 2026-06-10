@@ -120,8 +120,8 @@ export async function runOnboard(opts: OnboardOptions): Promise<void> {
 	console.log(`1) Runtime mode: ${mode === "docker" ? "Docker" : "Native"}`);
 	console.log(
 		mode === "docker"
-			? "   Isolation is provided by the container; SDK sandbox is disabled."
-			: "   Isolation is provided by the SDK sandbox (bubblewrap / Seatbelt).",
+			? "   Relay isolation is provided by the container; LLM/persona runtime uses contained Hermes."
+			: "   Relay is host-local; LLM/persona runtime still uses contained Hermes.",
 	);
 	steps.push({ label: "Detect runtime mode", status: "done", note: `mode=${mode}` });
 

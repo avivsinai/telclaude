@@ -48,11 +48,6 @@ if [ "$(id -u)" = "0" ]; then
         echo "[entrypoint] Started firewall refresh daemon (interval: ${FIREWALL_REFRESH_INTERVAL:-3600}s)"
     fi
 
-    # Create /tmp/claude for sandbox-runtime CWD tracking
-    # srt hardcodes this path internally regardless of TMPDIR
-    mkdir -p /tmp/claude
-    chmod 1777 /tmp/claude
-
     /usr/local/bin/install-claude-assets.sh
 
     # Ensure data directories have correct ownership
@@ -85,10 +80,9 @@ if [ "$(id -u)" = "0" ]; then
         chmod -R a+rwX /data/logs 2>/dev/null || true
     fi
 
-    # Git configuration: Use proxy in agent container, minimal config in relay
+    # Git configuration: use relay-owned proxy when configured.
     if [ -n "$TELCLAUDE_GIT_PROXY_URL" ]; then
-        # Agent container: Configure git to use the relay's git proxy
-        # The proxy adds GitHub authentication transparently - agent never sees the token
+        # The proxy adds GitHub authentication transparently - runtime code never sees the token.
         # Run as daemon with gosu to drop privileges (least privilege principle)
         echo "[entrypoint] Configuring git to use relay proxy"
         gosu "$TELCLAUDE_USER" /app/bin/telclaude.js git-proxy-init --daemon &

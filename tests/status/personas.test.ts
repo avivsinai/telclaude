@@ -4,8 +4,8 @@ import type { CronJob } from "../../src/cron/types.js";
 import {
 	buildPersonaStatusSnapshot,
 	formatPersonaStatusSnapshot,
-	type PersonaAgentStatus,
 	type PersonaPluginStatus,
+	type PersonaRuntimeStatus,
 } from "../../src/status/personas.js";
 
 const EMPTY_PLUGINS: PersonaPluginStatus = {
@@ -15,11 +15,11 @@ const EMPTY_PLUGINS: PersonaPluginStatus = {
 	error: null,
 };
 
-const REACHABLE_AGENT: PersonaAgentStatus = {
+const CONFIGURED_RUNTIME: PersonaRuntimeStatus = {
 	configured: true,
 	source: "test",
-	endpoint: "http://agent:8788",
-	reachability: "reachable",
+	endpoint: "http://hermes:8642",
+	reachability: "configured",
 	checkedAt: "2026-04-23T00:00:00.000Z",
 	error: null,
 };
@@ -34,7 +34,6 @@ function makeConfig(overrides: Partial<TelclaudeConfig> = {}): TelclaudeConfig {
 		telegram: { heartbeatSeconds: 60 },
 		inbound: { reply: { enabled: true, timeoutSeconds: 600, typingIntervalSeconds: 8 } },
 		logging: {},
-		sdk: { betas: [] },
 		openai: {},
 		transcription: { provider: "openai", model: "whisper-1", timeoutSeconds: 60 },
 		imageGeneration: {
@@ -99,7 +98,7 @@ function cronJob(input: {
 }
 
 describe("persona status", () => {
-	it("fails closed when the social Claude profile is not configured", () => {
+	it("does not require a legacy social Claude profile", () => {
 		const snapshot = buildPersonaStatusSnapshot({
 			config: makeConfig({
 				socialServices: [
@@ -116,24 +115,65 @@ describe("persona status", () => {
 			}),
 			env: {
 				TELCLAUDE_PRIVATE_CLAUDE_HOME: "/profiles/private",
-				TELCLAUDE_AGENT_URL: "http://agent:8788",
+				TELCLAUDE_HERMES_API_BASE_URL: "http://hermes:8642",
+				TELCLAUDE_HERMES_API_KEY: "test-key",
+				TELCLAUDE_HERMES_SOCIAL_API_BASE_URL: "http://social-hermes:8642",
+				TELCLAUDE_HERMES_SOCIAL_API_KEY: "test-social-key",
 			},
 			nowMs: 0,
 			activeSkillNames: ["memory"],
 			privatePlugins: EMPTY_PLUGINS,
-			agentReachability: { private: REACHABLE_AGENT },
+			runtimeReachability: { private: CONFIGURED_RUNTIME, social: CONFIGURED_RUNTIME },
 		});
 
-		expect(snapshot.overallHealth).toBe("not_configured");
-		expect(snapshot.personas.social.health).toBe("not_configured");
+		expect(snapshot.overallHealth).toBe("degraded");
+		expect(snapshot.personas.social.health).toBe("degraded");
 		expect(snapshot.personas.social.profile).toEqual({
-			configured: false,
+			configured: true,
 			claudeHome: null,
-			source: "TELCLAUDE_SOCIAL_CLAUDE_HOME missing",
+			source: "Hermes social profile",
 		});
 		expect(snapshot.personas.social.skills.policy).toBe("fail_closed");
 		expect(snapshot.personas.social.skills.effective).toEqual([]);
-		expect(snapshot.personas.social.plugins.error).toContain("TELCLAUDE_SOCIAL_CLAUDE_HOME");
+	});
+
+	it("reports Hermes-only social healthy without a legacy social Claude home", () => {
+		const snapshot = buildPersonaStatusSnapshot({
+			config: makeConfig({
+				socialServices: [
+					{
+						id: "xtwitter",
+						type: "xtwitter",
+						enabled: true,
+						heartbeatEnabled: true,
+						heartbeatIntervalHours: 4,
+						enableSkills: true,
+						allowedSkills: ["social-posting"],
+						notifyOnHeartbeat: "activity",
+					},
+				],
+			}),
+			env: {
+				TELCLAUDE_PRIVATE_CLAUDE_HOME: "/profiles/private",
+				TELCLAUDE_HERMES_API_BASE_URL: "http://hermes:8642",
+				TELCLAUDE_HERMES_API_KEY: "test-key",
+				TELCLAUDE_HERMES_SOCIAL_API_BASE_URL: "http://social-hermes:8642",
+				TELCLAUDE_HERMES_SOCIAL_API_KEY: "test-social-key",
+			},
+			nowMs: 0,
+			activeSkillNames: ["social-posting"],
+			privatePlugins: EMPTY_PLUGINS,
+			runtimeReachability: { private: CONFIGURED_RUNTIME, social: CONFIGURED_RUNTIME },
+		});
+
+		expect(snapshot.personas.social.health).toBe("ok");
+		expect(snapshot.personas.social.summary).toBe("social persona metadata healthy");
+		expect(snapshot.personas.social.plugins).toEqual({
+			configured: true,
+			enabled: [],
+			installed: [],
+			error: null,
+		});
 	});
 
 	it("keeps private and social memory, filesystem, and skill boundaries separate", () => {
@@ -162,9 +202,11 @@ describe("persona status", () => {
 			}),
 			env: {
 				TELCLAUDE_PRIVATE_CLAUDE_HOME: "/profiles/private",
-				TELCLAUDE_SOCIAL_CLAUDE_HOME: "/profiles/social",
-				TELCLAUDE_AGENT_URL: "http://private-agent:8788",
-				TELCLAUDE_SOCIAL_AGENT_URL: "http://social-agent:8789",
+				TELCLAUDE_HERMES_HOME: "/profiles/hermes",
+				TELCLAUDE_HERMES_API_BASE_URL: "http://hermes:8642",
+				TELCLAUDE_HERMES_API_KEY: "test-key",
+				TELCLAUDE_HERMES_SOCIAL_API_BASE_URL: "http://social-hermes:8642",
+				TELCLAUDE_HERMES_SOCIAL_API_KEY: "test-social-key",
 				TELCLAUDE_SKILL_CATALOG_DIR: "/catalog",
 			},
 			activeSkillNames: ["external-provider", "memory", "social-posting"],
@@ -180,7 +222,7 @@ describe("persona status", () => {
 				installed: ["browser-use@official"],
 				error: null,
 			},
-			agentReachability: { private: REACHABLE_AGENT, social: REACHABLE_AGENT },
+			runtimeReachability: { private: CONFIGURED_RUNTIME, social: CONFIGURED_RUNTIME },
 			latestSocialActivityAtMs: Date.parse("2026-04-23T10:00:00.000Z"),
 		});
 
@@ -205,15 +247,59 @@ describe("persona status", () => {
 		expect(serialized).not.toContain("private-provider.internal");
 	});
 
+	it("does not treat private Hermes env as social runtime configuration", () => {
+		const snapshot = buildPersonaStatusSnapshot({
+			config: makeConfig({
+				socialServices: [
+					{
+						id: "xtwitter",
+						type: "xtwitter",
+						enabled: true,
+						heartbeatEnabled: true,
+						heartbeatIntervalHours: 4,
+						enableSkills: true,
+						allowedSkills: ["social-posting"],
+						notifyOnHeartbeat: "activity",
+					},
+				],
+			}),
+			env: {
+				TELCLAUDE_PRIVATE_CLAUDE_HOME: "/profiles/private",
+				TELCLAUDE_HERMES_API_BASE_URL: "http://private-hermes:8642",
+				TELCLAUDE_HERMES_API_KEY: "private-key",
+			},
+			activeSkillNames: ["social-posting"],
+			privatePlugins: EMPTY_PLUGINS,
+			socialPlugins: EMPTY_PLUGINS,
+		});
+
+		expect(snapshot.personas.private.runtime.configured).toBe(true);
+		expect(snapshot.personas.social.runtime).toMatchObject({
+			configured: false,
+			source: "Hermes social runtime not configured",
+			reachability: "not_configured",
+		});
+		expect(snapshot.personas.social.services).toEqual([
+			expect.objectContaining({
+				id: "xtwitter",
+				runtimeConfigured: false,
+				runtimeSource: "Hermes social runtime not configured",
+			}),
+		]);
+		expect(snapshot.personas.social.summary).toBe("social Hermes runtime not configured");
+	});
+
 	it("redacts secrets from operational errors before formatting", () => {
 		const snapshot = buildPersonaStatusSnapshot({
 			config: makeConfig(),
 			env: {
 				TELCLAUDE_PRIVATE_CLAUDE_HOME: "/profiles/private",
-				TELCLAUDE_SOCIAL_CLAUDE_HOME: "/profiles/social",
+				TELCLAUDE_HERMES_API_BASE_URL: "http://hermes:8642",
+				TELCLAUDE_HERMES_API_KEY: "test-key",
 			},
 			privatePlugins: EMPTY_PLUGINS,
 			socialPlugins: EMPTY_PLUGINS,
+			runtimeReachability: { private: CONFIGURED_RUNTIME, social: CONFIGURED_RUNTIME },
 			cronJobs: [
 				cronJob({
 					action: { kind: "private-heartbeat" },

@@ -350,7 +350,7 @@
     },
     {
       "surface_id": "skills.allowlist",
-      "documented_seam": "Skill allowlist is enforced by the SDK PreToolUse hook in the contained runtime; SOCIAL fail-closes without an explicit allowlist (architecture invariant #9).",
+      "documented_seam": "Skill allowlist is enforced by the contained Hermes runtime PreToolUse policy; SOCIAL fail-closes without an explicit allowlist (architecture invariant #9).",
       "probe_command": "pnpm dev hermes probe skills.allowlist --allow-run --out artifacts/hermes/probes/skills-allowlist.json",
       "expected_result": "An allowlisted skill reaches the runtime; non-allowlisted and SOCIAL omitted/empty-allowlist Skill calls are denied by the PreToolUse hook.",
       "negative_probe": "A non-allowlisted skill, a SOCIAL service without an allowlist, or a denial recorded only by the canUseTool fallback fail closed.",

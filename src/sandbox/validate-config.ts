@@ -44,7 +44,7 @@ const BLOCKED_HOST_PATHS = [
 	"/run/docker.sock",
 ];
 
-const AGENT_SENSITIVE_ENV_KEYS = new Set([
+const RUNTIME_SENSITIVE_ENV_KEYS = new Set([
 	"TELEGRAM_BOT_TOKEN",
 	"ANTHROPIC_API_KEY",
 	"OPENAI_API_KEY",
@@ -56,6 +56,10 @@ const AGENT_SENSITIVE_ENV_KEYS = new Set([
 ]);
 
 const PERMISSIVE_NETWORK_MODES = new Set(["open", "permissive"]);
+
+function isHermesRuntimeServiceName(name: string): boolean {
+	return name === "tc-hermes-contained" || name === "tc-hermes-social" || name.includes("hermes");
+}
 
 function toPosixPath(input: string): string {
 	return path.resolve(input).replaceAll("\\", "/");
@@ -415,19 +419,18 @@ function addEnvironmentFindings(
 	composeDir: string,
 ): void {
 	for (const service of services) {
-		const isAgentService = service.name.includes("agent");
-		if (!isAgentService) {
+		if (!isHermesRuntimeServiceName(service.name)) {
 			continue;
 		}
 
 		for (const key of service.envKeys) {
-			if (!AGENT_SENSITIVE_ENV_KEYS.has(key)) {
+			if (!RUNTIME_SENSITIVE_ENV_KEYS.has(key)) {
 				continue;
 			}
 			findings.push({
 				severity: "warning",
 				category: "compose.environment",
-				message: `Agent service "${service.name}" exposes sensitive env key "${key}".`,
+				message: `Hermes runtime service "${service.name}" exposes sensitive env key "${key}".`,
 			});
 		}
 	}

@@ -33,7 +33,6 @@ function makeMinimalConfig(overrides: Record<string, unknown> = {}): TelclaudeCo
 		telegram: { heartbeatSeconds: 60 },
 		inbound: { reply: { enabled: true, timeoutSeconds: 600, typingIntervalSeconds: 8 } },
 		logging: {},
-		sdk: { betas: [] },
 		openai: {},
 		transcription: { provider: "openai", model: "whisper-1", timeoutSeconds: 60 },
 		imageGeneration: {
@@ -575,7 +574,7 @@ describe("runAuditCollectors", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-integration-test-"));
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-telegram-reply-"));
 		// Create minimal directory structure with proper permissions
 		fs.mkdirSync(path.join(tempDir, ".claude"), { recursive: true });
 		const settingsPath = path.join(tempDir, ".claude", "settings.json");

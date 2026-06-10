@@ -145,11 +145,9 @@ export type HermesInventorySnapshot = {
 			handlePresent: boolean;
 			displayNamePresent: boolean;
 			apiKeyPresent: boolean;
-			agentUrlPresent: boolean;
 			heartbeatEnabled: boolean;
 			enableSkills: boolean;
 			allowedSkillCount: number | null;
-			agentSkillCount: number;
 			notifyOnHeartbeat: string;
 		}>;
 		activity: Array<{ serviceId: string; type: string; count: number }>;
@@ -627,11 +625,9 @@ function sanitizeSocialService(
 		handlePresent: Boolean(service.handle),
 		displayNamePresent: Boolean(service.displayName),
 		apiKeyPresent: Boolean(service.apiKey),
-		agentUrlPresent: Boolean(service.agentUrl),
 		heartbeatEnabled: service.heartbeatEnabled,
 		enableSkills: service.enableSkills,
 		allowedSkillCount: service.allowedSkills?.length ?? null,
-		agentSkillCount: service.agentSkillsAllowed.length,
 		notifyOnHeartbeat: service.notifyOnHeartbeat,
 	};
 }

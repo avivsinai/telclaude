@@ -5,7 +5,6 @@ import {
 	registerAdminSubcommands,
 	registerForceReauthSubcommand,
 } from "./commands/access-control.js";
-import { registerAgentCommand } from "./commands/agent.js";
 import { registerApprovalsCommand } from "./commands/approvals.js";
 import { registerBackgroundCommand } from "./commands/background.js";
 import { registerCronCommand } from "./commands/cron.js";
@@ -21,7 +20,6 @@ import { registerGitCredentialCommand } from "./commands/git-credential.js";
 import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerHermesCommand } from "./commands/hermes.js";
-import { registerIntegrationTestCommand } from "./commands/integration-test.js";
 import { registerKeygenCommand } from "./commands/keygen.js";
 import { registerIdentitySubcommands } from "./commands/link.js";
 import { registerMemoryCommands } from "./commands/memory.js";
@@ -77,7 +75,6 @@ const program = createProgram();
 
 registerOnboardCommand(program);
 registerRelayCommand(program);
-registerAgentCommand(program);
 registerStatusCommand(program);
 registerDoctorCommand(program);
 registerRuntimesCommand(program);
@@ -85,7 +82,6 @@ registerHermesCommand(program);
 registerCuratorCommand(program);
 registerSendCommand(program);
 registerSessionsCommand(program);
-registerIntegrationTestCommand(program);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Command groups (namespaced subcommands)
@@ -140,7 +136,6 @@ registerPluginsCommandGroup(plugins);
 // --- dev ---
 const dev = program.command("dev").description("Development and diagnostic tools");
 registerDoctorCommand(dev);
-registerIntegrationTestCommand(dev);
 registerDiagnoseSandboxNetworkCommand(dev);
 registerQuickstartCommand(dev);
 registerKeygenCommand(dev);

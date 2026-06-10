@@ -7,8 +7,8 @@
 
 import type { Bot, CallbackQueryContext, Context } from "grammy";
 import { deleteSession, deriveSessionKey } from "../config/sessions.js";
+import { clearHermesSessionMapping } from "../hermes/session-map.js";
 import { getChildLogger } from "../logging.js";
-import { getSessionManager } from "../sdk/session-manager.js";
 import { revokeSessionAllowlist } from "../security/approvals.js";
 import type { AuditLogger } from "../security/audit.js";
 import { handleCallback as handleCardCallback } from "./cards/callback-controller.js";
@@ -121,8 +121,7 @@ async function handleNewSession(ctx: CallbackQueryContext<Context>, chatId: numb
 	// Clear the session from config/sessions (SQLite)
 	deleteSession(sessionKey);
 
-	// Clear the session from SDK session manager (in-memory)
-	getSessionManager().clearSession(sessionKey);
+	clearHermesSessionMapping(sessionKey);
 
 	// W1 — drop session-scoped approval allowlist grants along with the session.
 	revokeSessionAllowlist(sessionKey);

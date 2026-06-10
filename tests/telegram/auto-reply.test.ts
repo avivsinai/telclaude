@@ -10,9 +10,7 @@ import { resetDatabase } from "../../src/storage/db.js";
 const replies: string[] = [];
 const sessionStore: Array<{ key: string; entry: unknown }> = [];
 
-const executePooledQueryImpl = vi.hoisted(() => vi.fn());
-const executeHermesPrivateQueryImpl = vi.hoisted(() => vi.fn());
-const shouldUseHermesPrivateRuntimeImpl = vi.hoisted(() => vi.fn(() => false));
+const executeHermesQueryImpl = vi.hoisted(() => vi.fn());
 const clearHermesSessionMappingImpl = vi.hoisted(() => vi.fn(() => 0));
 const getChatModelPreferenceImpl = vi.hoisted(() => vi.fn(() => null));
 const getSessionImpl = vi.hoisted(() => vi.fn(() => null));
@@ -35,13 +33,8 @@ const loggerImpl = vi.hoisted(() => ({
 	debug: vi.fn(),
 }));
 
-vi.mock("../../src/sdk/client.js", () => ({
-	executePooledQuery: (...args: unknown[]) => executePooledQueryImpl(...args),
-}));
-
 vi.mock("../../src/hermes/private-execute.js", () => ({
-	executeHermesPrivateQuery: (...args: unknown[]) => executeHermesPrivateQueryImpl(...args),
-	shouldUseHermesPrivateRuntime: (...args: unknown[]) => shouldUseHermesPrivateRuntimeImpl(...args),
+	executeHermesQuery: (...args: unknown[]) => executeHermesQueryImpl(...args),
 }));
 
 vi.mock("../../src/hermes/session-map.js", () => ({
@@ -146,7 +139,6 @@ const baseCtx = () => ({
 	tier: "WRITE_LOCAL" as const,
 	config: {
 		inbound: { reply: { enabled: true, timeoutSeconds: 60 } },
-		sdk: { betas: [] },
 	},
 	observerClassification: "OK",
 	observerConfidence: 0.1,
@@ -176,10 +168,7 @@ describe("auto-reply executeAndReply", () => {
 		replies.length = 0;
 		sessionStore.length = 0;
 		redactors.length = 0;
-		executePooledQueryImpl.mockReset();
-		executeHermesPrivateQueryImpl.mockReset();
-		shouldUseHermesPrivateRuntimeImpl.mockReset();
-		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(false);
+		executeHermesQueryImpl.mockReset();
 		clearHermesSessionMappingImpl.mockReset();
 		clearHermesSessionMappingImpl.mockReturnValue(0);
 		getSessionImpl.mockReset();
@@ -202,7 +191,7 @@ describe("auto-reply executeAndReply", () => {
 
 	it("streams text through redactor and replies with sanitized output", async () => {
 		// Stream a text chunk followed by done
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield { type: "text", content: "secret data" };
 				yield {
@@ -230,7 +219,7 @@ describe("auto-reply executeAndReply", () => {
 	});
 
 	it("uses fallback redaction when no streaming chunks are returned", async () => {
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -260,7 +249,7 @@ describe("auto-reply executeAndReply", () => {
 			providerId: "anthropic",
 			modelId: "claude-sonnet-4-5-20250929",
 		});
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -279,15 +268,14 @@ describe("auto-reply executeAndReply", () => {
 		const ctx = baseCtx();
 		await autoReplyTest.executeAndReply(ctx as never);
 
-		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({ model: "claude-sonnet-4-5-20250929" }),
 		);
 	});
 
-	it("routes opt-in Telegram replies through Hermes with tier, identity, and memory", async () => {
-		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(true);
-		executeHermesPrivateQueryImpl.mockReturnValueOnce(
+	it("routes Telegram replies through Hermes with tier, identity, and memory", async () => {
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -309,8 +297,7 @@ describe("auto-reply executeAndReply", () => {
 		};
 		await autoReplyTest.executeAndReply(ctx as never);
 
-		expect(executePooledQueryImpl).not.toHaveBeenCalled();
-		expect(executeHermesPrivateQueryImpl).toHaveBeenCalledWith(
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({
 				cwd: expect.any(String),
@@ -333,8 +320,7 @@ describe("auto-reply executeAndReply", () => {
 	});
 
 	it("passes configured provider scopes and MCP-only provider instructions to Hermes", async () => {
-		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(true);
-		executeHermesPrivateQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -359,14 +345,14 @@ describe("auto-reply executeAndReply", () => {
 		};
 		await autoReplyTest.executeAndReply(ctx as never);
 
-		expect(executeHermesPrivateQueryImpl).toHaveBeenCalledWith(
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({
 				mcpAuthority: { providerScopes: ["bank", "google"] },
 				systemPromptAppend: expect.stringContaining("tc_provider_read"),
 			}),
 		);
-		const options = executeHermesPrivateQueryImpl.mock.calls[0]?.[1] as {
+		const options = executeHermesQueryImpl.mock.calls[0]?.[1] as {
 			systemPromptAppend?: string;
 		};
 		expect(options.systemPromptAppend).toContain("Granted provider scopes: bank, google");
@@ -375,8 +361,7 @@ describe("auto-reply executeAndReply", () => {
 	});
 
 	it("passes relay-minted Telegram turn refs only through Hermes MCP authority", async () => {
-		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(true);
-		executeHermesPrivateQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -399,7 +384,7 @@ describe("auto-reply executeAndReply", () => {
 		};
 		await autoReplyTest.executeAndReply(ctx as never);
 
-		const [prompt, options] = executeHermesPrivateQueryImpl.mock.calls[0] as [
+		const [prompt, options] = executeHermesQueryImpl.mock.calls[0] as [
 			string,
 			{
 				mcpAuthority?: { turnConversationRef?: string; providerScopes?: readonly string[] };
@@ -441,7 +426,7 @@ describe("auto-reply executeAndReply", () => {
 			providerId: "openai",
 			modelId: "gpt-5",
 		});
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -460,7 +445,7 @@ describe("auto-reply executeAndReply", () => {
 		const ctx = baseCtx();
 		await autoReplyTest.executeAndReply(ctx as never);
 
-		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({ model: undefined }),
 		);
@@ -468,7 +453,7 @@ describe("auto-reply executeAndReply", () => {
 
 	it("applies active profile model, skill allowlist, and soul overlay", async () => {
 		activeProfileState.profileId = "engineer";
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -493,7 +478,7 @@ describe("auto-reply executeAndReply", () => {
 						id: "engineer",
 						label: "Engineer",
 						soulPath: "docs/soul.md",
-						allowedSkills: ["integration-test"],
+						allowedSkills: ["telegram-reply"],
 						defaultModel: {
 							providerId: "anthropic",
 							modelId: "claude-haiku-4-5-20251001",
@@ -504,11 +489,11 @@ describe("auto-reply executeAndReply", () => {
 		};
 		await autoReplyTest.executeAndReply(ctx as never);
 
-		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({
 				model: "claude-haiku-4-5-20251001",
-				allowedSkills: ["integration-test"],
+				allowedSkills: ["telegram-reply"],
 				systemPromptAppend: expect.stringContaining('<profile-soul id="engineer"'),
 			}),
 		);
@@ -526,7 +511,7 @@ describe("auto-reply executeAndReply", () => {
 			updatedAt: Date.now(),
 			systemSent: true,
 		});
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
 					type: "done",
@@ -566,14 +551,14 @@ describe("auto-reply executeAndReply", () => {
 
 		expect(deleteSessionImpl).toHaveBeenCalledWith("session-1");
 		expect(clearHermesSessionMappingImpl).toHaveBeenCalledWith("session-1");
-		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"/fresh please",
 			expect.objectContaining({ resumeSessionId: undefined }),
 		);
 	});
 
 	it("redacts plan-phase output before Telegram display and approval storage", async () => {
-		executePooledQueryImpl.mockReturnValueOnce(
+		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield { type: "text", content: "Plan: use secret token" };
 				yield {
@@ -676,7 +661,7 @@ describe("auto-reply control commands", () => {
 		const previousDataDir = process.env.TELCLAUDE_DATA_DIR;
 		process.env.TELCLAUDE_DATA_DIR = tempDir;
 		try {
-			executePooledQueryImpl.mockReset();
+			executeHermesQueryImpl.mockReset();
 			resetDatabase();
 			registerAllCardRenderers();
 
@@ -698,7 +683,7 @@ describe("auto-reply control commands", () => {
 				} as never,
 			);
 
-			expect(executePooledQueryImpl).not.toHaveBeenCalled();
+			expect(executeHermesQueryImpl).not.toHaveBeenCalled();
 			const [job] = listJobs();
 			expect(job?.payload).toMatchObject({
 				kind: "codex-work-unit",

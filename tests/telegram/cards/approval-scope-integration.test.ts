@@ -41,9 +41,7 @@ describe("ApprovalScopeCard integration", () => {
 		vi.resetModules();
 		({ resetDatabase } = await import("../../../src/storage/db.js"));
 		resetDatabase();
-		({ registerAllCardRenderers } = await import(
-			"../../../src/telegram/cards/renderers/index.js"
-		));
+		({ registerAllCardRenderers } = await import("../../../src/telegram/cards/renderers/index.js"));
 		({ sendApprovalScopeCard } = await import("../../../src/telegram/cards/create-helpers.js"));
 		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
 		({ createApproval, listAllowlist } = await import("../../../src/security/approvals.js"));

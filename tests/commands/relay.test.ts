@@ -12,7 +12,6 @@ describe("relay command", () => {
 			validateProbeNoTelegramRelayMode({
 				probeNoTelegram: true,
 				dryRun: false,
-				privateRuntimeEnabled: true,
 				liveMcpEnabled: true,
 				liveMcpAdminEnabled: true,
 			}),
@@ -22,17 +21,6 @@ describe("relay command", () => {
 			validateProbeNoTelegramRelayMode({
 				probeNoTelegram: true,
 				dryRun: true,
-				privateRuntimeEnabled: false,
-				liveMcpEnabled: true,
-				liveMcpAdminEnabled: true,
-			}),
-		).toContain("TELCLAUDE_HERMES_PRIVATE_RUNTIME=1");
-
-		expect(
-			validateProbeNoTelegramRelayMode({
-				probeNoTelegram: true,
-				dryRun: true,
-				privateRuntimeEnabled: true,
 				liveMcpEnabled: false,
 				liveMcpAdminEnabled: true,
 			}),
@@ -42,7 +30,6 @@ describe("relay command", () => {
 			validateProbeNoTelegramRelayMode({
 				probeNoTelegram: true,
 				dryRun: true,
-				privateRuntimeEnabled: true,
 				liveMcpEnabled: true,
 				liveMcpAdminEnabled: false,
 			}),
@@ -52,7 +39,6 @@ describe("relay command", () => {
 			validateProbeNoTelegramRelayMode({
 				probeNoTelegram: true,
 				dryRun: true,
-				privateRuntimeEnabled: true,
 				liveMcpEnabled: true,
 				liveMcpAdminEnabled: true,
 			}),

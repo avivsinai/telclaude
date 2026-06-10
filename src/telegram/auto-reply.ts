@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Api, Bot } from "grammy";
-import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
 import { cleanupManagedSkillHousekeeping } from "../commands/skill-manage.js";
@@ -34,10 +33,7 @@ import {
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
 import { consumeTelclaudeLiveMcpSideEffectApproval } from "../hermes/mcp/live-side-effect-approvals.js";
-import {
-	executeHermesPrivateQuery,
-	shouldUseHermesPrivateRuntime,
-} from "../hermes/private-execute.js";
+import { executeHermesQuery } from "../hermes/private-execute.js";
 import { buildHermesPrivateRuntimeProviderContext } from "../hermes/private-runtime-provider-context.js";
 import type { RelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { clearHermesSessionMapping } from "../hermes/session-map.js";
@@ -51,8 +47,6 @@ import {
 } from "../memory/telegram-memory.js";
 import { sendProviderOtp } from "../providers/external-provider.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { executePooledQuery } from "../sdk/client.js";
-import { getSessionManager } from "../sdk/session-manager.js";
 import {
 	getPendingAdminClaim,
 	handleAdminClaimApproval,
@@ -200,7 +194,7 @@ function resolveExecutableModelForChat(
 				requestedModelId: route.requestedModelId,
 				detail: route.detail,
 			},
-			"chat model preference ignored; using SDK default",
+			"chat model preference ignored; using Hermes default",
 		);
 	}
 	return route.effectiveModel;
@@ -555,7 +549,6 @@ function resolveSessionKeyForMessage(msg: TelegramInboundMessage, cfg: Telclaude
 
 function resetSessionKey(sessionKey: string): number {
 	deleteSession(sessionKey);
-	getSessionManager().clearSession(sessionKey);
 	clearHermesSessionMapping(sessionKey);
 	return revokeSessionAllowlist(sessionKey);
 }
@@ -1329,7 +1322,7 @@ function mintTelegramInboundTurnAuthority(input: TelegramInboundTurnAuthorityInp
 }
 
 /**
- * Execute a query via Claude SDK and send the response.
+ * Execute a private Telegram query through Hermes and send the response.
  *
  * Uses session locking to prevent race conditions when multiple messages
  * arrive rapidly for the same session.
@@ -1523,15 +1516,11 @@ async function executeWithSession(
 		// Build chat context for agent (skills need chat ID for memory scoping)
 		const chatContext = `<chat-context chat-id="${msg.chatId}" />`;
 		const profileContext = buildProfileContext(activeProfile);
-		const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
-		const useRemoteAgent = !useHermesPrivateRuntime && Boolean(process.env.TELCLAUDE_AGENT_URL);
 		const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
-			includeProjectSoul: !useRemoteAgent,
+			includeProjectSoul: true,
 			cwd: process.cwd(),
 		});
-		const hermesProviderContext = useHermesPrivateRuntime
-			? buildHermesPrivateRuntimeProviderContext(ctx.config)
-			: undefined;
+		const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(ctx.config);
 
 		// Build lightweight system info for agent awareness
 		const systemInfoContext = buildSystemInfoContext(msg.chatId);
@@ -1557,7 +1546,7 @@ async function executeWithSession(
 		const profileAllowedSkills = activeProfile.profile.allowedSkills;
 		const turnConversationRef =
 			ctx.turnConversationRef ??
-			(useHermesPrivateRuntime && ctx.mcpConversationStore
+			(ctx.mcpConversationStore
 				? mintTelegramInboundTurnAuthority({
 						chatId: msg.chatId,
 						messageId: msg.id,
@@ -1571,64 +1560,28 @@ async function executeWithSession(
 						conversationStore: ctx.mcpConversationStore,
 					})
 				: undefined);
-		const queryStream = useHermesPrivateRuntime
-			? executeHermesPrivateQuery(queryPrompt, {
-					cwd: process.cwd(),
-					tier,
-					poolKey: sessionKey,
-					telclaudeSessionId: sessionEntry.sessionId,
-					profileId: activeProfile.profile.id,
-					model,
-					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-					enableSkills: tier !== "READ_ONLY",
-					allowedSkills: profileAllowedSkills,
-					timeoutMs: timeoutSeconds * 1000,
-					userId,
-					chatId: msg.chatId,
-					actorId: msg.senderId ?? msg.chatId,
-					threadId: msg.messageThreadId,
-					systemPromptAppend,
-					compiledMemoryMd: memoryBundle.compiledMemoryMd,
-					mcpAuthority: {
-						providerScopes: hermesProviderContext?.providerScopes ?? [],
-						...(turnConversationRef ? { turnConversationRef } : {}),
-					},
-				})
-			: useRemoteAgent
-				? executeRemoteQuery(queryPrompt, {
-						cwd: process.cwd(),
-						tier,
-						poolKey: sessionKey,
-						model,
-						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-						enableSkills: tier !== "READ_ONLY",
-						allowedSkills: profileAllowedSkills,
-						timeoutMs: timeoutSeconds * 1000,
-						betas: ctx.config.sdk?.betas,
-						userId,
-						chatId: msg.chatId,
-						actorId: msg.senderId ?? msg.chatId,
-						threadId: msg.messageThreadId,
-						systemPromptAppend,
-						compiledMemoryMd: memoryBundle.compiledMemoryMd,
-					})
-				: executePooledQuery(queryPrompt, {
-						cwd: process.cwd(),
-						tier,
-						poolKey: sessionKey,
-						model,
-						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-						enableSkills: tier !== "READ_ONLY",
-						allowedSkills: profileAllowedSkills,
-						timeoutMs: timeoutSeconds * 1000,
-						betas: ctx.config.sdk?.betas,
-						userId,
-						chatId: msg.chatId,
-						actorId: msg.senderId ?? msg.chatId,
-						threadId: msg.messageThreadId,
-						systemPromptAppend,
-						compiledMemoryMd: memoryBundle.compiledMemoryMd,
-					});
+		const queryStream = executeHermesQuery(queryPrompt, {
+			cwd: process.cwd(),
+			tier,
+			poolKey: sessionKey,
+			telclaudeSessionId: sessionEntry.sessionId,
+			profileId: activeProfile.profile.id,
+			model,
+			resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+			enableSkills: tier !== "READ_ONLY",
+			allowedSkills: profileAllowedSkills,
+			timeoutMs: timeoutSeconds * 1000,
+			userId,
+			chatId: msg.chatId,
+			actorId: msg.senderId ?? msg.chatId,
+			threadId: msg.messageThreadId,
+			systemPromptAppend,
+			compiledMemoryMd: memoryBundle.compiledMemoryMd,
+			mcpAuthority: {
+				providerScopes: hermesProviderContext.providerScopes,
+				...(turnConversationRef ? { turnConversationRef } : {}),
+			},
+		});
 
 		// Determine if streaming is enabled
 		const streamingConfig = replyConfig?.streaming;
@@ -1684,7 +1637,7 @@ async function executeWithSession(
 						? "Request timed out. Please try again with a simpler request."
 						: `Request failed: ${chunk.result.error ?? "Unknown error"}`;
 
-					logger.warn({ requestId, error: chunk.result.error }, "SDK query failed");
+					logger.warn({ requestId, error: chunk.result.error }, "Hermes query failed");
 
 					// Abort streaming response or send error directly
 					if (streamer) {
@@ -1704,7 +1657,7 @@ async function executeWithSession(
 						permissionTier: tier,
 						executionTimeMs: chunk.result.durationMs,
 						outcome: chunk.result.error?.includes("aborted") ? "timeout" : "error",
-						errorType: chunk.result.error ?? "sdk_error",
+						errorType: chunk.result.error ?? "hermes_error",
 					});
 					return;
 				}
@@ -2567,21 +2520,20 @@ async function handleInboundMessage(
 		const activeProfile = resolveChatProfile(msg.chatId, cfg);
 		const sessionKey = resolveSessionKeyForMessage(msg, cfg);
 		const existingSession = getSession(sessionKey);
-		const turnConversationRef =
-			shouldUseHermesPrivateRuntime() && mcpConversationStore
-				? mintTelegramInboundTurnAuthority({
-						chatId: msg.chatId,
-						messageId: msg.id,
-						senderId: msg.senderId,
-						messageThreadId: msg.messageThreadId,
-						from: msg.from,
-						to: msg.to,
-						profileId: activeProfile.profile.id,
-						sessionKey,
-						sessionId: existingSession?.sessionId ?? requestId,
-						conversationStore: mcpConversationStore,
-					})
-				: undefined;
+		const turnConversationRef = mcpConversationStore
+			? mintTelegramInboundTurnAuthority({
+					chatId: msg.chatId,
+					messageId: msg.id,
+					senderId: msg.senderId,
+					messageThreadId: msg.messageThreadId,
+					from: msg.from,
+					to: msg.to,
+					profileId: activeProfile.profile.id,
+					sessionKey,
+					sessionId: existingSession?.sessionId ?? requestId,
+					conversationStore: mcpConversationStore,
+				})
+			: undefined;
 		const { nonce, createdAt, expiresAt } = createApproval({
 			requestId,
 			chatId: msg.chatId,
@@ -2777,7 +2729,7 @@ async function handleApproveCommand(
 		await msg.reply(`Approving ${description}...`);
 		const { getVaultClient } = await import("../vault-daemon/client.js");
 		const vaultClient = getVaultClient();
-		// Actor binding: resolve the consuming actor id the same way the SDK query
+		// Actor binding: resolve the consuming actor id the same way the Hermes query
 		// path does (executeAndReply), so it matches the actor stored when the
 		// approval was created. A different chat member who learns the nonce must
 		// not be able to approve another actor's queued privileged action.
@@ -3101,15 +3053,11 @@ async function executePlanPhase(
 				query: approval.body,
 				includeRecentHistory: isNewSession,
 			});
-			const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
-			const useRemoteAgent = !useHermesPrivateRuntime && Boolean(process.env.TELCLAUDE_AGENT_URL);
 			const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
-				includeProjectSoul: !useRemoteAgent,
+				includeProjectSoul: true,
 				cwd: process.cwd(),
 			});
-			const hermesProviderContext = useHermesPrivateRuntime
-				? buildHermesPrivateRuntimeProviderContext(cfg)
-				: undefined;
+			const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(cfg);
 			const planningPromptAppend = [
 				PLANNING_SYSTEM_PROMPT,
 				buildProfileContext(activeProfile),
@@ -3121,7 +3069,7 @@ async function executePlanPhase(
 				.join("\n\n");
 
 			const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
-			if (useHermesPrivateRuntime && !planTurnConversationRef && mcpConversationStore) {
+			if (!planTurnConversationRef && mcpConversationStore) {
 				planTurnConversationRef = mintTelegramInboundTurnAuthority({
 					chatId: approval.chatId,
 					messageId: approval.messageId,
@@ -3135,61 +3083,27 @@ async function executePlanPhase(
 					conversationStore: mcpConversationStore,
 				});
 			}
-			const queryStream = useHermesPrivateRuntime
-				? executeHermesPrivateQuery(queryPrompt, {
-						cwd: process.cwd(),
-						tier: "READ_ONLY",
-						poolKey: sessionKey,
-						telclaudeSessionId: sessionEntry.sessionId,
-						profileId: activeProfile.profile.id,
-						model,
-						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-						enableSkills: false,
-						timeoutMs: timeoutSeconds * 1000,
-						userId,
-						chatId: msg.chatId,
-						actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
-						threadId: approval.messageThreadId ?? msg.messageThreadId,
-						systemPromptAppend: planningPromptAppend,
-						compiledMemoryMd: memoryBundle.compiledMemoryMd,
-						mcpAuthority: {
-							providerScopes: hermesProviderContext?.providerScopes ?? [],
-							...(planTurnConversationRef ? { turnConversationRef: planTurnConversationRef } : {}),
-						},
-					})
-				: useRemoteAgent
-					? executeRemoteQuery(queryPrompt, {
-							cwd: process.cwd(),
-							tier: "READ_ONLY",
-							poolKey: sessionKey,
-							model,
-							resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-							enableSkills: false,
-							timeoutMs: timeoutSeconds * 1000,
-							betas: cfg.sdk?.betas,
-							userId,
-							chatId: msg.chatId,
-							actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
-							threadId: approval.messageThreadId ?? msg.messageThreadId,
-							systemPromptAppend: planningPromptAppend,
-							compiledMemoryMd: memoryBundle.compiledMemoryMd,
-						})
-					: executePooledQuery(queryPrompt, {
-							cwd: process.cwd(),
-							tier: "READ_ONLY",
-							poolKey: sessionKey,
-							model,
-							resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-							enableSkills: false,
-							timeoutMs: timeoutSeconds * 1000,
-							betas: cfg.sdk?.betas,
-							userId,
-							chatId: msg.chatId,
-							actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
-							threadId: approval.messageThreadId ?? msg.messageThreadId,
-							systemPromptAppend: planningPromptAppend,
-							compiledMemoryMd: memoryBundle.compiledMemoryMd,
-						});
+			const queryStream = executeHermesQuery(queryPrompt, {
+				cwd: process.cwd(),
+				tier: "READ_ONLY",
+				poolKey: sessionKey,
+				telclaudeSessionId: sessionEntry.sessionId,
+				profileId: activeProfile.profile.id,
+				model,
+				resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+				enableSkills: false,
+				timeoutMs: timeoutSeconds * 1000,
+				userId,
+				chatId: msg.chatId,
+				actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
+				threadId: approval.messageThreadId ?? msg.messageThreadId,
+				systemPromptAppend: planningPromptAppend,
+				compiledMemoryMd: memoryBundle.compiledMemoryMd,
+				mcpAuthority: {
+					providerScopes: hermesProviderContext.providerScopes,
+					...(planTurnConversationRef ? { turnConversationRef: planTurnConversationRef } : {}),
+				},
+			});
 
 			for await (const chunk of queryStream) {
 				if (chunk.type === "text") {

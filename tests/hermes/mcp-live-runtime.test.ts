@@ -17,6 +17,7 @@ describe("Telclaude live MCP runtime", () => {
 
 		expect(runtime.enabled).toBe(false);
 		expect(runtime.endpoint).toBeNull();
+		expect(runtime.endpoints).toEqual([]);
 		expect(() =>
 			runtime.issueProbeTokenBundle({
 				privateConnection: connection(),
@@ -125,6 +126,61 @@ describe("Telclaude live MCP runtime", () => {
 		).toThrow("stopped");
 	});
 
+	it("starts additional relay-internal bind endpoints with the same registry and resolver", async () => {
+		const runtime = await startTelclaudeLiveMcpRuntime({
+			config: config({
+				networkName: "telclaude-hermes-private",
+				additionalBinds: [{ host: "127.0.0.1", networkName: "telclaude-hermes-social" }],
+			}),
+			nowMs: () => 2_000,
+			admin: {
+				start(context) {
+					expect(context.endpoint).toBe(context.endpoints[0]);
+					expect(context.endpoints.map((endpoint) => endpoint.networkName)).toEqual([
+						"telclaude-hermes-private",
+						"telclaude-hermes-social",
+					]);
+					return { stop: () => undefined };
+				},
+			},
+		});
+		try {
+			expect(runtime.endpoint).toBe(runtime.endpoints[0]);
+			expect(runtime.endpoints).toHaveLength(2);
+			expect(runtime.endpoints.map((endpoint) => endpoint.networkName)).toEqual([
+				"telclaude-hermes-private",
+				"telclaude-hermes-social",
+			]);
+
+			const tokenBundle = runtime.issueProbeTokenBundle({
+				privateConnection: connection(),
+				wrongConnection: connection({
+					sessionKey: "telegram:social",
+					profileId: "social",
+					endpointId: "endpoint-social",
+					networkNamespace: "netns-social",
+				}),
+				privateAuthority: authority(),
+				nowMs: 1_000,
+				ttlMs: 60_000,
+				peerAddress: "127.0.0.1",
+			});
+			for (const endpoint of runtime.endpoints) {
+				const initialized = await postRpc(endpoint.url, tokenBundle.allowed.authorizationHeader, {
+					jsonrpc: "2.0",
+					id: `initialize-${endpoint.networkName}`,
+					method: "initialize",
+				});
+				expect(initialized.httpStatus).toBe(200);
+				expect(initialized.body).toMatchObject({
+					result: { capabilities: { tools: { listChanged: false } } },
+				});
+			}
+		} finally {
+			await runtime.stop();
+		}
+	});
+
 	it("fails closed when relay-client adapters have not been wired yet", async () => {
 		const runtime = await startTelclaudeLiveMcpRuntime({
 			config: config(),
@@ -199,7 +255,8 @@ describe("Telclaude live MCP runtime", () => {
 			host: "127.0.0.1",
 			port: 8793,
 			path: "/mcp",
-			networkName: "telclaude-hermes-relay",
+			networkName: "telclaude-hermes-private",
+			additionalBinds: undefined,
 			allowedPeerAddresses: undefined,
 			runtimeTransportToken: undefined,
 		};
@@ -228,8 +285,26 @@ describe("Telclaude live MCP runtime", () => {
 			path: "/mcp",
 			networkName: "tc-net",
 			allowedPeerAddresses: ["10.0.0.5", "10.0.0.6"],
+			additionalBinds: undefined,
 			runtimeTransportToken: "tc-live-mcp-runtime-token",
 		});
+		expect(
+			readTelclaudeLiveMcpRuntimeConfig({
+				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+				TELCLAUDE_HERMES_LIVE_MCP_HOST: "10.0.0.4",
+				TELCLAUDE_HERMES_LIVE_MCP_NETWORK: "tc-private-net",
+				TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS: "10.0.1.4@tc-social-net",
+				TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS: "10.0.0.5, 10.0.1.5",
+				TELCLAUDE_HERMES_MCP_RELAY_TOKEN: "tc-live-mcp-runtime-token",
+			}).additionalBinds,
+		).toEqual([{ host: "10.0.1.4", networkName: "tc-social-net" }]);
+		expect(() =>
+			readTelclaudeLiveMcpRuntimeConfig({
+				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+				TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS: "10.0.1.4",
+				TELCLAUDE_HERMES_MCP_RELAY_TOKEN: "tc-live-mcp-runtime-token",
+			}),
+		).toThrow("TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS entries must use host@network");
 		expect(() =>
 			readTelclaudeLiveMcpRuntimeConfig({
 				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
@@ -458,11 +533,15 @@ describe("Telclaude live MCP runtime", () => {
 				},
 			});
 
-			const listed = await postRpc(runtime.endpoint?.url, "Bearer tc-contained-mcp-transport-token", {
-				jsonrpc: "2.0",
-				id: "tools",
-				method: "tools/list",
-			});
+			const listed = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				{
+					jsonrpc: "2.0",
+					id: "tools",
+					method: "tools/list",
+				},
+			);
 			expect(listed).toMatchObject({
 				httpStatus: 200,
 				body: {
@@ -495,7 +574,7 @@ function config(
 		host: "127.0.0.1",
 		port: 0,
 		path: "/mcp",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		runtimeTransportToken: "tc-live-mcp-runtime-token",
 		...overrides,
 	};

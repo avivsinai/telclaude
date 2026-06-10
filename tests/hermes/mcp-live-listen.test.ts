@@ -73,7 +73,7 @@ describe("Telclaude live MCP listen helper", () => {
 		try {
 			expect(endpoint.host).toBe("127.0.0.1");
 			expect(endpoint.actualAddress).toBe("127.0.0.1");
-			expect(endpoint.networkName).toBe("telclaude-hermes-relay");
+			expect(endpoint.networkName).toBe("telclaude-hermes-private");
 			expect(endpoint.url).toBe(`http://127.0.0.1:${endpoint.port}/mcp`);
 			const response = await fetch(endpoint.url);
 			expect(response.status).toBe(200);
@@ -101,7 +101,7 @@ function placement(overrides: Partial<TelclaudeLiveMcpRelayHttpServer["placement
 		transport: "http" as const,
 		networkExposure: "relay_internal_only" as const,
 		bindHost: "telclaude",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		...overrides,
 	};
 }

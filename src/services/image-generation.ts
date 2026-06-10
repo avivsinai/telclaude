@@ -72,7 +72,7 @@ export async function generateImage(
 	prompt: string,
 	options?: ImageGenerationOptions,
 ): Promise<GeneratedImage> {
-	// Route through relay when running on agent container
+	// Route through relay when running inside contained runtime compute.
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 		const size = options?.size ?? "1024x1024";
 		const quality = options?.quality ?? "medium";
@@ -142,7 +142,7 @@ export async function generateImage(
 
 		const durationMs = Date.now() - startTime;
 
-		// Handle response - SDK may return Stream or ImagesResponse
+		// Handle response - OpenAI client may return Stream or ImagesResponse
 		if (!("data" in response) || !response.data?.[0]) {
 			throw new Error("No image data in response");
 		}

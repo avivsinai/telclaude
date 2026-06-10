@@ -11,6 +11,7 @@ import {
 } from "../../src/hermes/foundation.js";
 import {
 	type HermesRollbackRelayClient,
+	type HermesRollbackRelayState,
 	runHermesRollbackRehearsal,
 	writeHermesRollbackRehearsalEvidence,
 } from "../../src/hermes/rollback-rehearsal.js";
@@ -30,10 +31,6 @@ describe("Hermes rollback rehearsal producer", () => {
 			getStatus: async () => {
 				calls.push("status");
 				return hermesStatus();
-			},
-			setMode: async () => {
-				calls.push("set");
-				return legacyStatus();
 			},
 		};
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-"));
@@ -55,17 +52,13 @@ describe("Hermes rollback rehearsal producer", () => {
 		expect(fs.existsSync(evidencePath)).toBe(false);
 	});
 
-	it("passes only by observing enabled mode, driving durable legacy mode, then observing disabled mode", async () => {
+	it("passes by observing Hermes before and after without a mutable mode selector", async () => {
 		const lockedRelayPublicKey = installLockedRelayProofKeys();
 		const calls: string[] = [];
 		const client: HermesRollbackRelayClient = {
 			getStatus: async () => {
 				calls.push("status");
-				return calls.length === 1 ? hermesStatus() : legacyStatusAfterRead();
-			},
-			setMode: async (mode) => {
-				calls.push(`set:${mode}`);
-				return legacyStatus();
+				return hermesStatus();
 			},
 		};
 
@@ -76,20 +69,19 @@ describe("Hermes rollback rehearsal producer", () => {
 			now: () => "2026-05-30T14:45:00.000Z",
 		});
 
-		expect(calls).toEqual(["status", "set:legacy", "status"]);
+		expect(calls).toEqual(["status", "status"]);
 		expect(report).toMatchObject({
 			schemaVersion: 1,
 			passed: true,
 			allowedToRun: true,
 			observedBeforeValue: "1",
-			observedAfterValue: "0",
-			observedFallbackPath: "telclaude.private-runtime.legacy",
+			observedAfterValue: "1",
 			observedAt: "2026-05-30T14:45:00.000Z",
 			controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
 			observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
 			observedBeforeSource: "relay-effective-mode",
 			observedAfterSource: "relay-effective-mode",
-			observedAfterControlSource: "runtime-config",
+			observedAfterControlSource: "hermes-only",
 			relayPublicKey: {
 				scope: "operator",
 				envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
@@ -115,17 +107,14 @@ describe("Hermes rollback rehearsal producer", () => {
 			relay: {
 				getStatus: async () => {
 					calls.push("status");
-					return calls.length === 1 ? hermesStatus() : legacyStatusAfterRead();
-				},
-				setMode: async () => {
-					calls.push("set");
-					return legacyStatus();
+					return hermesStatus();
 				},
 			},
 			now: () => "2026-05-30T14:45:00.000Z",
 		});
 
 		expect(report.passed).toBe(true);
+		expect(calls).toEqual(["status", "status"]);
 		expect(report.relayPublicKey).toMatchObject({
 			envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 			value: relayPublicKey,
@@ -144,11 +133,7 @@ describe("Hermes rollback rehearsal producer", () => {
 			relay: {
 				getStatus: async () => {
 					calls.push("status");
-					return calls.length === 1 ? hermesStatus() : legacyStatusAfterRead();
-				},
-				setMode: async () => {
-					calls.push("set");
-					return legacyStatus();
+					return hermesStatus();
 				},
 			},
 			now: () => "2026-05-30T14:45:00.000Z",
@@ -176,11 +161,7 @@ describe("Hermes rollback rehearsal producer", () => {
 			relay: {
 				getStatus: async () => {
 					calls.push("status");
-					return calls.length === 1 ? hermesStatus() : legacyStatusAfterRead();
-				},
-				setMode: async () => {
-					calls.push("set");
-					return legacyStatus();
+					return hermesStatus();
 				},
 			},
 		});
@@ -210,11 +191,7 @@ describe("Hermes rollback rehearsal producer", () => {
 			relay: {
 				getStatus: async () => {
 					calls.push("status");
-					return calls.length === 1 ? hermesStatus() : legacyStatusAfterRead();
-				},
-				setMode: async () => {
-					calls.push("set");
-					return legacyStatus();
+					return hermesStatus();
 				},
 			},
 		});
@@ -227,11 +204,10 @@ describe("Hermes rollback rehearsal producer", () => {
 		});
 	});
 
-	it("fails closed when the relay never observes Hermes mode before rollback", async () => {
+	it("fails closed when the relay never observes Hermes-only state before rollback", async () => {
 		installLockedRelayProofKeys();
 		const client: HermesRollbackRelayClient = {
-			getStatus: async () => legacyStatusAfterRead(),
-			setMode: async () => legacyStatus(),
+			getStatus: async () => malformedNonHermesStatus(),
 		};
 
 		const report = await runHermesRollbackRehearsal({
@@ -253,7 +229,6 @@ describe("Hermes rollback rehearsal producer", () => {
 			getStatus: async () => {
 				throw new Error("relay offline");
 			},
-			setMode: async () => legacyStatus(),
 		};
 
 		const report = await runHermesRollbackRehearsal({
@@ -279,50 +254,32 @@ afterEach(() => {
 	);
 });
 
-function hermesStatus() {
+function hermesStatus(): HermesRollbackRelayState {
 	const state = {
 		ok: true as const,
 		effectiveMode: "hermes" as const,
 		effectiveValue: "1" as const,
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
 		controlMode: "hermes" as const,
-		controlSource: "runtime-config" as const,
-		fallbackPath: "telclaude.private-runtime.legacy",
+		controlSource: "hermes-only" as const,
 	};
 	return {
 		...state,
 		relayProof: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", state),
-	};
+	} as HermesRollbackRelayState;
 }
 
-function legacyStatus() {
+function malformedNonHermesStatus(): HermesRollbackRelayState {
 	const state = {
 		ok: true as const,
-		effectiveMode: "legacy" as const,
-		effectiveValue: "0" as const,
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
-		controlMode: "legacy" as const,
-		controlSource: "runtime-config" as const,
-		fallbackPath: "telclaude.private-runtime.legacy",
+		effectiveMode: "disabled",
+		effectiveValue: "0",
+		controlMode: "disabled",
+		controlSource: "malformed",
 	};
-	return {
-		...state,
-		relayProof: signedRelayTranscript(
-			"/v1/hermes.private-runtime.mode",
-			JSON.stringify({ mode: "legacy" }),
-			state,
-		),
-	};
-}
-
-function legacyStatusAfterRead() {
-	const state = legacyStatus();
 	return {
 		...state,
 		relayProof: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", state),
-	};
+	} as unknown as HermesRollbackRelayState;
 }
 
 function signedRelayTranscript(

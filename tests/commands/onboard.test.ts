@@ -50,15 +50,13 @@ describe("onboard — non-interactive", () => {
 		expect((saved.telegram as Record<string, unknown>)?.allowedChats).toEqual([424242]);
 		expect(
 			(
-				(
-					(saved.security as Record<string, unknown>)?.permissions as Record<string, unknown>
-				)?.users as Record<string, unknown>
+				((saved.security as Record<string, unknown>)?.permissions as Record<string, unknown>)
+					?.users as Record<string, unknown>
 			)?.["tg:424242"],
 		).toEqual({ tier: "WRITE_LOCAL" });
 		expect(
-			(
-				(saved.security as Record<string, unknown>)?.permissions as Record<string, unknown>
-			)?.defaultTier,
+			((saved.security as Record<string, unknown>)?.permissions as Record<string, unknown>)
+				?.defaultTier,
 		).toBe("READ_ONLY");
 	});
 

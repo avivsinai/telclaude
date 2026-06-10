@@ -568,7 +568,7 @@ function extractBearerToken(headerValue: string | string[] | undefined): string 
 /**
  * Extract proxy token from request headers.
  *
- * The Claude SDK may send credentials as either `Authorization: Bearer <token>`
+ * Anthropic-compatible clients may send credentials as either `Authorization: Bearer <token>`
  * or `x-api-key: <token>` depending on the request type. Accept both so that
  * all SDK-initiated requests authenticate successfully against the proxy.
  */

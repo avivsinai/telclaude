@@ -61,6 +61,6 @@ Set `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` if browsers are installed there (D
 
 ## Security
 
-- Browser runs inside the sandboxed agent container.
+- Browser runs inside the sandboxed runtime container.
 - No credentials are available — use the relay proxy for authenticated requests.
 - Screenshots are written to the sandbox working directory.

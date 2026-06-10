@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const executeRemoteQueryMock = vi.hoisted(() => vi.fn());
+const executeHermesQueryMock = vi.hoisted(() => vi.fn());
 const createEntriesMock = vi.hoisted(() => vi.fn());
 const getEntriesMock = vi.hoisted(() => vi.fn());
 const markEntryPostedMock = vi.hoisted(() => vi.fn());
@@ -8,8 +8,8 @@ const checkLimitMock = vi.hoisted(() => vi.fn());
 const consumeMock = vi.hoisted(() => vi.fn());
 const createXTwitterClientMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../../src/agent/client.js", () => ({
-	executeRemoteQuery: (...args: unknown[]) => executeRemoteQueryMock(...args),
+vi.mock("../../src/hermes/private-execute.js", () => ({
+	executeHermesQuery: (...args: unknown[]) => executeHermesQueryMock(...args),
 }));
 
 vi.mock("../../src/memory/store.js", () => ({
@@ -99,10 +99,8 @@ function mockClient(overrides: Partial<SocialServiceClient> = {}): SocialService
 }
 
 describe("social handler", () => {
-	const originalAgentUrl = process.env.TELCLAUDE_SOCIAL_AGENT_URL;
-
 	beforeEach(() => {
-		executeRemoteQueryMock.mockReset();
+		executeHermesQueryMock.mockReset();
 		createEntriesMock.mockReset();
 		getEntriesMock.mockReset();
 		markEntryPostedMock.mockReset();
@@ -123,15 +121,6 @@ describe("social handler", () => {
 			remaining: { hour: 1, day: 9 },
 			resetMs: { hour: 1000, day: 10000 },
 		});
-		process.env.TELCLAUDE_SOCIAL_AGENT_URL = "http://agent-social:8789";
-	});
-
-	afterEach(() => {
-		if (originalAgentUrl === undefined) {
-			delete process.env.TELCLAUDE_SOCIAL_AGENT_URL;
-		} else {
-			process.env.TELCLAUDE_SOCIAL_AGENT_URL = originalAgentUrl;
-		}
 	});
 
 	it("heartbeat processes notifications and continues on errors", async () => {
@@ -141,7 +130,7 @@ describe("social handler", () => {
 				{ id: "n2", postId: "post-2" },
 			]),
 		});
-		executeRemoteQueryMock
+		executeHermesQueryMock
 			.mockImplementationOnce(() => {
 				throw new Error("boom");
 			})
@@ -160,7 +149,7 @@ describe("social handler", () => {
 		});
 		// No promoted ideas; idle autonomous response
 		getEntriesMock.mockReturnValue([]);
-		executeRemoteQueryMock.mockReturnValue(mockStream("[IDLE]"));
+		executeHermesQueryMock.mockReturnValue(mockStream("[IDLE]"));
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
@@ -171,7 +160,7 @@ describe("social handler", () => {
 		const client = mockClient();
 		// No promoted ideas; idle autonomous response
 		getEntriesMock.mockReturnValue([]);
-		executeRemoteQueryMock.mockReturnValue(mockStream("[IDLE]"));
+		executeHermesQueryMock.mockReturnValue(mockStream("[IDLE]"));
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
@@ -187,7 +176,7 @@ describe("social handler", () => {
 				]),
 		});
 		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream(
 				'{"action":"reply","targetPostId":"post-42","body":"Here is the sharp reply.","rationale":"worth engaging"}',
 			),
@@ -219,7 +208,7 @@ describe("social handler", () => {
 			quotePost: vi.fn(),
 		});
 		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream(
 				'{"action":"quote","targetPostId":"tweet-7","body":"Building on this: here is the quote take.","rationale":"broader audience"}',
 			),
@@ -272,10 +261,8 @@ describe("social handler", () => {
 			follow: followMock,
 		});
 		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(
-			mockStream(
-				'{"action":"follow","handle":"@alice@example.com","rationale":"worth following"}',
-			),
+		executeHermesQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"follow","handle":"@alice@example.com","rationale":"worth following"}'),
 		);
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
@@ -318,7 +305,7 @@ describe("social handler", () => {
 			unfollow: unfollowMock,
 		});
 		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream('{"action":"unfollow","handle":"@oldfriend","rationale":"spammy"}'),
 		);
 
@@ -342,14 +329,16 @@ describe("social handler", () => {
 		const lookupUserMock = vi.fn();
 		const followMock = vi.fn();
 		const client = mockClient({
-			fetchTimeline: vi.fn().mockResolvedValue([
-				{ id: "post-11", text: "Only Alice is visible", authorHandle: "alice" },
-			]),
+			fetchTimeline: vi
+				.fn()
+				.mockResolvedValue([
+					{ id: "post-11", text: "Only Alice is visible", authorHandle: "alice" },
+				]),
 			lookupUser: lookupUserMock,
 			follow: followMock,
 		});
 		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream('{"action":"follow","handle":"@bob","rationale":"hallucinated target"}'),
 		);
 
@@ -379,14 +368,14 @@ describe("social handler", () => {
 					},
 		);
 		const client = mockClient({
-			fetchTimeline: vi.fn().mockResolvedValue([
-				{ id: "post-12", text: "Worth following", authorHandle: "alice" },
-			]),
+			fetchTimeline: vi
+				.fn()
+				.mockResolvedValue([{ id: "post-12", text: "Worth following", authorHandle: "alice" }]),
 			lookupUser: lookupUserMock,
 			follow: followMock,
 		});
 		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream('{"action":"follow","handle":"@alice","rationale":"worth following"}'),
 		);
 
@@ -404,36 +393,34 @@ describe("social handler", () => {
 
 	it("handleSocialNotification posts reply with trimmed structured response", async () => {
 		const client = mockClient();
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream('{"action":"reply","body":" hello ","rationale":"worth replying"}'),
 		);
 
-		const res = await handleSocialNotification(
-			{ id: "n1", postId: "post-1" },
-			SERVICE_ID,
-			client,
-			"http://agent",
-		);
+		const res = await handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(client.postReply).toHaveBeenCalledWith("post-1", "hello");
-		expect(executeRemoteQueryMock).toHaveBeenCalled();
-		const [prompt, options] = executeRemoteQueryMock.mock.calls[0];
+		expect(executeHermesQueryMock).toHaveBeenCalled();
+		const [prompt, options] = executeHermesQueryMock.mock.calls[0];
 		expect(String(prompt)).toContain("SOCIAL NOTIFICATION (MOLTBOOK)");
 		expect(options.tier).toBe("SOCIAL");
-		expect(options.scope).toBe("social");
+		expect(options.profileId).toBe("social:moltbook");
+		expect(options.runtimeDomain).toBe("social");
+		expect(options.mcpAuthority).toEqual(
+			expect.objectContaining({
+				domain: "social",
+				memorySource: "social",
+				writableNamespace: "social",
+			}),
+		);
 	});
 
 	it("handleSocialNotification ignores empty decisions", async () => {
 		const client = mockClient();
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("   "));
+		executeHermesQueryMock.mockReturnValueOnce(mockStream("   "));
 
-		const res = await handleSocialNotification(
-			{ id: "n1", postId: "post-1" },
-			SERVICE_ID,
-			client,
-			"http://agent",
-		);
+		const res = await handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).toContain("ignored");
@@ -442,16 +429,11 @@ describe("social handler", () => {
 
 	it("handleSocialNotification ignores spam mentions when agent returns ignore", async () => {
 		const client = mockClient();
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream('{"action":"ignore","rationale":"spam mention"}'),
 		);
 
-		const res = await handleSocialNotification(
-			{ id: "n1", postId: "post-1" },
-			SERVICE_ID,
-			client,
-			"http://agent",
-		);
+		const res = await handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).toContain("ignored");
@@ -460,16 +442,11 @@ describe("social handler", () => {
 
 	it("handleSocialNotification ignores legacy plain-text refusal output", async () => {
 		const client = mockClient();
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("Spam mention - ignoring. No response warranted."),
 		);
 
-		const res = await handleSocialNotification(
-			{ id: "n1", postId: "post-1" },
-			SERVICE_ID,
-			client,
-			"http://agent",
-		);
+		const res = await handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).toContain("ignored");
@@ -478,17 +455,17 @@ describe("social handler", () => {
 
 	it("handleSocialNotification reports missing post id", async () => {
 		const client = mockClient();
-		const res = await handleSocialNotification({ id: "n1" }, SERVICE_ID, client, "http://agent");
+		const res = await handleSocialNotification({ id: "n1" }, SERVICE_ID, client);
 		expect(res.ok).toBe(false);
 		expect(res.message).toContain("missing post id");
 	});
 
 	it("handleSocialNotification surfaces agent failures", async () => {
 		const client = mockClient();
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("oops", false, "agent failed"));
+		executeHermesQueryMock.mockReturnValueOnce(mockStream("oops", false, "agent failed"));
 
 		await expect(
-			handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client, "http://agent"),
+			handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client),
 		).rejects.toThrow("agent failed");
 	});
 
@@ -501,16 +478,11 @@ describe("social handler", () => {
 				rateLimited: true,
 			}),
 		});
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream('{"action":"reply","body":"reply","rationale":"worth replying"}'),
 		);
 
-		const res = await handleSocialNotification(
-			{ id: "n1", postId: "post-1" },
-			SERVICE_ID,
-			client,
-			"http://agent",
-		);
+		const res = await handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client);
 
 		expect(res.ok).toBe(false);
 		expect(res.message).toContain("rate limit");
@@ -538,7 +510,7 @@ describe("social handler", () => {
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt() for identity
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, { action: "post", content: "My new post content" }),
 		);
 
@@ -599,7 +571,7 @@ describe("social handler", () => {
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt()
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, { action: "skip", reason: "not relevant" }),
 		);
 
@@ -612,12 +584,12 @@ describe("social handler", () => {
 	});
 
 	it("queryPublicPersona enables skills for trusted operator queries", async () => {
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("timeline looks good"));
+		executeHermesQueryMock.mockReturnValueOnce(mockStream("timeline looks good"));
 
 		await queryPublicPersona("what's on your X timeline?", SERVICE_ID);
 
-		expect(executeRemoteQueryMock).toHaveBeenCalledTimes(1);
-		const [, options] = executeRemoteQueryMock.mock.calls[0];
+		expect(executeHermesQueryMock).toHaveBeenCalledTimes(1);
+		const [, options] = executeHermesQueryMock.mock.calls[0];
 		expect(options.enableSkills).toBe(true);
 		expect(options.poolKey).toBe(`${SERVICE_ID}:operator-query`);
 	});
@@ -645,7 +617,7 @@ describe("social handler", () => {
 
 		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
 				action: "thread",
 				tweets: ["Hook tweet", "Body tweet", "CTA tweet"],
@@ -690,7 +662,7 @@ describe("social handler", () => {
 		});
 
 		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValue(sampleEntries);
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream('{"action":"idle","rationale":"done"}'));
+		executeHermesQueryMock.mockReturnValueOnce(mockStream('{"action":"idle","rationale":"done"}'));
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
@@ -719,7 +691,7 @@ describe("social handler", () => {
 
 		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
 				action: "thread",
 				tweets: ["Tweet 1", "Tweet 2"],
@@ -751,7 +723,7 @@ describe("social handler", () => {
 
 		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
 				action: "thread",
 				tweets: ["Only one tweet"],
@@ -789,7 +761,7 @@ describe("social handler", () => {
 
 		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
 				action: "thread",
 				tweets: ["Hook", "Body", "CTA"],
@@ -822,7 +794,7 @@ describe("social handler", () => {
 
 		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
-		executeRemoteQueryMock
+		executeHermesQueryMock
 			// proactive query
 			.mockReturnValueOnce(
 				mockStream("", true, undefined, { action: "post", content: "Skills test" }),
@@ -841,16 +813,16 @@ describe("social handler", () => {
 		});
 
 		// Verify proactive query received allowedSkills
-		const proactiveCall = executeRemoteQueryMock.mock.calls[0];
+		const proactiveCall = executeHermesQueryMock.mock.calls[0];
 		expect(proactiveCall[1].allowedSkills).toEqual(["memory", "summarize", "social-posting"]);
 
 		// Verify autonomous query received allowedSkills
-		const autonomousCall = executeRemoteQueryMock.mock.calls[1];
+		const autonomousCall = executeHermesQueryMock.mock.calls[1];
 		expect(autonomousCall[1].allowedSkills).toEqual(["memory", "summarize", "social-posting"]);
 	});
 
 	it("queryPublicPersona passes allowedSkills from serviceConfig", async () => {
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("response with skills"));
+		executeHermesQueryMock.mockReturnValueOnce(mockStream("response with skills"));
 
 		await queryPublicPersona("test?", SERVICE_ID, {
 			id: SERVICE_ID,
@@ -862,7 +834,7 @@ describe("social handler", () => {
 			notifyOnHeartbeat: "never",
 		});
 
-		const [, options] = executeRemoteQueryMock.mock.calls[0];
+		const [, options] = executeHermesQueryMock.mock.calls[0];
 		expect(options.allowedSkills).toEqual(["memory", "summarize"]);
 	});
 
@@ -879,7 +851,7 @@ describe("social handler", () => {
 				fetchPostByUrl,
 			}),
 		);
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("response"));
+		executeHermesQueryMock.mockReturnValueOnce(mockStream("response"));
 
 		await queryPublicPersona(
 			"what do you think of https://x.com/writer/status/12345?s=20 ?",
@@ -887,7 +859,7 @@ describe("social handler", () => {
 		);
 
 		expect(fetchPostByUrl).toHaveBeenCalledWith("https://x.com/writer/status/12345?s=20");
-		const [prompt] = executeRemoteQueryMock.mock.calls[0];
+		const [prompt] = executeHermesQueryMock.mock.calls[0];
 		expect(prompt).toContain("[API-FETCHED REFERENCED POSTS]");
 		expect(prompt).toContain("API-resolved tweet text");
 		expect(prompt).toContain("do not use browser automation to fetch those posts again");
@@ -913,15 +885,15 @@ describe("social handler", () => {
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt()
 
-		executeRemoteQueryMock.mockReturnValueOnce(
+		executeHermesQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, { action: "post", content: "Post content" }),
 		);
 
 		await handleSocialHeartbeat(SERVICE_ID, client);
 
 		// Verify the prompt contains only the approved idea
-		expect(executeRemoteQueryMock).toHaveBeenCalled();
-		const [prompt] = executeRemoteQueryMock.mock.calls[0];
+		expect(executeHermesQueryMock).toHaveBeenCalled();
+		const [prompt] = executeHermesQueryMock.mock.calls[0];
 		expect(String(prompt)).toContain("Only this idea should appear");
 		expect(String(prompt)).toContain("APPROVED IDEA");
 		expect(String(prompt)).toContain("PROACTIVE POST REQUEST");

@@ -10,8 +10,6 @@ import {
 import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "../../src/sandbox/domains.js";
 
 const initFirewallPath = path.resolve("docker/init-firewall.sh");
-const composePath = path.resolve("docker/docker-compose.yml");
-const deployComposePath = path.resolve("docker/docker-compose.deploy.yml");
 
 function extractShellFunction(source: string, name: string): string {
 	const match = source.match(new RegExp(`${name}\\(\\) \\{[\\s\\S]*?\\n\\}`));
@@ -73,18 +71,17 @@ describe("firewall domain generation", () => {
 		expect(initScript).toContain('ALLOWED_DOMAINS+=("$normalized")');
 	});
 
-	it("lets agent containers ignore configured additional domains", () => {
+	it("keeps additional-domain controls on the relay/Hermes paths", () => {
 		const initScript = fs.readFileSync(initFirewallPath, "utf8");
 		expect(initScript).toContain("TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS");
 
-		for (const composeFile of [composePath, deployComposePath]) {
-			const compose = fs.readFileSync(composeFile, "utf8");
-			for (const serviceName of ["telclaude-agent", "agent-social"]) {
-				expect(extractComposeService(compose, serviceName)).toContain(
-					"TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1",
-				);
-			}
-		}
+		const hermesCompose = fs.readFileSync(path.resolve("docker/docker-compose.hermes.yml"), "utf8");
+		expect(extractComposeService(hermesCompose, "tc-hermes-contained")).toContain(
+			"TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1",
+		);
+		expect(extractComposeService(hermesCompose, "tc-hermes-social")).toContain(
+			"TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1",
+		);
 	});
 
 	it("validates additional firewall domains before appending them", () => {

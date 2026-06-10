@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTelclaudeMcpAuthorityRegistry } from "../../src/hermes/mcp/authority-registry.js";
 import {
 	buildHermesPrivateRuntimeAdapterFromEnv,
-	executeHermesPrivateQuery,
+	buildHermesRuntimeAdapterFromEnv,
+	executeHermesQuery,
 	setHermesPrivateRuntimeAdapterForTest,
-	shouldUseHermesPrivateRuntime,
+	setHermesRuntimeAdapterForTest,
 } from "../../src/hermes/private-execute.js";
 import {
 	buildHermesCliProbeInvocation,
@@ -42,7 +43,7 @@ const TEST_HERMES_CONTAINED_IP = "10.88.92.11";
 type TestContainedDockerRuntime = {
 	kind: "contained-docker";
 	containerName: string;
-	networkName: "telclaude-hermes-relay";
+	networkName: "telclaude-hermes-private";
 	containerId: string;
 	image: string;
 	imageDigest: `sha256:${string}`;
@@ -254,6 +255,37 @@ describe("Hermes private runtime seam", () => {
 		});
 	});
 
+	it("does not mint default MCP authority when the caller explicitly disables it", async () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const sessions = new HermesSessionMap(() => "tc-session-1");
+		let seenAuthority: HermesRuntimeRequest["mcpAuthority"] | undefined;
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* (request) {
+				seenAuthority = request.mcpAuthority;
+				yield { type: "done", response: "classified" };
+			},
+		};
+
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions,
+				mcpAuthorityRegistry: registry,
+				request: baseRequest({
+					profileId: "security-observer",
+					mcpAuthority: false,
+				}),
+				now: () => 1_000,
+			}),
+		);
+
+		expect(chunks.at(-1)).toMatchObject({
+			type: "done",
+			result: { response: "classified", success: true },
+		});
+		expect(seenAuthority).toBeUndefined();
+	});
+
 	it("activates the live MCP transport authority only while the runtime is executing", async () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const sessions = new HermesSessionMap(() => "tc-session-1");
@@ -421,13 +453,11 @@ describe("Hermes private runtime seam", () => {
 		});
 	});
 
-	it("exposes a disabled-by-default private query bridge", async () => {
-		expect(shouldUseHermesPrivateRuntime({ TELCLAUDE_HERMES_PRIVATE_RUNTIME: "1" })).toBe(true);
-		expect(shouldUseHermesPrivateRuntime({ TELCLAUDE_HERMES_PRIVATE_RUNTIME: "0" })).toBe(false);
+	it("exposes a Hermes-only private query bridge that fails closed without an adapter", async () => {
 		setHermesPrivateRuntimeAdapterForTest(null);
 
 		const chunks = await collect(
-			executeHermesPrivateQuery("hello", {
+			executeHermesQuery("hello", {
 				cwd: "/repo",
 				tier: "READ_ONLY",
 				poolKey: "tg:123",
@@ -473,6 +503,31 @@ describe("Hermes private runtime seam", () => {
 		).not.toBeNull();
 	});
 
+	it("builds social API adapters only from the explicit social Hermes env", () => {
+		expect(
+			buildHermesRuntimeAdapterFromEnv("social", {
+				TELCLAUDE_HERMES_API_BASE_URL: "http://private-hermes.local",
+				TELCLAUDE_HERMES_API_KEY: "private-key",
+			}),
+		).toBeNull();
+		expect(() =>
+			buildHermesRuntimeAdapterFromEnv("social", {
+				TELCLAUDE_HERMES_SOCIAL_API_BASE_URL: "http://social-hermes.local",
+			}),
+		).toThrow("TELCLAUDE_HERMES_SOCIAL_API_KEY is required");
+		expect(() =>
+			buildHermesRuntimeAdapterFromEnv("social", {
+				TELCLAUDE_HERMES_SOCIAL_API_KEY: "api-key",
+			}),
+		).toThrow("TELCLAUDE_HERMES_SOCIAL_API_BASE_URL is required");
+		expect(
+			buildHermesRuntimeAdapterFromEnv("social", {
+				TELCLAUDE_HERMES_SOCIAL_API_BASE_URL: "http://social-hermes.local",
+				TELCLAUDE_HERMES_SOCIAL_API_KEY: "social-key",
+			}),
+		).not.toBeNull();
+	});
+
 	it("reports Hermes API env misconfiguration as a failed private query", async () => {
 		const priorBaseUrl = process.env.TELCLAUDE_HERMES_API_BASE_URL;
 		const priorApiKey = process.env.TELCLAUDE_HERMES_API_KEY;
@@ -482,7 +537,7 @@ describe("Hermes private runtime seam", () => {
 			setHermesPrivateRuntimeAdapterForTest(null);
 
 			const chunks = await collect(
-				executeHermesPrivateQuery("hello", {
+				executeHermesQuery("hello", {
 					cwd: "/repo",
 					tier: "READ_ONLY",
 					poolKey: "tg:123",
@@ -520,6 +575,66 @@ describe("Hermes private runtime seam", () => {
 		}
 	});
 
+	it("does not let social Hermes queries reuse the private adapter or private env", async () => {
+		const priorPrivateBaseUrl = process.env.TELCLAUDE_HERMES_API_BASE_URL;
+		const priorPrivateApiKey = process.env.TELCLAUDE_HERMES_API_KEY;
+		const priorSocialBaseUrl = process.env.TELCLAUDE_HERMES_SOCIAL_API_BASE_URL;
+		const priorSocialApiKey = process.env.TELCLAUDE_HERMES_SOCIAL_API_KEY;
+		const privateRuntime: HermesRuntimeAdapter = {
+			run: async function* () {
+				yield { type: "done", response: "private runtime used incorrectly" };
+			},
+		};
+		try {
+			process.env.TELCLAUDE_HERMES_API_BASE_URL = "http://private-hermes.local";
+			process.env.TELCLAUDE_HERMES_API_KEY = "private-key";
+			delete process.env.TELCLAUDE_HERMES_SOCIAL_API_BASE_URL;
+			delete process.env.TELCLAUDE_HERMES_SOCIAL_API_KEY;
+			setHermesPrivateRuntimeAdapterForTest(privateRuntime);
+			setHermesRuntimeAdapterForTest("social", null);
+
+			const chunks = await collect(
+				executeHermesQuery("hello social", {
+					cwd: "/repo",
+					tier: "SOCIAL",
+					poolKey: "social:moltbook",
+					telclaudeSessionId: "social:moltbook",
+					profileId: "social:moltbook",
+					enableSkills: true,
+					allowedSkills: ["social-posting"],
+					timeoutMs: 60_000,
+					mcpAuthority: {
+						domain: "social",
+						memorySource: "social",
+						writableNamespace: "social",
+						providerScopes: [],
+					},
+				}),
+			);
+
+			expect(chunks).toEqual([
+				{
+					type: "done",
+					result: {
+						response: "",
+						success: false,
+						error: "Hermes social runtime adapter is not configured",
+						costUsd: 0,
+						numTurns: 0,
+						durationMs: 0,
+					},
+				},
+			]);
+		} finally {
+			restoreEnvValue("TELCLAUDE_HERMES_API_BASE_URL", priorPrivateBaseUrl);
+			restoreEnvValue("TELCLAUDE_HERMES_API_KEY", priorPrivateApiKey);
+			restoreEnvValue("TELCLAUDE_HERMES_SOCIAL_API_BASE_URL", priorSocialBaseUrl);
+			restoreEnvValue("TELCLAUDE_HERMES_SOCIAL_API_KEY", priorSocialApiKey);
+			setHermesPrivateRuntimeAdapterForTest(null);
+			setHermesRuntimeAdapterForTest("social", null);
+		}
+	});
+
 	it("passes private query options into the configured runtime adapter", async () => {
 		let seenRequest: Parameters<HermesRuntimeAdapter["run"]>[0] | undefined;
 		const runtime: HermesRuntimeAdapter = {
@@ -531,7 +646,7 @@ describe("Hermes private runtime seam", () => {
 		setHermesPrivateRuntimeAdapterForTest(runtime);
 
 		const chunks = await collect(
-			executeHermesPrivateQuery("hello", {
+			executeHermesQuery("hello", {
 				cwd: "/repo",
 				tier: "WRITE_LOCAL",
 				poolKey: "tg:123",
@@ -1301,7 +1416,7 @@ function containedDockerRuntime(
 	return {
 		kind: "contained-docker" as const,
 		containerName: "tc-hermes-contained",
-		networkName: "telclaude-hermes-relay" as const,
+		networkName: "telclaude-hermes-private" as const,
 		containerId: "b6d8f6c9a1d4",
 		image:
 			"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
@@ -1344,6 +1459,14 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 
 function restoreEnv(key: keyof typeof ORIGINAL_ENV): void {
 	const value = ORIGINAL_ENV[key];
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
+}
+
+function restoreEnvValue(key: string, value: string | undefined): void {
 	if (value === undefined) {
 		delete process.env[key];
 	} else {

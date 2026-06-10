@@ -4,7 +4,7 @@ How to run telclaude as an operator-control surface for a personal Claude agent.
 
 ## Framing
 
-Telclaude is the secure Telegram-bridged operator-control surface for a personal Claude agent. The relay holds secrets and enforces tiers; the vault sidecar holds credentials and signs approval tokens; private and social personas are air-gapped at the memory boundary; recurring work is driven by the cron scheduler and signed webhooks. The private agent can run on the default Claude runtime or, once proven, on a contained no-fork Hermes runtime that the relay drives through operator RPC. As an operator you live mostly on Telegram and only drop into the CLI for setup, surgery, and emergency controls.
+Telclaude is the secure Telegram-bridged operator-control surface for a personal agent. The relay holds secrets and enforces tiers; the vault sidecar holds credentials and signs approval tokens; private and social personas are air-gapped at the memory boundary; recurring work is driven by the cron scheduler and signed webhooks. The private agent runs on a contained no-fork Hermes runtime that the relay drives through relay-owned MCP and operator RPC. As an operator you live mostly on Telegram and only drop into the CLI for setup, surgery, and emergency controls.
 
 ## Maturity ladder
 
@@ -12,7 +12,7 @@ Four levels. Each level is additive; you never lose the previous level's control
 
 ### Level 1 — Single chat, default profile
 
-One Telegram chat in `telegram.allowedChats`, one user in `security.permissions.users`, no `profiles[]` configured. The implicit `default` profile is in force for every chat (`src/config/profiles.ts:IMPLICIT_DEFAULT_PROFILE_ID`). Private memory is sourced from `telegram` with no profile suffix. Soul overlay is whatever `docs/soul.md` already provides through the SDK system prompt.
+One Telegram chat in `telegram.allowedChats`, one user in `security.permissions.users`, no `profiles[]` configured. The implicit `default` profile is in force for every chat (`src/config/profiles.ts:IMPLICIT_DEFAULT_PROFILE_ID`). Private memory is sourced from `telegram` with no profile suffix. Soul overlay is whatever `docs/soul.md` already provides through the runtime prompt.
 
 Cron is optional at this level; the private heartbeat (`telegram.heartbeat.intervalHours`) plus the curator's local scan are usually enough.
 
@@ -84,7 +84,7 @@ Schedule shapes (mutually exclusive): `--at <iso>` for one-shot, `--every <durat
 
 Cron actions cover `--private`, `--social [serviceId]`, `--curator-scan`, and `--prompt <text>`. Scheduled `--prompt` runs honour the profile bound to the delivery chat (so `defaultModel`, `soulPath`, and memory source apply).
 
-Cron jobs and the legacy interval heartbeat are mutually exclusive per target — pick one or the other.
+Cron jobs and the interval heartbeat are mutually exclusive per target — pick one or the other.
 
 ### Level 4 — Cron, signed webhooks, and a Codex peer
 
@@ -119,7 +119,7 @@ Two distinct surfaces. Don't conflate them.
 
 **Control room** — the git repo. Operator edits go here:
 
-- `telclaude.json` — policy: providers, security profile, network, observer, rate limits, SDK config, cron defaults, `profiles[]`.
+- `telclaude.json` — policy: providers, security profile, network, observer, rate limits, Hermes/runtime config, cron defaults, `profiles[]`.
 - `telclaude-private.json` — PII: `telegram.allowedChats`, `security.permissions.users`, social admin chats. Relay-only, merged via `TELCLAUDE_PRIVATE_CONFIG`.
 - `docs/soul.md` plus any profile-specific `soul-*.md` files referenced by `soulPath`.
 - `.claude/skills/` and `.agents/skills/` — user-authored skill source.
@@ -184,34 +184,34 @@ Each recipe will note: required profile config, required providers, required ski
 
 ## Hermes private runtime
 
-The private agent has two execution backends. The default is the Claude runtime described above. The second is the **no-fork Hermes wrapper**: upstream Hermes, pinned and run unmodified inside a contained sidecar, with the relay supplying every credential, provider call, memory read, and outbound action through a relay-internal MCP bridge. The operator surface for this lives under one CLI command group (`pnpm dev hermes ...`, `src/commands/hermes.ts:registerHermesCommand`).
+The private agent has one documented execution backend: the **no-fork Hermes wrapper**. Upstream Hermes is pinned and run unmodified inside a contained sidecar, with the relay supplying every credential, provider call, memory read, and outbound action through a relay-internal MCP bridge. There is no documented alternate worker or private-runtime selector. The operator surface for Hermes readiness and evidence lives under one CLI command group (`pnpm dev hermes ...`, `src/commands/hermes.ts:registerHermesCommand`).
 
-### Switching the runtime mode
+### Runtime readiness
 
-Mode is durable relay state, toggled through operator RPC — not a config-file edit:
+Hermes private-runtime readiness is proven through generated evidence rather than a runtime-mode toggle:
 
 ```
-pnpm dev hermes private-runtime status
-pnpm dev hermes private-runtime status --json
-pnpm dev hermes private-runtime set hermes
-pnpm dev hermes private-runtime set legacy
+pnpm dev hermes doctor --probes --compat-lock
+pnpm dev hermes prove --upstream-clean
+pnpm dev hermes cutover-check --strict
 ```
 
-`set` accepts only `hermes` or `legacy`. `status` reports the relay-observed `effectiveMode`, the control mode/source, and whether rollout is allowed (`src/commands/hermes.ts` `private-runtime` subcommands). The effective runtime also requires `TELCLAUDE_HERMES_PRIVATE_RUNTIME=1`; when that rollout env flag is off, the relay reports `legacy` regardless of durable mode. Treat `set hermes` as the last step of a graduation, after strict cutover evidence is safe and reviewed, because the setter itself only flips durable relay state.
+Treat `cutover-check --strict` as the graduation gate: it fails closed unless parity, containment, no-fork proof, queue ownership, rollback rehearsal, and served-MCP evidence are present and reviewed.
 
 ### The contained runtime (Docker)
 
-In Docker the Hermes runtime is a second compose overlay, `docker/docker-compose.hermes.yml`, with exactly two containers on an internal-only bridge network (`telclaude-hermes-relay` — the compose key is `hermes-relay-net`; default subnet `192.0.2.0/24`):
+In Docker the Hermes runtime is a second compose overlay, `docker/docker-compose.hermes.yml`, with the relay plus separate private/social runtime containers on separate internal-only bridge networks:
 
-- `telclaude` — the relay (default `192.0.2.10`), hosting the live MCP bridge on port `8793` and the admin socket for probe-token issuance.
-- `tc-hermes-contained` — pinned upstream Hermes (image digest in the compose file), default `192.0.2.11`, running its API server on port `8642`.
+- `telclaude` — the relay, joined to `telclaude-hermes-private` (`192.0.2.10`) and `telclaude-hermes-social` (`192.0.3.10`), hosting live MCP listeners on port `8793` and the admin socket for probe-token issuance.
+- `tc-hermes-contained` — pinned upstream Hermes for private/cron/observer work (image digest in the compose file), default `192.0.2.11`, running its API server on port `8642`.
+- `tc-hermes-social` — pinned upstream Hermes for social work, default `192.0.3.11`, running its own API server on port `8642`.
 
-The contained container is hardened: non-root `10000:10000`, all capabilities dropped, read-only root filesystem, `noexec` tmpfs for `/tmp`, `/home/hermes`, and `/run`, 2GB / 2 CPU / 256 PID caps. Its entrypoint (`docker/hermes-contained-entrypoint.sh`) curates skills from the source tree into `HERMES_HOME` against the read-only allowlist in `docker/hermes-contained-skills.allowlist` — rejecting path traversal and any entry missing a `SKILL.md` — and mints a peer-bound OpenAI Codex relay token so model traffic only reaches the relay's proxy route (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). Model-provider hosts are routed to a blackhole address; the container has no path to providers, vault, or the public internet except through the relay.
+The contained containers are hardened: non-root `10000:10000`, all capabilities dropped, read-only root filesystem, `noexec` tmpfs for `/tmp`, `/home/hermes`, and `/run`, 2GB / 2 CPU / 256 PID caps. The entrypoint (`docker/hermes-contained-entrypoint.sh`) curates skills from the source tree into `HERMES_HOME` against read-only allowlists — `docker/hermes-contained-skills.allowlist` for private/cron/observer and `docker/hermes-social-skills.allowlist` for social — rejecting path traversal and any entry missing a `SKILL.md`, and mints a peer-bound OpenAI Codex relay token so model traffic only reaches the relay's proxy route (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). Model-provider hosts are routed to a blackhole address; the containers have no path to providers, vault, or the public internet except through the relay.
 
 Operator-supplied inputs to the overlay (`docker/.env` or shell):
 
-- `TELCLAUDE_HERMES_PRIVATE_RUNTIME=1` — enable the overlay.
-- `TELCLAUDE_HERMES_API_SERVER_KEY=<ephemeral>` — shared Bearer between relay and contained API server (generate per `compose up`, e.g. `openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`).
+- `TELCLAUDE_HERMES_API_SERVER_KEY=<ephemeral>` — shared Bearer between relay and private contained API server (generate per `compose up`, e.g. `openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`).
+- `TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=<ephemeral>` — separate shared Bearer between relay and social contained API server.
 - `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=<relay-scoped>` — the relay-owned OpenAI Codex subscription token.
 - `OPERATOR_RPC_AGENT_PUBLIC_KEY` / `OPERATOR_RPC_RELAY_PRIVATE_KEY` — operator RPC keypair from `pnpm dev keygen operator`, used to sign the proof attestations below.
 

@@ -25,11 +25,7 @@ describe("docker/install-claude-assets.sh", () => {
 		fs.mkdirSync(bundledAgentsSkillDir, { recursive: true });
 		fs.mkdirSync(claudeHome, { recursive: true });
 
-		fs.writeFileSync(
-			path.join(bundledAgentsSkillDir, "SKILL.md"),
-			"# External Provider\n",
-			"utf8",
-		);
+		fs.writeFileSync(path.join(bundledAgentsSkillDir, "SKILL.md"), "# External Provider\n", "utf8");
 		fs.writeFileSync(path.join(bundledClaudeDir, "CLAUDE.md"), "# Bundled Claude\n", "utf8");
 		fs.symlinkSync(
 			path.relative(bundledSkillsDir, bundledAgentsSkillDir),
@@ -97,20 +93,22 @@ describe("docker/install-claude-assets.sh", () => {
 		});
 
 		expect(fs.lstatSync(path.join(claudeHome, "skills")).isSymbolicLink()).toBe(true);
-		expect(fs.readlinkSync(path.join(claudeHome, "skills"))).toBe(path.join(skillCatalog, "skills"));
+		expect(fs.readlinkSync(path.join(claudeHome, "skills"))).toBe(
+			path.join(skillCatalog, "skills"),
+		);
 		expect(fs.lstatSync(path.join(claudeHome, "skills-draft")).isSymbolicLink()).toBe(true);
 		expect(fs.readlinkSync(path.join(claudeHome, "skills-draft"))).toBe(
 			path.join(skillCatalog, "skills-draft"),
 		);
-		expect(fs.readFileSync(path.join(skillCatalog, "skills", "memory", "SKILL.md"), "utf8")).toContain(
-			"Memory",
-		);
+		expect(
+			fs.readFileSync(path.join(skillCatalog, "skills", "memory", "SKILL.md"), "utf8"),
+		).toContain("Memory");
 		expect(
 			fs.readFileSync(path.join(skillCatalog, "skills-draft", "draft-skill", "SKILL.md"), "utf8"),
 		).toContain("Draft Skill");
-		expect(fs.readFileSync(path.join(skillCatalog, "skills", "legacy-skill", "SKILL.md"), "utf8")).toContain(
-			"Existing Catalog Skill",
-		);
+		expect(
+			fs.readFileSync(path.join(skillCatalog, "skills", "legacy-skill", "SKILL.md"), "utf8"),
+		).toContain("Existing Catalog Skill");
 	});
 
 	it("preserves runtime-generated files while refreshing bundled skill contents in the shared catalog", () => {
@@ -129,7 +127,11 @@ describe("docker/install-claude-assets.sh", () => {
 		fs.mkdirSync(runtimeRefsDir, { recursive: true });
 		fs.mkdirSync(claudeHome, { recursive: true });
 
-		fs.writeFileSync(path.join(bundledAgentsSkillDir, "SKILL.md"), "# External Provider v2\n", "utf8");
+		fs.writeFileSync(
+			path.join(bundledAgentsSkillDir, "SKILL.md"),
+			"# External Provider v2\n",
+			"utf8",
+		);
 		fs.writeFileSync(
 			path.join(bundledAgentsSkillDir, "references", "catalog.md"),
 			"bundled reference\n",
@@ -209,7 +211,9 @@ describe("docker/install-claude-assets.sh", () => {
 		}
 
 		expect(fs.lstatSync(path.join(claudeHome, "skills")).isSymbolicLink()).toBe(true);
-		expect(fs.readlinkSync(path.join(claudeHome, "skills"))).toBe(path.join(skillCatalog, "skills"));
+		expect(fs.readlinkSync(path.join(claudeHome, "skills"))).toBe(
+			path.join(skillCatalog, "skills"),
+		);
 		expect(fs.lstatSync(path.join(claudeHome, "skills-draft")).isSymbolicLink()).toBe(true);
 		expect(fs.readlinkSync(path.join(claudeHome, "skills-draft"))).toBe(
 			path.join(skillCatalog, "skills-draft"),

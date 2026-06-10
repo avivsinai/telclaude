@@ -34,17 +34,18 @@ describe("provider proxy approval interception", () => {
 		createProviderApprovalMock.mockReturnValue("nonce-approval");
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () =>
-				new Response(
-					JSON.stringify({
-						errorCode: "approval_required",
-						error: "Action requires approval",
-					}),
-					{
-						status: 403,
-						headers: { "content-type": "application/json" },
-					},
-				),
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							errorCode: "approval_required",
+							error: "Action requires approval",
+						}),
+						{
+							status: 403,
+							headers: { "content-type": "application/json" },
+						},
+					),
 			),
 		);
 	});
@@ -111,11 +112,12 @@ describe("provider proxy approval interception", () => {
 		validateProviderBaseUrlMock.mockResolvedValue({
 			url: new URL("https://israel-services.test"),
 		});
-		const fetchMock = vi.fn(async () =>
-			new Response(JSON.stringify({ appointments: [{ id: "appt-1" }] }), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			}),
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ appointments: [{ id: "appt-1" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -163,11 +165,12 @@ describe("provider proxy approval interception", () => {
 		validateProviderBaseUrlMock.mockResolvedValue({
 			url: new URL("https://israel-services.test"),
 		});
-		const fetchMock = vi.fn(async () =>
-			new Response(JSON.stringify({ balances: [{ accountId: "primary" }] }), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			}),
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ balances: [{ accountId: "primary" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -218,11 +221,12 @@ describe("provider proxy approval interception", () => {
 		});
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () =>
-				new Response(JSON.stringify({ messages: [] }), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ messages: [] }), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
 			),
 		);
 

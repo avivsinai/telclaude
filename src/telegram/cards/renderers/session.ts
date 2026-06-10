@@ -1,5 +1,5 @@
 import { deleteSession, getSession } from "../../../config/sessions.js";
-import { getSessionManager } from "../../../sdk/session-manager.js";
+import { clearHermesSessionMapping } from "../../../hermes/session-map.js";
 import { revokeSessionAllowlist } from "../../../security/approvals.js";
 import type {
 	CardExecutionContext,
@@ -66,7 +66,7 @@ export const sessionRenderer: CardRenderer<K> = {
 				const sessionKey = card.state.sessionKey;
 				if (sessionKey) {
 					deleteSession(sessionKey);
-					getSessionManager().clearSession(sessionKey);
+					clearHermesSessionMapping(sessionKey);
 					// W1 — session-scoped approvals must not outlive the session.
 					revokeSessionAllowlist(sessionKey);
 				}

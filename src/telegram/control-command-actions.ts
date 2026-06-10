@@ -36,6 +36,7 @@ import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js"
 import { resolveChatProfile } from "../config/profiles.js";
 import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
 import { runCuratorScan } from "../curator/actions.js";
+import { clearHermesSessionMapping } from "../hermes/session-map.js";
 import { getChildLogger } from "../logging.js";
 import {
 	getProviderCatalogEntry,
@@ -47,7 +48,6 @@ import {
 	type HealthCheckResult,
 	type ProviderHealthResponse,
 } from "../providers/provider-health.js";
-import { getSessionManager } from "../sdk/session-manager.js";
 import { revokeSessionAllowlist } from "../security/approvals.js";
 import { isAdmin } from "../security/linking.js";
 import { getUserPermissionTier } from "../security/permissions.js";
@@ -344,7 +344,7 @@ export function reloadSkillsSession(sessionKey: string | undefined): CommandUiRe
 		return { callbackText: "No session to reload", callbackAlert: true };
 	}
 	deleteSession(sessionKey);
-	getSessionManager().clearSession(sessionKey);
+	clearHermesSessionMapping(sessionKey);
 	// W1 — skill reload rotates the session; drop session-scoped allowlist grants too.
 	revokeSessionAllowlist(sessionKey);
 	return {

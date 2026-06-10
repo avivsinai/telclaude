@@ -570,7 +570,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 				host: "127.0.0.1",
 				port: 0,
 				path: "/mcp",
-				networkName: "telclaude-hermes-relay",
+				networkName: "telclaude-hermes-private",
 				runtimeTransportToken: "tc-live-mcp-runtime-token",
 			},
 			createRelayClients: ({ ledger }) =>

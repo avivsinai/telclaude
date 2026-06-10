@@ -1,8 +1,8 @@
 /**
  * Git Proxy Initialization Command
  *
- * Configures git in the agent container to route through the relay's git proxy.
- * The proxy adds authentication transparently - the agent never sees the real token.
+ * Configures git to route through the relay's git proxy.
+ * The proxy adds authentication transparently - runtime code never sees the real token.
  *
  * This command:
  * 1. Generates a session token (HMAC-signed, scoped to our system)
@@ -181,7 +181,7 @@ async function initializeGitProxy(
 export function registerGitProxyInitCommand(program: Command): void {
 	program
 		.command("git-proxy-init")
-		.description("Configure git to use the relay git proxy (agent container only)")
+		.description("Configure git to use the relay git proxy")
 		.option("--show-token", "Output the session token (for debugging)")
 		.option("--ttl <minutes>", "Token TTL in minutes (default: 60)", "60")
 		.option("--daemon", "Run as daemon, refreshing token periodically before expiry")
@@ -189,14 +189,16 @@ export function registerGitProxyInitCommand(program: Command): void {
 			const proxyUrl = process.env.TELCLAUDE_GIT_PROXY_URL;
 			if (!proxyUrl) {
 				console.error("TELCLAUDE_GIT_PROXY_URL is not set - skipping git proxy configuration");
-				console.error("This command should only be run in the agent container.");
+				console.error(
+					"This command should only run when relay git proxy configuration is present.",
+				);
 				process.exit(0); // Not an error - just not applicable
 			}
 
 			const proxySecret = process.env.TELCLAUDE_GIT_PROXY_SECRET;
 			if (!proxySecret) {
 				console.error("TELCLAUDE_GIT_PROXY_SECRET is not set - cannot generate session token");
-				console.error("Ensure both relay and agent have the same secret configured.");
+				console.error("Ensure the relay proxy secret is configured.");
 				process.exit(1);
 			}
 

@@ -547,14 +547,13 @@ function writeRollbackRehearsal() {
 		evidence_path: evidencePath,
 		allowedToRun: true,
 		observedBeforeValue: "1",
-		observedAfterValue: "0",
-		observedFallbackPath: "telclaude.private-runtime.legacy",
+		observedAfterValue: "1",
 		observedAt: "2026-05-30T00:00:00.000Z",
 		controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
 		observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
 		observedBeforeSource: "relay-effective-mode",
 		observedAfterSource: "relay-effective-mode",
-		observedAfterControlSource: "runtime-config",
+		observedAfterControlSource: "hermes-only",
 		relayPublicKey,
 		signedRelayTranscripts: {
 			before: signedRelayTranscript(
@@ -562,18 +561,13 @@ function writeRollbackRehearsal() {
 				"{}",
 				hermesRuntimeState(),
 			),
-			afterControl: signedRelayTranscript(
-				"/v1/hermes.private-runtime.mode",
-				JSON.stringify({ mode: "legacy" }),
-				legacyRuntimeState(),
-			),
-			after: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", legacyRuntimeState()),
+			after: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", hermesRuntimeState()),
 		},
 		checks: [
 			{
 				name: "rollback.allowed",
 				status: "pass",
-				detail: "operator allowed a real rollback rehearsal",
+				detail: "operator allowed a relay-observed Hermes-only rehearsal",
 			},
 			{
 				name: "rollback.relayProofs",
@@ -583,22 +577,17 @@ function writeRollbackRehearsal() {
 			{
 				name: "rollback.flagBefore",
 				status: "pass",
-				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed enabled before rollback",
+				detail: "relay observed Hermes private runtime enabled before rehearsal",
 			},
 			{
 				name: "rollback.flagAfter",
 				status: "pass",
-				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed disabled after rollback",
-			},
-			{
-				name: "rollback.fallbackPath",
-				status: "pass",
-				detail: "pre-Hermes fallback path observed",
+				detail: "relay observed Hermes private runtime still enabled",
 			},
 			{
 				name: "rollback.controlSurface",
 				status: "pass",
-				detail: "relay durable runtime config accepted legacy mode",
+				detail: "Hermes-only private runtime exposes no mutable mode selector",
 			},
 			{
 				name: "rollback.observedSources",
@@ -703,31 +692,15 @@ function hermesRuntimeState() {
 		ok: true,
 		effectiveMode: "hermes",
 		effectiveValue: "1",
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
 		controlMode: "hermes",
-		controlSource: "runtime-config",
-		fallbackPath: "telclaude.private-runtime.legacy",
-	};
-}
-
-function legacyRuntimeState() {
-	return {
-		ok: true,
-		effectiveMode: "legacy",
-		effectiveValue: "0",
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
-		controlMode: "legacy",
-		controlSource: "runtime-config",
-		fallbackPath: "telclaude.private-runtime.legacy",
+		controlSource: "hermes-only",
 	};
 }
 
 function signedRelayTranscript(
 	requestPath: string,
 	requestBody: string,
-	state: ReturnType<typeof hermesRuntimeState> | ReturnType<typeof legacyRuntimeState>,
+	state: ReturnType<typeof hermesRuntimeState>,
 ) {
 	const responseBody = JSON.stringify(state);
 	return {
@@ -1591,7 +1564,7 @@ function writeCliHeadlessEvidence(evidencePath: string, relayProof: OpenAiCodexR
 	const runtime = {
 		kind: "contained-docker",
 		containerName: "tc-hermes-contained",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		containerId: "b6d8f6c9a1d4",
 		image:
 			"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",

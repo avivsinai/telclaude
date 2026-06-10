@@ -28,10 +28,9 @@ the bundled skill directory shipped inside the telclaude package. Writers
 never touch that directory.
 
 In Docker, telclaude uses one operator-managed standalone skill catalog for
-both personas, while official Claude plugins stay profile-local. `agent-social`
-mounts the standalone skill catalog read-only; social-specific restrictions are
-enforced at runtime policy plus the container boundary, not by copying skills
-into a separate catalog.
+both personas, while official Claude plugins stay profile-local. Social-specific
+restrictions are enforced by Hermes authority, runtime policy, and containment,
+not by copying skills into a separate catalog.
 
 The contained Hermes private runtime is a separate, narrower skill surface and
 does not draw from this writable catalog — see
@@ -197,9 +196,8 @@ telclaude hermes probe skills.allowlist --allow-run \
 
 The probe runs its profile and runtime checks via `docker exec` against
 `tc-hermes-contained` (observation layer `docker_exec`) and confirms that the
-SDK PreToolUse hook — the primary enforcement layer (`pretooluse`), not the
-`canUseTool` fallback — allows an allowlisted skill, denies a non-allowlisted
-one, and fail-closes a SOCIAL service whose allowlist is missing or empty
+Hermes PreToolUse policy — the primary enforcement layer (`pretooluse`) — allows
+an allowlisted skill, denies a non-allowlisted one, and fail-closes a SOCIAL service whose allowlist is missing or empty
 (architecture invariant #9). The resulting evidence is signed with the operator
 relay key; `telclaude hermes cutover-check` rejects the bundle if the attestation
 is missing, stale, or unbound.

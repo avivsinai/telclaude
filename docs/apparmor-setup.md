@@ -13,7 +13,7 @@ This repository is open source; assume attackers know all enforcement logic. Reg
 sudo bash docker/apparmor/install.sh
 ```
 
-This copies all profiles (`telclaude-vault`, `telclaude-relay`, `telclaude-agent`, `telclaude-social`) to `/etc/apparmor.d/` and loads them.
+This copies all telclaude profiles (`telclaude-vault`, `telclaude-relay`) to `/etc/apparmor.d/` and loads them.
 
 ## Enable in Docker Compose
 
@@ -22,7 +22,7 @@ This copies all profiles (`telclaude-vault`, `telclaude-relay`, `telclaude-agent
 ```yaml
 security_opt:
   - no-new-privileges:true
-  - apparmor:telclaude-agent   # or telclaude-relay, telclaude-social, telclaude-vault
+  - apparmor:telclaude-relay   # or telclaude-vault
 ```
 
 If you maintain a custom compose file, add the matching `security_opt` line to each service.
@@ -51,9 +51,9 @@ cat /home/telclaude-auth/credentials
 
 ## Hermes private-runtime overlay
 
-The `docker/docker-compose.hermes.yml` overlay adds the contained Hermes runtime (`tc-hermes-contained`) on the isolated `telclaude-hermes-relay` network. The relay container in this overlay is the same `telclaude` service from the base compose, so it keeps its `apparmor:telclaude-relay` profile. The contained Hermes container, however, runs the pinned upstream `nousresearch/hermes-agent` image (`@sha256:192a4078...`), which is **not** covered by a telclaude AppArmor profile and is therefore not in `install.sh`.
+The `docker/docker-compose.hermes.yml` overlay adds contained Hermes runtimes (`tc-hermes-contained` and `tc-hermes-social`) on isolated private/social internal networks. The relay container in this overlay is the same `telclaude` service from the base compose, so it keeps its `apparmor:telclaude-relay` profile. The contained Hermes containers, however, run the pinned upstream `nousresearch/hermes-agent` image (`@sha256:192a4078...`), which is **not** covered by a telclaude AppArmor profile and is therefore not in `install.sh`.
 
-Instead of AppArmor, `tc-hermes-contained` is hardened with kernel/runtime primitives declared directly in the overlay:
+Instead of AppArmor, the Hermes runtime containers are hardened with kernel/runtime primitives declared directly in the overlay:
 
 - `cap_drop: ALL` and `no-new-privileges:true`.
 - Non-root `user: "10000:10000"`.
@@ -66,4 +66,4 @@ Because there is no `telclaude-hermes` profile, `aa-status | rg telclaude` will 
 
 ## Notes
 
-For the standard agent containers, the container firewall remains the **primary** network enforcement layer. AppArmor denies raw sockets but does not replace firewall policy. The Hermes contained runtime uses the overlay constraints described above instead of the agent-container firewall path.
+For the relay and sidecars, the container firewall remains the **primary** network enforcement layer. AppArmor denies raw sockets but does not replace firewall policy. The Hermes contained runtime uses the overlay constraints described above rather than a telclaude AppArmor profile.

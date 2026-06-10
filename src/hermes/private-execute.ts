@@ -1,5 +1,5 @@
 import type { PermissionTier } from "../config/config.js";
-import type { StreamChunk } from "../sdk/client.js";
+import type { StreamChunk } from "../runtime/stream.js";
 import { HermesApiRuntimeAdapter } from "./api-adapter.js";
 import {
 	executeHermesPrivateRuntime,
@@ -8,10 +8,9 @@ import {
 	type HermesRuntimeAdapter,
 	type HermesRuntimeMcpAuthorityActivation,
 } from "./private-runtime.js";
-import { readHermesPrivateRuntimeEffectiveState } from "./private-runtime-control.js";
 import { hermesSessionMap } from "./session-map.js";
 
-export type HermesPrivateQueryOptions = {
+export type HermesQueryOptions = {
 	cwd: string;
 	tier: PermissionTier;
 	poolKey: string;
@@ -28,18 +27,47 @@ export type HermesPrivateQueryOptions = {
 	threadId?: number;
 	systemPromptAppend?: string;
 	compiledMemoryMd?: string;
-	mcpAuthority?: HermesPrivateMcpAuthorityOptions;
+	runtimeDomain?: HermesRuntimeDomain;
+	mcpAuthority?: HermesPrivateMcpAuthorityOptions | false;
 };
 
-let privateRuntimeAdapter: HermesRuntimeAdapter | null = null;
+export type HermesRuntimeDomain = "private" | "social";
+
+const HERMES_RUNTIME_ENV: Record<
+	HermesRuntimeDomain,
+	{
+		baseUrl: string;
+		apiKey: string;
+		notConfiguredError: string;
+	}
+> = {
+	private: {
+		baseUrl: "TELCLAUDE_HERMES_API_BASE_URL",
+		apiKey: "TELCLAUDE_HERMES_API_KEY",
+		notConfiguredError: "Hermes private runtime adapter is not configured",
+	},
+	social: {
+		baseUrl: "TELCLAUDE_HERMES_SOCIAL_API_BASE_URL",
+		apiKey: "TELCLAUDE_HERMES_SOCIAL_API_KEY",
+		notConfiguredError: "Hermes social runtime adapter is not configured",
+	},
+};
+
+const runtimeAdapters: Record<HermesRuntimeDomain, HermesRuntimeAdapter | null> = {
+	private: null,
+	social: null,
+};
 let privateRuntimeMcpAuthorityActivation: HermesRuntimeMcpAuthorityActivation | null = null;
 
-export function shouldUseHermesPrivateRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
-	return readHermesPrivateRuntimeEffectiveState(env).effectiveMode === "hermes";
+export function setHermesPrivateRuntimeAdapterForTest(adapter: HermesRuntimeAdapter | null): void {
+	runtimeAdapters.private = adapter;
 }
 
-export function setHermesPrivateRuntimeAdapterForTest(adapter: HermesRuntimeAdapter | null): void {
-	privateRuntimeAdapter = adapter;
+export function setHermesRuntimeAdapterForTest(
+	domain: HermesRuntimeDomain,
+	adapter: HermesRuntimeAdapter | null,
+): void {
+	runtimeAdapters[domain] = adapter;
 }
 
 export function setHermesPrivateRuntimeMcpAuthorityActivation(
@@ -51,29 +79,39 @@ export function setHermesPrivateRuntimeMcpAuthorityActivation(
 export function buildHermesPrivateRuntimeAdapterFromEnv(
 	env: NodeJS.ProcessEnv = process.env,
 ): HermesRuntimeAdapter | null {
-	const baseUrl = env.TELCLAUDE_HERMES_API_BASE_URL?.trim();
-	const apiKey = env.TELCLAUDE_HERMES_API_KEY?.trim();
+	return buildHermesRuntimeAdapterFromEnv("private", env);
+}
+
+export function buildHermesRuntimeAdapterFromEnv(
+	domain: HermesRuntimeDomain,
+	env: NodeJS.ProcessEnv = process.env,
+): HermesRuntimeAdapter | null {
+	const spec = HERMES_RUNTIME_ENV[domain];
+	const baseUrl = env[spec.baseUrl]?.trim();
+	const apiKey = env[spec.apiKey]?.trim();
 	if (!baseUrl && !apiKey) return null;
 	if (!baseUrl) {
-		throw new Error(
-			"TELCLAUDE_HERMES_API_BASE_URL is required when TELCLAUDE_HERMES_API_KEY is set",
-		);
+		throw new Error(`${spec.baseUrl} is required when ${spec.apiKey} is set`);
 	}
 	if (!apiKey) {
-		throw new Error(
-			"TELCLAUDE_HERMES_API_KEY is required when TELCLAUDE_HERMES_API_BASE_URL is set",
-		);
+		throw new Error(`${spec.apiKey} is required when ${spec.baseUrl} is set`);
 	}
 	return new HermesApiRuntimeAdapter({ baseUrl, apiKey });
 }
 
-export async function* executeHermesPrivateQuery(
+function resolveHermesRuntimeDomain(options: HermesQueryOptions): HermesRuntimeDomain {
+	if (options.runtimeDomain) return options.runtimeDomain;
+	return options.mcpAuthority && options.mcpAuthority.domain === "social" ? "social" : "private";
+}
+
+export async function* executeHermesQuery(
 	prompt: string,
-	options: HermesPrivateQueryOptions,
+	options: HermesQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
+	const runtimeDomain = resolveHermesRuntimeDomain(options);
 	let runtime: HermesRuntimeAdapter | null;
 	try {
-		runtime = privateRuntimeAdapter ?? buildHermesPrivateRuntimeAdapterFromEnv();
+		runtime = runtimeAdapters[runtimeDomain] ?? buildHermesRuntimeAdapterFromEnv(runtimeDomain);
 	} catch (error) {
 		yield {
 			type: "done",
@@ -90,12 +128,13 @@ export async function* executeHermesPrivateQuery(
 	}
 
 	if (!runtime) {
+		const spec = HERMES_RUNTIME_ENV[runtimeDomain];
 		yield {
 			type: "done",
 			result: {
 				response: "",
 				success: false,
-				error: "Hermes private runtime adapter is not configured",
+				error: spec.notConfiguredError,
 				costUsd: 0,
 				numTurns: 0,
 				durationMs: 0,

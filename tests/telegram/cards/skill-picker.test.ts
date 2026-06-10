@@ -73,12 +73,8 @@ describe("skill picker card", () => {
 
 		const render = skillPickerRenderer.render(card);
 		const labels =
-			render.keyboard?.inline_keyboard
-				?.flat()
-				.map((b) => ("text" in b ? b.text : "")) ?? [];
-		expect(labels.some((l) => l.includes("Promote") && l.includes("draft-one"))).toBe(
-			true,
-		);
+			render.keyboard?.inline_keyboard?.flat().map((b) => ("text" in b ? b.text : "")) ?? [];
+		expect(labels.some((l) => l.includes("Promote") && l.includes("draft-one"))).toBe(true);
 		expect(labels.some((l) => l.includes("active-one"))).toBe(true);
 		// Reload + Cancel visible for admin
 		expect(labels.filter((l) => l.includes("Reload")).length).toBeGreaterThan(0);
@@ -91,9 +87,7 @@ describe("skill picker card", () => {
 			state: {
 				kind: CardKind.SkillPicker,
 				title: "Skills",
-				entries: [
-					{ id: "draft-one", label: "draft-one", status: "draft" as const },
-				],
+				entries: [{ id: "draft-one", label: "draft-one", status: "draft" as const }],
 				page: 0,
 				view: "list" as const,
 				adminControlsEnabled: false,
@@ -102,9 +96,7 @@ describe("skill picker card", () => {
 
 		const render = skillPickerRenderer.render(card);
 		const labels =
-			render.keyboard?.inline_keyboard
-				?.flat()
-				.map((b) => ("text" in b ? b.text : "")) ?? [];
+			render.keyboard?.inline_keyboard?.flat().map((b) => ("text" in b ? b.text : "")) ?? [];
 		// Only Refresh should be visible to non-admins
 		expect(labels.some((l) => l.includes("Promote"))).toBe(false);
 		expect(labels.some((l) => l.includes("Reload"))).toBe(false);
@@ -116,9 +108,7 @@ describe("skill picker card", () => {
 			state: {
 				kind: CardKind.SkillPicker,
 				title: "Skills",
-				entries: [
-					{ id: "already-live", label: "already-live", status: "active" as const },
-				],
+				entries: [{ id: "already-live", label: "already-live", status: "active" as const }],
 				page: 0,
 				view: "list" as const,
 				adminControlsEnabled: true,
@@ -139,9 +129,7 @@ describe("skill picker card", () => {
 			state: {
 				kind: CardKind.SkillPicker,
 				title: "Skills",
-				entries: [
-					{ id: "draft-one", label: "draft-one", status: "draft" as const },
-				],
+				entries: [{ id: "draft-one", label: "draft-one", status: "draft" as const }],
 				page: 0,
 				view: "list" as const,
 				adminControlsEnabled: false,

@@ -9,7 +9,9 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // Mock oauth-callback
 vi.mock("oauth-callback", () => ({
 	getAuthCode: vi.fn(),
-	getRedirectUrl: vi.fn((opts?: { port?: number }) => `http://localhost:${opts?.port ?? 3000}/callback`),
+	getRedirectUrl: vi.fn(
+		(opts?: { port?: number }) => `http://localhost:${opts?.port ?? 3000}/callback`,
+	),
 }));
 
 // Mock open (browser launcher)
@@ -237,10 +239,7 @@ describe("OAuth2 Flow", () => {
 				return { code: "code" };
 			});
 
-			vi.stubGlobal(
-				"fetch",
-				mockFetch({ error: "invalid_grant" }, 400),
-			);
+			vi.stubGlobal("fetch", mockFetch({ error: "invalid_grant" }, 400));
 
 			await expect(
 				authorize({
@@ -357,28 +356,31 @@ describe("OAuth2 Flow", () => {
 			});
 
 			let callCount = 0;
-			vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-				callCount++;
-				if (callCount === 1) {
-					// Token exchange
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (url: string) => {
+					callCount++;
+					if (callCount === 1) {
+						// Token exchange
+						return {
+							ok: true,
+							json: async () => ({
+								access_token: "at",
+								refresh_token: "rt",
+								expires_in: 3600,
+								token_type: "bearer",
+							}),
+						};
+					}
+					// User ID fetch
 					return {
 						ok: true,
 						json: async () => ({
-							access_token: "at",
-							refresh_token: "rt",
-							expires_in: 3600,
-							token_type: "bearer",
+							data: { id: "12345", username: "testuser" },
 						}),
 					};
-				}
-				// User ID fetch
-				return {
-					ok: true,
-					json: async () => ({
-						data: { id: "12345", username: "testuser" },
-					}),
-				};
-			}));
+				}),
+			);
 
 			const result = await authorize({
 				service: {

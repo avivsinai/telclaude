@@ -212,9 +212,7 @@ describe("checkPrivateNetworkAccess", () => {
 });
 
 describe("Security bypass prevention", () => {
-	const endpoints: PrivateEndpoint[] = [
-		{ label: "test", host: "192.168.1.100", ports: [8123] },
-	];
+	const endpoints: PrivateEndpoint[] = [{ label: "test", host: "192.168.1.100", ports: [8123] }];
 
 	it("blocks metadata domain name lookup attempts", async () => {
 		const result = await checkPrivateNetworkAccess("metadata.google.internal", 80, endpoints);

@@ -60,7 +60,7 @@ describe("Telclaude live MCP relay-side server", () => {
 			transport: "http",
 			networkExposure: "relay_internal_only",
 			bindHost: "telclaude",
-			networkName: "telclaude-hermes-relay",
+			networkName: "telclaude-hermes-private",
 		});
 		expect(harness.server.dependencySurface).toEqual(TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE);
 
@@ -779,7 +779,7 @@ function createHarness(
 				}),
 			...(outboundDeliveryDispatcher ? { outboundDeliveryDispatcher } : {}),
 			bindHost: "telclaude",
-			networkName: "telclaude-hermes-relay",
+			networkName: "telclaude-hermes-private",
 			nowMs: () => 120_000,
 		}),
 		storeProviderApproval(actionRef: string, approvalToken: string) {

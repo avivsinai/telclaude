@@ -49,15 +49,7 @@ function makePendingQueueCard(options: {
 function makeCallbackContext(options: {
 	card: ReturnType<typeof makePendingQueueCard>;
 	actorId: number;
-	action:
-		| "view"
-		| "back"
-		| "edit"
-		| "refine"
-		| "promote"
-		| "dismiss"
-		| "mark-posted"
-		| "retry-api";
+	action: "view" | "back" | "edit" | "refine" | "promote" | "dismiss" | "mark-posted" | "retry-api";
 }) {
 	const answerCallbackQuery = vi.fn(async () => {});
 	const editMessageText = vi.fn(async () => {});
@@ -246,7 +238,10 @@ describe("pending queue cards", () => {
 
 		const entries = loadPendingQueueEntries("chat-1");
 		const expectedIds = [
-			...Array.from({ length: 18 }, (_, offset) => `social-${String(18 - offset).padStart(2, "0")}`),
+			...Array.from(
+				{ length: 18 },
+				(_, offset) => `social-${String(18 - offset).padStart(2, "0")}`,
+			),
 			"telegram-5",
 			"telegram-4",
 		];

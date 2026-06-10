@@ -106,7 +106,7 @@ INTERNAL_HOSTS=()
 if [ -n "${TELCLAUDE_INTERNAL_HOSTS:-}" ]; then
     IFS=',' read -r -a INTERNAL_HOSTS <<< "${TELCLAUDE_INTERNAL_HOSTS}"
 else
-    INTERNAL_HOSTS=("telclaude" "telclaude-agent")
+    INTERNAL_HOSTS=("telclaude")
 fi
 
 # Append a host if it's not already in INTERNAL_HOSTS
@@ -124,8 +124,8 @@ append_internal_host() {
 }
 
 # Auto-include provider hosts from telclaude.json (for sidecar services)
-# Set TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1 on agent containers to prevent direct
-# provider access — agents must route through the relay proxy.
+# Set TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1 on runtime containers to prevent direct
+# provider access — runtimes must route through the relay proxy.
 PROVIDER_HOSTS_RAW=""
 if [ "${TELCLAUDE_FIREWALL_SKIP_PROVIDERS:-0}" = "1" ]; then
     echo "[firewall] skipping provider hosts (TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1)"

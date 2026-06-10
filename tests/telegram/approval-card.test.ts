@@ -29,15 +29,17 @@ type InlineKeyboardButton = { text: string; callback_data?: string };
 
 function flattenButtons(replyMarkup: unknown): InlineKeyboardButton[] {
 	if (!replyMarkup || typeof replyMarkup !== "object") return [];
-	const keyboard = (replyMarkup as { inline_keyboard?: InlineKeyboardButton[][] })
-		.inline_keyboard;
+	const keyboard = (replyMarkup as { inline_keyboard?: InlineKeyboardButton[][] }).inline_keyboard;
 	if (!keyboard) return [];
 	return keyboard.flat();
 }
 
 function findButton(replyMarkup: unknown, labelFragment: string): InlineKeyboardButton | null {
 	for (const btn of flattenButtons(replyMarkup)) {
-		if (typeof btn.text === "string" && btn.text.toLowerCase().includes(labelFragment.toLowerCase())) {
+		if (
+			typeof btn.text === "string" &&
+			btn.text.toLowerCase().includes(labelFragment.toLowerCase())
+		) {
 			return btn;
 		}
 	}

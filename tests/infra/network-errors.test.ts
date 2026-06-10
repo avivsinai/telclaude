@@ -41,7 +41,9 @@ describe("infra/network-errors", () => {
 				code: "UND_ERR_CONNECT_TIMEOUT",
 			},
 		};
-		const errWithMessage = new Error("Client network socket disconnected before secure TLS connection");
+		const errWithMessage = new Error(
+			"Client network socket disconnected before secure TLS connection",
+		);
 
 		expect(isTransientNetworkError(errWithCode)).toBe(true);
 		expect(isTransientNetworkError(errWithMessage)).toBe(true);

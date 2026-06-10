@@ -1,30 +1,34 @@
-# Hermes private-runtime live-run overlay.
+# Hermes private/social runtime live-run overlay.
 #
 # Usage:
 #   TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
-#   TELCLAUDE_HERMES_PRIVATE_RUNTIME=1 \
-#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.hermes.yml up -d telclaude tc-hermes-contained
+#   TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.hermes.yml up -d telclaude tc-hermes-contained tc-hermes-social
 #
-# The dedicated telclaude-hermes-relay network must contain exactly two
-# containers: telclaude and tc-hermes-contained. Do not attach sidecars,
-# providers, vault, Docker socket brokers, or egress helpers to this network.
+# The dedicated telclaude-hermes-private and telclaude-hermes-social networks
+# contain only the relay plus exactly one pinned Hermes runtime container each.
+# Do not attach sidecars, providers, vault, Docker socket brokers, or egress
+# helpers to these networks.
 
 services:
   telclaude:
     depends_on:
       tc-hermes-contained:
         condition: service_started
+      tc-hermes-social:
+        condition: service_started
     environment:
-      # OFF by default. Set to 1 only for the explicit Hermes private-runtime live run.
-      - TELCLAUDE_HERMES_PRIVATE_RUNTIME=${TELCLAUDE_HERMES_PRIVATE_RUNTIME:-0}
       - TELCLAUDE_HERMES_API_BASE_URL=http://tc-hermes-contained:8642
       - TELCLAUDE_HERMES_API_KEY=${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}
+      - TELCLAUDE_HERMES_SOCIAL_API_BASE_URL=http://tc-hermes-social:8642
+      - TELCLAUDE_HERMES_SOCIAL_API_KEY=${TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY:?generate an ephemeral social key for this compose up}
       - TELCLAUDE_HERMES_LIVE_MCP_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ENABLED:-0}
       - TELCLAUDE_HERMES_LIVE_MCP_HOST=${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
       - TELCLAUDE_HERMES_LIVE_MCP_PORT=8793
       - TELCLAUDE_HERMES_LIVE_MCP_PATH=/mcp
-      - TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-relay
-      - TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11}
+      - TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-private
+      - TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=${TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS:-${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}@telclaude-hermes-social}
+      - TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11,192.0.3.11}
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET:-/run/telclaude/hermes-live-mcp-admin.sock}
       - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}
@@ -33,10 +37,12 @@ services:
       - OPERATOR_RPC_AGENT_PUBLIC_KEY=${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}
       - OPERATOR_RPC_RELAY_PRIVATE_KEY=${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services,tc-hermes-contained}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-hermes-contained,tc-hermes-social}
     networks:
-      hermes-relay-net:
+      hermes-private-net:
         ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
+      hermes-social-net:
+        ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}
     # The live MCP admin socket is created after the entrypoint drops to uid
     # 1000, so the relay runtime dir must be node-owned and private.
     tmpfs: !override
@@ -72,6 +78,7 @@ services:
       - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}
       - TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS=${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
       - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-contained-skills.allowlist
       - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills
       - NO_COLOR=1
@@ -93,7 +100,7 @@ services:
     mem_limit: 2G
     cpus: 2
     networks:
-      hermes-relay-net:
+      hermes-private-net:
         ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-192.0.2.11}
     restart: unless-stopped
     healthcheck:
@@ -109,11 +116,84 @@ services:
       retries: 12
       start_period: 360s
 
+  tc-hermes-social:
+    image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7}
+    container_name: tc-hermes-social
+    entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]
+    command: ["gateway", "run"]
+    extra_hosts:
+      - "api.anthropic.com:192.0.2.1"
+      - "api.openai.com:192.0.2.1"
+      - "auth.openai.com:192.0.2.1"
+      - "chatgpt.com:192.0.2.1"
+      - "generativelanguage.googleapis.com:192.0.2.1"
+      - "openrouter.ai:192.0.2.1"
+      - "api.x.ai:192.0.2.1"
+    environment:
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_PORT=8642
+      - API_SERVER_KEY=${TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY:?generate an ephemeral social key for this compose up}
+      - HERMES_HOME=/home/hermes/.hermes-social
+      - HOME=/home/hermes
+      - HERMES_INFERENCE_PROVIDER=openai-codex
+      - HERMES_INFERENCE_MODEL=${TELCLAUDE_HERMES_SOCIAL_INFERENCE_MODEL:-gpt-5.5}
+      - HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy
+      - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
+      - TELCLAUDE_HERMES_MCP_URL=http://telclaude:8793/mcp
+      - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}
+      - TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS=${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}
+      - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
+      - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-social-skills.allowlist
+      - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills
+      - NO_COLOR=1
+    volumes:
+      - ./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro
+      - ./hermes-social-skills.allowlist:/tmp/telclaude-hermes-social-skills.allowlist:ro
+      - ..:/opt/data/telclaude-runner:ro
+    user: "10000:10000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128M,mode=1777,noexec
+      - /run:size=16M,uid=10000,gid=10000,mode=0755,noexec
+      - /home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec
+    pids_limit: 256
+    mem_limit: 2G
+    cpus: 2
+    networks:
+      hermes-social-net:
+        ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_IP:-192.0.3.11}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 360s
+
 networks:
-  hermes-relay-net:
-    name: telclaude-hermes-relay
+  hermes-private-net:
+    name: telclaude-hermes-private
     driver: bridge
     internal: true
     ipam:
       config:
         - subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-192.0.2.0/24}
+  hermes-social-net:
+    name: telclaude-hermes-social
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-192.0.3.0/24}

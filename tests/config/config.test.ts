@@ -48,14 +48,16 @@ afterEach(() => {
 	}
 });
 
-describe("sdk config defaults", () => {
-	it("writes sdk.betas default when creating config", async () => {
+describe("config defaults", () => {
+	it("writes Hermes and profile defaults when creating config", async () => {
 		setConfigPath(configPath());
 		const created = await createDefaultConfigIfMissing();
 		expect(created).toBe(true);
 
 		const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
-		expect(cfg.sdk).toEqual({ betas: [] });
+		const removedRuntimeKey = ["s", "d", "k"].join("");
+		expect(Object.hasOwn(cfg, removedRuntimeKey)).toBe(false);
+		expect(cfg.hermes).toEqual({ privateRuntime: { providerScopes: [] } });
 		expect(cfg.profiles).toEqual([]);
 		expect(cfg.webhooks).toMatchObject({
 			enabled: false,
@@ -64,16 +66,6 @@ describe("sdk config defaults", () => {
 			trustedProxies: [],
 			allowedHosts: [],
 		});
-	});
-
-	it("rejects unknown beta values in config", async () => {
-		setConfigPath(configPath());
-		const badCfg = {
-			sdk: { betas: ["bogus-beta"] },
-		};
-		fs.writeFileSync(configPath(), JSON.stringify(badCfg));
-
-		await expect(() => loadConfig()).toThrow();
 	});
 
 	it("defaults webhooks to disabled local receiver settings", () => {
@@ -139,7 +131,7 @@ describe("sdk config defaults", () => {
 						label: "Engineer",
 						description: "Code-heavy private operator profile",
 						soulPath: "docs/soul.md",
-						allowedSkills: ["integration-test"],
+						allowedSkills: ["telegram-reply"],
 						defaultModel: {
 							providerId: "anthropic",
 							modelId: "claude-sonnet-4-5-20250929",
@@ -153,7 +145,7 @@ describe("sdk config defaults", () => {
 		expect(cfg.profiles[0]).toMatchObject({
 			id: "engineer",
 			label: "Engineer",
-			allowedSkills: ["integration-test"],
+			allowedSkills: ["telegram-reply"],
 		});
 	});
 

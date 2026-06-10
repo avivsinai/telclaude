@@ -232,7 +232,7 @@ function config(
 		host: "127.0.0.1",
 		port: 0,
 		path: "/mcp",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		runtimeTransportToken: "tc-live-mcp-runtime-token",
 		...overrides,
 	};
@@ -283,12 +283,12 @@ function fixedTokenBundle(): TelclaudeLiveMcpProbeTokenBundle {
 			privateConnection: {
 				profileId: "default",
 				endpointId: "endpoint-private",
-				networkNamespace: "telclaude-hermes-relay",
+				networkNamespace: "telclaude-hermes-private",
 			},
 			wrongConnection: {
 				profileId: "social",
 				endpointId: "endpoint-social",
-				networkNamespace: "telclaude-hermes-relay",
+				networkNamespace: "telclaude-hermes-private",
 			},
 		},
 	};
@@ -363,7 +363,7 @@ function connection(
 		sessionKey: "probe:private",
 		profileId: "default",
 		endpointId: "endpoint-private",
-		networkNamespace: "telclaude-hermes-relay",
+		networkNamespace: "telclaude-hermes-private",
 		...overrides,
 	};
 }
@@ -378,7 +378,7 @@ function authority(overrides: Partial<TelclaudeMcpAuthority> = {}): TelclaudeMcp
 		providerScopes: ["bank"],
 		outboundChannels: ["whatsapp"],
 		endpointId: "endpoint-private",
-		networkNamespace: "telclaude-hermes-relay",
+		networkNamespace: "telclaude-hermes-private",
 		...overrides,
 	};
 }

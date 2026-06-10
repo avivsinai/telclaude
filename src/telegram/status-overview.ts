@@ -322,9 +322,8 @@ export async function collectSystemHealth(
 		remediation: defaultTier ? undefined : "tier_misconfigured",
 	});
 
-	// Model / fallback state: no SDK call here; route stored preferences through
+	// Model / fallback state: no runtime call here; route stored preferences through
 	// the same executable-provider logic used by Telegram execution.
-	const sdkBetas = cfg.sdk?.betas ?? [];
 	const activeProfile =
 		typeof options.chatId === "number" ? resolveChatProfile(options.chatId, cfg) : undefined;
 	if (activeProfile) {
@@ -339,17 +338,12 @@ export async function collectSystemHealth(
 		typeof options.chatId === "number"
 			? resolveModelRoute(options.chatId, { profile: activeProfile?.profile })
 			: undefined;
-	const modelDetail = modelRoute
-		? formatModelRoute(modelRoute)
-		: sdkBetas.length === 0
-			? "SDK default"
-			: `SDK default (+${sdkBetas.length} betas)`;
-	const betaSuffix = modelRoute && sdkBetas.length > 0 ? ` (+${sdkBetas.length} betas)` : "";
+	const modelDetail = modelRoute ? formatModelRoute(modelRoute) : "Hermes default";
 	items.push({
 		id: "model:active",
 		label: "Model",
 		status: modelRoute?.fallbackState === "fallback" ? "degraded" : "ok",
-		detail: `${modelDetail}${betaSuffix}`,
+		detail: modelDetail,
 		remediation: modelRoute?.fallbackState === "fallback" ? "model_fallback_active" : undefined,
 	});
 

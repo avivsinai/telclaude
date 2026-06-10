@@ -51,7 +51,6 @@ function makeMinimalConfig(overrides?: Partial<TelclaudeConfig>): TelclaudeConfi
 			audit: { enabled: true },
 		},
 		socialServices: [],
-		sdk: { betas: [] },
 	} as unknown as TelclaudeConfig;
 
 	if (overrides) {
@@ -96,7 +95,10 @@ describe("config fixes", () => {
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "READ_ONLY", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -125,7 +127,10 @@ describe("config fixes", () => {
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "READ_ONLY", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -148,7 +153,10 @@ describe("config fixes", () => {
 			security: {
 				profile: "simple",
 				permissions: { defaultTier: "FULL_ACCESS", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -172,7 +180,10 @@ describe("config fixes", () => {
 			security: {
 				profile: "simple",
 				permissions: { defaultTier: "READ_ONLY", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: false },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -273,8 +284,14 @@ describe("raw-policy-only write (no overlay/default leak)", () => {
 		// Merged config (what loadConfig + private overlay produce) DOES carry private values.
 		const merged = makeMergedConfigWithPrivateValues({
 			profile: "test",
-			permissions: { defaultTier: "READ_ONLY", users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } } },
-			rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+			permissions: {
+				defaultTier: "READ_ONLY",
+				users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } },
+			},
+			rateLimits: {
+				global: { perMinute: 100, perHour: 1000 },
+				perUser: { perMinute: 10, perHour: 100 },
+			},
 			audit: { enabled: true },
 		});
 
@@ -295,15 +312,21 @@ describe("raw-policy-only write (no overlay/default leak)", () => {
 
 	it("does not inject Zod-defaulted keys from the merged config into the policy file", () => {
 		// Raw policy mentions ONLY security.audit; the merged config is fully populated
-		// with defaults (transcription, tts, imageGeneration, rateLimits, sdk, etc.).
+		// with defaults (transcription, tts, imageGeneration, rateLimits, etc.).
 		const rawPolicy = { security: { audit: { enabled: false } } };
 		const configPath = path.join(tmpDir, "telclaude.json");
 		writeJsonFile(configPath, rawPolicy);
 
 		const merged = makeMergedConfigWithPrivateValues({
 			profile: "simple",
-			permissions: { defaultTier: "READ_ONLY", users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } } },
-			rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+			permissions: {
+				defaultTier: "READ_ONLY",
+				users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } },
+			},
+			rateLimits: {
+				global: { perMinute: 100, perHour: 1000 },
+				perUser: { perMinute: 10, perHour: 100 },
+			},
 			audit: { enabled: false },
 		});
 
@@ -324,7 +347,6 @@ describe("raw-policy-only write (no overlay/default leak)", () => {
 		expect(written.transcription).toBeUndefined();
 		expect(written.tts).toBeUndefined();
 		expect(written.imageGeneration).toBeUndefined();
-		expect(written.sdk).toBeUndefined();
 		assertNoPrivateValuesLeaked(writtenText, written);
 	});
 
@@ -337,8 +359,14 @@ describe("raw-policy-only write (no overlay/default leak)", () => {
 
 		const merged = makeMergedConfigWithPrivateValues({
 			profile: "simple",
-			permissions: { defaultTier: "FULL_ACCESS", users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } } },
-			rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+			permissions: {
+				defaultTier: "FULL_ACCESS",
+				users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } },
+			},
+			rateLimits: {
+				global: { perMinute: 100, perHour: 1000 },
+				perUser: { perMinute: 10, perHour: 100 },
+			},
 			audit: { enabled: true },
 		});
 
@@ -396,7 +424,10 @@ describe("overlay guard (raw-only regardless of TELCLAUDE_PRIVATE_CONFIG)", () =
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "READ_ONLY", users: { "777": { tier: "FULL_ACCESS" } } },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as unknown as Partial<TelclaudeConfig>);
@@ -512,7 +543,10 @@ describe("atomic write + backup", () => {
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "READ_ONLY", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -537,7 +571,10 @@ describe("atomic write + backup", () => {
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "READ_ONLY", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -557,7 +594,10 @@ describe("atomic write + backup", () => {
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "READ_ONLY", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: true },
 			},
 		} as Partial<TelclaudeConfig>);
@@ -590,9 +630,7 @@ describe("filesystem permission fixes", () => {
 
 		const report = runAutoFix(cfg, configPath, tmpDir, {});
 
-		const chmodActions = findByKind(report.actions, "chmod").filter(
-			(a) => a.target === configFile,
-		);
+		const chmodActions = findByKind(report.actions, "chmod").filter((a) => a.target === configFile);
 		expect(chmodActions.length).toBe(1);
 		expect(chmodActions[0].applied).toBe(true);
 		expect(chmodActions[0].before).toBe("644");
@@ -616,9 +654,7 @@ describe("filesystem permission fixes", () => {
 
 		const report = runAutoFix(cfg, configPath, tmpDir, {});
 
-		const chmodAction = findByKind(report.actions, "chmod").find(
-			(a) => a.target === configFile,
-		);
+		const chmodAction = findByKind(report.actions, "chmod").find((a) => a.target === configFile);
 		expect(chmodAction).toBeDefined();
 		expect(chmodAction!.applied).toBe(false);
 		expect(chmodAction!.skipped).toBe("already correct");
@@ -638,9 +674,7 @@ describe("filesystem permission fixes", () => {
 
 		const report = runAutoFix(cfg, configPath, tmpDir, {});
 
-		const chmodAction = findByKind(report.actions, "chmod").find(
-			(a) => a.target === configFile,
-		);
+		const chmodAction = findByKind(report.actions, "chmod").find((a) => a.target === configFile);
 		expect(chmodAction).toBeDefined();
 		expect(chmodAction!.applied).toBe(false);
 		expect(chmodAction!.skipped).toBe("current permissions are already stricter");
@@ -666,9 +700,7 @@ describe("filesystem permission fixes", () => {
 
 		const report = runAutoFix(cfg, configPath, tmpDir, {});
 
-		const chmodAction = findByKind(report.actions, "chmod").find(
-			(a) => a.target === symlinkFile,
-		);
+		const chmodAction = findByKind(report.actions, "chmod").find((a) => a.target === symlinkFile);
 		expect(chmodAction).toBeDefined();
 		expect(chmodAction!.applied).toBe(false);
 		expect(chmodAction!.skipped).toContain("symlink");
@@ -702,8 +734,8 @@ describe("hook hardening fixes", () => {
 
 		const report = runAutoFix(cfg, configPath, tmpDir, {});
 
-		const createAction = findByKind(report.actions, "create").find(
-			(a) => a.target.includes("settings.json"),
+		const createAction = findByKind(report.actions, "create").find((a) =>
+			a.target.includes("settings.json"),
 		);
 		expect(createAction).toBeDefined();
 		expect(createAction!.applied).toBe(true);
@@ -858,7 +890,10 @@ describe("runAutoFix integration", () => {
 			security: {
 				profile: "test",
 				permissions: { defaultTier: "FULL_ACCESS", users: {} },
-				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				rateLimits: {
+					global: { perMinute: 100, perHour: 1000 },
+					perUser: { perMinute: 10, perHour: 100 },
+				},
 				audit: { enabled: false },
 			},
 		} as Partial<TelclaudeConfig>);

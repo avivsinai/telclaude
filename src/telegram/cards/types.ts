@@ -240,7 +240,7 @@ export type ModelPickerProvider = {
 	execution:
 		| {
 				executable: true;
-				kind: "claude-sdk";
+				kind: "hermes";
 		  }
 		| {
 				executable: false;

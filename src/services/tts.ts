@@ -150,7 +150,7 @@ const DEFAULT_CONFIG: TTSConfig = {
  * @throws Error if rate limited or generation fails
  */
 export async function textToSpeech(text: string, options?: TTSOptions): Promise<GeneratedSpeech> {
-	// Route through relay when running on agent container
+	// Route through relay when running inside contained runtime compute.
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 		const voice = options?.voice ?? "alloy";
 		const speed = options?.speed ?? 1.0;

@@ -246,10 +246,7 @@ import {
 	buildInternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
-import {
-	relayGetHermesPrivateRuntimeState,
-	relaySetHermesPrivateRuntimeMode,
-} from "../relay/capabilities-client.js";
+import { relayGetHermesPrivateRuntimeState } from "../relay/capabilities-client.js";
 import {
 	mintOpenAiCodexPeerBoundProxyToken,
 	OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
@@ -494,7 +491,7 @@ function allHermesFeatureProbeDefinitions(): readonly FeatureProbeDefinition[] {
 		{
 			surface_id: "skills.allowlist",
 			documented_seam:
-				"Skill allowlist is enforced by the SDK PreToolUse hook in the contained runtime; SOCIAL fail-closes without an explicit allowlist (architecture invariant #9).",
+				"Skill allowlist is enforced by the contained Hermes runtime PreToolUse policy; SOCIAL fail-closes without an explicit allowlist (architecture invariant #9).",
 			probe_command: `pnpm dev hermes probe skills.allowlist --allow-run --out ${DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH}`,
 			expected_result:
 				"An allowlisted skill reaches the runtime; non-allowlisted and SOCIAL omitted/empty-allowlist Skill calls are denied by the PreToolUse hook.",
@@ -738,8 +735,6 @@ type ProReviewSendOption = JsonOption & {
 	execute?: boolean;
 	waitTimeoutMs?: string;
 };
-
-type PrivateRuntimeMode = "hermes" | "legacy";
 
 type LiveMcpProbeTokenOption = JsonOption & {
 	socket?: string;
@@ -2389,7 +2384,13 @@ function collectDockerExecRuntimeEvidence(
 			Config?: { Image?: string; Hostname?: string };
 			NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> };
 		};
-		const networkName = "telclaude-hermes-relay";
+		const networkName =
+			process.env.TELCLAUDE_HERMES_NETWORK?.trim() || DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK;
+		if (networkName !== DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK) {
+			return {
+				stderr: `Hermes private runtime evidence must use ${DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK}, got ${networkName}`,
+			};
+		}
 		const containerIpAddress = data.NetworkSettings?.Networks?.[networkName]?.IPAddress?.trim();
 		const relayObservation = resolveDockerRelayObservation(dockerBin, containerName, timeoutMs);
 		if (
@@ -2767,12 +2768,12 @@ const omitAllowedSkills = omitAllowedSkillsRaw === "true";
 async function loadProbe() {
   const cwd = process.cwd();
   const candidates = [
-    process.env.TELCLAUDE_SDK_CLIENT_MODULE,
-    path.join(cwd, "dist/sdk/client.js"),
-    "/opt/data/telclaude-runner/dist/sdk/client.js",
-    "/app/dist/sdk/client.js",
-    "/opt/telclaude/dist/sdk/client.js",
-    "/workspace/dist/sdk/client.js"
+    process.env.TELCLAUDE_HERMES_SKILLS_ALLOWLIST_MODULE,
+    path.join(cwd, "dist/hermes/skills-allowlist-pretooluse.js"),
+    "/opt/data/telclaude-runner/dist/hermes/skills-allowlist-pretooluse.js",
+    "/app/dist/hermes/skills-allowlist-pretooluse.js",
+    "/opt/telclaude/dist/hermes/skills-allowlist-pretooluse.js",
+    "/workspace/dist/hermes/skills-allowlist-pretooluse.js"
   ].filter(Boolean);
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
@@ -2788,7 +2789,7 @@ async function loadProbe() {
 const probe = await loadProbe();
 const skillName = prop === "nonallowlisted_skill_invocation_denied" ? nonAllowlistedSkill : allowlistedSkill;
 const result = await probe({
-  cwd: process.env.TELCLAUDE_HERMES_SDK_CWD || process.cwd(),
+  cwd: process.env.TELCLAUDE_HERMES_CWD || process.cwd(),
   tier: "SOCIAL",
   skillName,
   allowedSkills,
@@ -5488,7 +5489,7 @@ export function registerHermesCommand(program: Command): void {
 
 	const privateRuntime = hermes
 		.command("private-runtime")
-		.description("Observe or drive Hermes private-runtime durable mode through relay operator RPC");
+		.description("Observe the Hermes-only private runtime through relay operator RPC");
 
 	privateRuntime
 		.command("status")
@@ -5502,36 +5503,6 @@ export function registerHermesCommand(program: Command): void {
 				} else {
 					console.log(`Hermes private-runtime: ${state.effectiveMode}`);
 					console.log(`- effectiveValue: ${state.effectiveValue}`);
-					console.log(`- controlMode: ${state.controlMode}`);
-					console.log(`- controlSource: ${state.controlSource}`);
-					console.log(`- rolloutAllowed: ${String(state.rolloutAllowed)}`);
-				}
-				process.exitCode = 0;
-			} catch (error) {
-				if (options.json) {
-					printJson({ ok: false, error: String(error instanceof Error ? error.message : error) });
-				} else {
-					console.log(`Hermes private-runtime: fail`);
-					console.log(`- FAIL: ${String(error instanceof Error ? error.message : error)}`);
-				}
-				process.exitCode = 1;
-			}
-		});
-
-	privateRuntime
-		.command("set <mode>")
-		.description("Set Hermes private-runtime durable mode through relay operator RPC")
-		.option("--json", "Emit structured JSON")
-		.action(async (mode: string, options: JsonOption) => {
-			try {
-				if (mode !== "hermes" && mode !== "legacy") {
-					throw new Error("mode must be hermes or legacy");
-				}
-				const state = await relaySetHermesPrivateRuntimeMode({ mode: mode as PrivateRuntimeMode });
-				if (options.json) {
-					printJson(state);
-				} else {
-					console.log(`Hermes private-runtime: ${state.effectiveMode}`);
 					console.log(`- controlMode: ${state.controlMode}`);
 					console.log(`- controlSource: ${state.controlSource}`);
 				}

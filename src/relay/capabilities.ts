@@ -19,11 +19,7 @@ import { resolveConfigPath, resolveRuntimeConfigPath } from "../config/path.js";
 import { getOperatorProfile } from "../config/profiles.js";
 import { getChatActiveProfileId } from "../config/sessions.js";
 import { readEnv } from "../env.js";
-import {
-	type HermesPrivateRuntimeControlMode,
-	readHermesPrivateRuntimeEffectiveState,
-	setHermesPrivateRuntimeControlMode,
-} from "../hermes/private-runtime-control.js";
+import { readHermesPrivateRuntimeEffectiveState } from "../hermes/private-runtime-control.js";
 import {
 	buildInternalResponseProof,
 	type InternalAuthScope,
@@ -65,7 +61,6 @@ import {
 	type SocialHeartbeatPayload,
 } from "../social/index.js";
 import { validateAttachmentRef } from "../storage/attachment-refs.js";
-import type { RuntimeSnapshot } from "../system-metadata.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
 import { sendAdminAlert } from "../telegram/admin-alert.js";
 import { sendApprovalScopeCard } from "../telegram/cards/create-helpers.js";
@@ -996,7 +991,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			// trusted for a narrow mutation surface used by the local CLI.
 			if (authResult.scope !== "telegram") {
 				const allowedPaths = new Set([
-					"/v1/agent.ready",
 					"/v1/auth/token-exchange",
 					"/v1/auth/token-refresh",
 					"/v1/social.heartbeat",
@@ -1010,7 +1004,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					allowedPaths.add("/v1/config.providers.upsert");
 					allowedPaths.add("/v1/config.providers.remove");
 					allowedPaths.add("/v1/hermes.private-runtime.status");
-					allowedPaths.add("/v1/hermes.private-runtime.mode");
 				}
 				if (!allowedPaths.has(requestPath)) {
 					writeJson(res, 403, { error: "Forbidden." });
@@ -1037,25 +1030,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			// non-telegram scopes are already rejected by the allowedPaths gate above.
 			if (req.method === "POST" && requestPath === "/v1/codex-relay-token") {
 				handleCodexRelayTokenMint(req, res, body);
-				return;
-			}
-
-			// ── Agent Ready Notification ─────────────────────────────────────
-			if (requestPath === "/v1/agent.ready") {
-				let readyBody: { scope?: string; runtime?: RuntimeSnapshot };
-				try {
-					readyBody = JSON.parse(body) as { scope?: string; runtime?: RuntimeSnapshot };
-				} catch {
-					writeJson(res, 400, { error: "Invalid JSON." });
-					return;
-				}
-				const agentScope = readyBody.scope ?? authResult.scope;
-				const agentVersion = readyBody.runtime?.version ?? "unknown";
-				const agentRevision = readyBody.runtime?.revision ?? "unknown";
-				const label = agentScope === "telegram" ? "agent (private)" : `agent (${agentScope})`;
-				logger.info({ scope: agentScope, version: agentVersion }, "agent announced readiness");
-				bufferStartupReady({ label, version: agentVersion, revision: agentRevision });
-				writeJson(res, 200, { ok: true });
 				return;
 			}
 
@@ -1180,36 +1154,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					requestPath,
 					body,
 					readHermesPrivateRuntimeEffectiveState() as unknown as Record<string, unknown>,
-					authResult.scope,
-				);
-				return;
-			}
-
-			if (requestPath === "/v1/hermes.private-runtime.mode") {
-				if (!isOperatorScope(authResult.scope)) {
-					writeJson(res, 403, { error: "Forbidden." });
-					return;
-				}
-				let typed: { mode?: unknown };
-				try {
-					typed = JSON.parse(body) as { mode?: unknown };
-				} catch {
-					writeJson(res, 400, { error: "Invalid JSON." });
-					return;
-				}
-				if (typed.mode !== "hermes" && typed.mode !== "legacy") {
-					writeJson(res, 400, { error: "mode must be hermes or legacy" });
-					return;
-				}
-				writeRelayProvenJson(
-					req,
-					res,
-					200,
-					requestPath,
-					body,
-					setHermesPrivateRuntimeControlMode(
-						typed.mode as HermesPrivateRuntimeControlMode,
-					) as unknown as Record<string, unknown>,
 					authResult.scope,
 				);
 				return;

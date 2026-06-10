@@ -1,14 +1,10 @@
 /**
- * Memory service — dual-mode access layer.
- * Relay-side: reads/writes SQLite directly via store.ts + rpc.ts handlers.
- * Agent-side: routes through relay HTTP via memory-client.ts.
+ * Memory service — relay-local access layer.
  */
 
-import { fetchMemorySnapshot, proposeMemory, quarantineMemory } from "../agent/memory-client.js";
 import { loadConfig } from "../config/config.js";
 import { getOperatorProfile } from "../config/profiles.js";
 import { getChatActiveProfileId } from "../config/sessions.js";
-import { getChildLogger } from "../logging.js";
 import {
 	handleMemoryPropose,
 	handleMemoryQuarantine,
@@ -19,9 +15,6 @@ import {
 import { telegramMemorySource } from "../memory/source.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemoryEntry, MemorySource } from "../memory/types.js";
-import { isAgentSide } from "./relay-routing.js";
-
-const logger = getChildLogger({ module: "memory-service" });
 
 export function resolveLocalTelegramMemoryProfileId(chatId?: string): string {
 	if (!chatId || !/^-?\d+$/.test(chatId.trim())) {
@@ -46,15 +39,8 @@ function resolveLocalTelegramMemorySource(chatId?: string): MemorySource {
 	return telegramMemorySource(resolveLocalTelegramMemoryProfileId(chatId));
 }
 
-/**
- * Read memory entries. Dual-mode: agent routes through relay, relay reads SQLite directly.
- */
+/** Read memory entries from the relay-local SQLite store. */
 export async function readMemory(query?: MemorySnapshotRequest): Promise<MemorySnapshotResponse> {
-	if (isAgentSide()) {
-		logger.debug("routing memory read through relay");
-		return fetchMemorySnapshot(query ?? {});
-	}
-
 	const effectiveQuery =
 		query?.chatId && !query.sources?.length && !query.sourceFamilies?.length
 			? {
@@ -70,18 +56,11 @@ export async function readMemory(query?: MemorySnapshotRequest): Promise<MemoryS
 	return result.value;
 }
 
-/**
- * Write memory entries. Dual-mode: agent routes through relay, relay writes SQLite directly.
- */
+/** Write memory entries to the relay-local SQLite store. */
 export async function writeMemory(
 	entries: MemoryEntryInput[],
 	options?: { userId?: string; chatId?: string },
 ): Promise<{ accepted: number }> {
-	if (isAgentSide()) {
-		logger.debug("routing memory write through relay");
-		return proposeMemory(entries, options);
-	}
-
 	const result = handleMemoryPropose(
 		{ entries, userId: options?.userId, chatId: options?.chatId },
 		{ source: resolveLocalTelegramMemorySource(options?.chatId), userId: options?.userId },
@@ -92,19 +71,12 @@ export async function writeMemory(
 	return result.value;
 }
 
-/**
- * Quarantine a post idea. Dual-mode: agent routes through relay, relay writes SQLite directly.
- */
+/** Quarantine a post idea in the relay-local SQLite store. */
 export async function quarantineIdea(
 	id: string,
 	content: string,
 	options?: { userId?: string; chatId?: string },
 ): Promise<{ entry: MemoryEntry }> {
-	if (isAgentSide()) {
-		logger.debug("routing memory quarantine through relay");
-		return quarantineMemory(id, content, options);
-	}
-
 	const result = handleMemoryQuarantine(
 		{ id, content, userId: options?.userId, chatId: options?.chatId },
 		{ source: resolveLocalTelegramMemorySource(options?.chatId), userId: options?.userId },

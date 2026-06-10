@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { shutdownTokenClient } from "../../src/agent/token-client.js";
+import { shutdownTokenClient } from "../../src/relay/rpc-auth-client.js";
 import { deriveNoForkP0Status, registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import { REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS } from "../../src/hermes/approval-continuation.js";
@@ -176,7 +176,7 @@ const HERMES_COMMAND_TEST_ENV_KEYS = [
 	"TELCLAUDE_HERMES_RELAY_IP",
 	"TELCLAUDE_HERMES_RUNTIME_GID",
 	"TELCLAUDE_HERMES_RUNTIME_UID",
-	"TELCLAUDE_HERMES_SDK_CWD",
+	"TELCLAUDE_HERMES_CWD",
 	"TELCLAUDE_HERMES_SERVED_MCP_AUTH",
 	"TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH",
 	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER",
@@ -184,7 +184,7 @@ const HERMES_COMMAND_TEST_ENV_KEYS = [
 	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP",
 	"TELCLAUDE_HERMES_SERVED_MCP_URL",
 	"TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH",
-	"TELCLAUDE_SDK_CLIENT_MODULE",
+	"TELCLAUDE_HERMES_SKILLS_ALLOWLIST_MODULE",
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
 ] as const;
@@ -420,6 +420,14 @@ async function runHermesCommand(
 	}
 }
 
+function privateRuntimeSubcommands(): string[] {
+	const program = new Command();
+	registerHermesCommand(program);
+	const hermes = program.commands.find((command) => command.name() === "hermes");
+	const privateRuntime = hermes?.commands.find((command) => command.name() === "private-runtime");
+	return privateRuntime?.commands.map((command) => command.name()).sort() ?? [];
+}
+
 async function runHermesCommandWithEnv(
 	args: string[],
 	env: Record<string, string>,
@@ -524,31 +532,15 @@ function hermesRuntimeState() {
 		ok: true,
 		effectiveMode: "hermes",
 		effectiveValue: "1",
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
 		controlMode: "hermes",
-		controlSource: "runtime-config",
-		fallbackPath: "telclaude.private-runtime.legacy",
-	};
-}
-
-function legacyRuntimeState() {
-	return {
-		ok: true,
-		effectiveMode: "legacy",
-		effectiveValue: "0",
-		rolloutAllowed: true,
-		rolloutEnvValue: "1",
-		controlMode: "legacy",
-		controlSource: "runtime-config",
-		fallbackPath: "telclaude.private-runtime.legacy",
+		controlSource: "hermes-only",
 	};
 }
 
 function signedRuntimeStatePayload(
 	requestPath: string,
 	requestBody: string,
-	state: ReturnType<typeof hermesRuntimeState> | ReturnType<typeof legacyRuntimeState>,
+	state: ReturnType<typeof hermesRuntimeState>,
 ): string {
 	const unsignedBody = JSON.stringify(state);
 	return JSON.stringify({
@@ -872,14 +864,13 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 		evidence_path: evidencePath,
 		allowedToRun: true,
 		observedBeforeValue: "1",
-		observedAfterValue: "0",
-		observedFallbackPath: "telclaude.private-runtime.legacy",
+		observedAfterValue: "1",
 		observedAt: "2026-05-30T00:00:00.000Z",
 		controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
 		observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
 		observedBeforeSource: "relay-effective-mode",
 		observedAfterSource: "relay-effective-mode",
-		observedAfterControlSource: "runtime-config",
+		observedAfterControlSource: "hermes-only",
 		relayPublicKey,
 		signedRelayTranscripts: {
 			before: signedRelayTranscript(
@@ -887,18 +878,13 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 				"{}",
 				hermesRuntimeState(),
 			),
-			afterControl: signedRelayTranscript(
-				"/v1/hermes.private-runtime.mode",
-				JSON.stringify({ mode: "legacy" }),
-				legacyRuntimeState(),
-			),
-			after: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", legacyRuntimeState()),
+			after: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", hermesRuntimeState()),
 		},
 		checks: [
 			{
 				name: "rollback.allowed",
 				status: "pass",
-				detail: "operator allowed a real rollback rehearsal",
+				detail: "operator allowed a relay-observed Hermes-only rehearsal",
 			},
 			{
 				name: "rollback.relayProofs",
@@ -908,22 +894,17 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 			{
 				name: "rollback.flagBefore",
 				status: "pass",
-				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed enabled before rollback",
+				detail: "relay observed Hermes private runtime enabled before rehearsal",
 			},
 			{
 				name: "rollback.flagAfter",
 				status: "pass",
-				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed disabled after rollback",
-			},
-			{
-				name: "rollback.fallbackPath",
-				status: "pass",
-				detail: "pre-Hermes fallback path observed",
+				detail: "relay observed Hermes private runtime still enabled",
 			},
 			{
 				name: "rollback.controlSurface",
 				status: "pass",
-				detail: "relay durable runtime config accepted legacy mode",
+				detail: "Hermes-only private runtime exposes no mutable mode selector",
 			},
 			{
 				name: "rollback.observedSources",
@@ -3014,7 +2995,7 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 	const runtime = {
 		kind: "contained-docker",
 		containerName: "tc-hermes-contained",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		containerId: "tc-hermes-contained-container-id",
 		image:
 			"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
@@ -4148,12 +4129,12 @@ function liveMcpProbeTokenResponse(): TelclaudeLiveMcpProbeTokenBundle {
 			privateConnection: {
 				profileId: "default",
 				endpointId: "tc-hermes-private",
-				networkNamespace: "telclaude-hermes-relay",
+				networkNamespace: "telclaude-hermes-private",
 			},
 			wrongConnection: {
 				profileId: "social",
 				endpointId: "tc-hermes-wrong",
-				networkNamespace: "telclaude-hermes-relay",
+				networkNamespace: "telclaude-hermes-private",
 			},
 		},
 	};
@@ -6069,7 +6050,10 @@ describe("Hermes wrapper foundation", () => {
 				...transcripts,
 				before: {
 					...transcripts.before,
-					responseBody: JSON.stringify(legacyRuntimeState()),
+					responseBody: JSON.stringify({
+						...hermesRuntimeState(),
+						controlSource: "runtime-config-default",
+					}),
 				},
 			},
 		};
@@ -6186,15 +6170,10 @@ describe("Hermes wrapper foundation", () => {
 						"{}",
 						hermesRuntimeState(),
 					),
-					afterControl: signedRelayTranscript(
-						"/v1/hermes.private-runtime.mode",
-						JSON.stringify({ mode: "legacy" }),
-						legacyRuntimeState(),
-					),
 					after: signedRelayTranscript(
 						"/v1/hermes.private-runtime.status",
 						"{}",
-						legacyRuntimeState(),
+						hermesRuntimeState(),
 					),
 				},
 			};
@@ -10904,7 +10883,7 @@ describe("Hermes wrapper foundation", () => {
 		const relay = await startProbeServer((_req, res) => {
 			requestCount += 1;
 			res.setHeader("Content-Type", "application/json");
-			res.end(JSON.stringify(legacyRuntimeState()));
+			res.end(JSON.stringify(hermesRuntimeState()));
 		});
 		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
 		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
@@ -10946,7 +10925,7 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("writes rollback rehearsal evidence by driving the relay capability surface", async () => {
+	it("writes rollback rehearsal evidence without a mutable mode selector", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-cli-"));
 		const outPath = path.join(tempDir, "rollback.json");
 		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
@@ -10968,23 +10947,7 @@ describe("Hermes wrapper foundation", () => {
 			res.setHeader("Content-Type", "application/json");
 			if (requestPath === "/v1/hermes.private-runtime.status") {
 				statusCalls += 1;
-				res.end(
-					signedRuntimeStatePayload(
-						requestPath,
-						"{}",
-						statusCalls === 1 ? hermesRuntimeState() : legacyRuntimeState(),
-					),
-				);
-				return;
-			}
-			if (requestPath === "/v1/hermes.private-runtime.mode") {
-				res.end(
-					signedRuntimeStatePayload(
-						requestPath,
-						JSON.stringify({ mode: "legacy" }),
-						legacyRuntimeState(),
-					),
-				);
+				res.end(signedRuntimeStatePayload(requestPath, "{}", hermesRuntimeState()));
 				return;
 			}
 			res.statusCode = 404;
@@ -11037,6 +11000,7 @@ describe("Hermes wrapper foundation", () => {
 				evidence_path: string;
 				observedBeforeValue: string;
 				observedAfterValue: string;
+				observedAfterControlSource: string;
 				controlSurface: string;
 			};
 			const evidence = readJson(outPath) as {
@@ -11052,12 +11016,13 @@ describe("Hermes wrapper foundation", () => {
 				written: true,
 				evidence_path: "artifacts/hermes/rollback-rehearsal.json",
 				observedBeforeValue: "1",
-				observedAfterValue: "0",
+				observedAfterValue: "1",
+				observedAfterControlSource: "hermes-only",
 			});
 			expect(evidence).toMatchObject({
 				passed: true,
 				evidence_path: "artifacts/hermes/rollback-rehearsal.json",
-				observedAfterControlSource: "runtime-config",
+				observedAfterControlSource: "hermes-only",
 				relayPublicKey: {
 					source: relayPublicKeySourcePath,
 				},
@@ -11091,11 +11056,7 @@ describe("Hermes wrapper foundation", () => {
 			res.setHeader("Content-Type", "application/json");
 			if (requestPath === "/v1/hermes.private-runtime.status") {
 				statusCalls += 1;
-				res.end(JSON.stringify(statusCalls === 1 ? hermesRuntimeState() : legacyRuntimeState()));
-				return;
-			}
-			if (requestPath === "/v1/hermes.private-runtime.mode") {
-				res.end(JSON.stringify(legacyRuntimeState()));
+				res.end(JSON.stringify(hermesRuntimeState()));
 				return;
 			}
 			res.statusCode = 404;
@@ -11130,7 +11091,7 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("sets and observes private-runtime durable mode through relay operator RPC", async () => {
+	it("observes private-runtime status through relay operator RPC without a mode setter", async () => {
 		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
 		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
 		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
@@ -11148,16 +11109,6 @@ describe("Hermes wrapper foundation", () => {
 				res.end(signedRuntimeStatePayload(requestPath, "{}", hermesRuntimeState()));
 				return;
 			}
-			if (requestPath === "/v1/hermes.private-runtime.mode") {
-				res.end(
-					signedRuntimeStatePayload(
-						requestPath,
-						JSON.stringify({ mode: "hermes" }),
-						hermesRuntimeState(),
-					),
-				);
-				return;
-			}
 			res.statusCode = 404;
 			res.end(JSON.stringify({ error: `not found: ${requestPath}` }));
 		});
@@ -11167,13 +11118,6 @@ describe("Hermes wrapper foundation", () => {
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
 		try {
-			const setResult = await runHermesCommand([
-				"hermes",
-				"private-runtime",
-				"set",
-				"hermes",
-				"--json",
-			]);
 			const statusResult = await runHermesCommand([
 				"hermes",
 				"private-runtime",
@@ -11181,17 +11125,10 @@ describe("Hermes wrapper foundation", () => {
 				"--json",
 			]);
 
-			expect(setResult.exitCode, setResult.stdout).toBe(0);
-			expect(JSON.parse(setResult.stdout)).toMatchObject({
-				effectiveMode: "hermes",
-				controlSource: "runtime-config",
-			});
 			expect(statusResult.exitCode, statusResult.stdout).toBe(0);
 			expect(JSON.parse(statusResult.stdout)).toMatchObject({ effectiveValue: "1" });
-			expect(requests).toEqual([
-				"/v1/hermes.private-runtime.mode",
-				"/v1/hermes.private-runtime.status",
-			]);
+			expect(privateRuntimeSubcommands()).toEqual(["status"]);
+			expect(requests).toEqual(["/v1/hermes.private-runtime.status"]);
 		} finally {
 			await relay.close();
 			shutdownTokenClient();
@@ -11555,7 +11492,7 @@ echo should-not-run
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-private":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 if [ "$1" = "exec" ] && [ "$3" = "test" ]; then
@@ -11693,7 +11630,7 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-private":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 if [ "$1" = "exec" ] && [ "$3" = "test" ]; then
@@ -11796,7 +11733,7 @@ exit 99
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-private":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 case "$*" in
@@ -11893,7 +11830,7 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-private":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 if [ "$1" = "exec" ] && [ "$3" = "test" ]; then
@@ -11972,7 +11909,7 @@ exit 99
 			expect(report.runtime).toMatchObject({
 				kind: "contained-docker",
 				containerName: "tc-hermes-contained",
-				networkName: "telclaude-hermes-relay",
+				networkName: "telclaude-hermes-private",
 				relayResolvedAddress: CLI_HEADLESS_TEST_RELAY_IP,
 				containerIpAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 				observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
@@ -12098,7 +12035,7 @@ exit 99
 			"--container-name",
 			"tc-hermes-contained",
 			"--network",
-			"telclaude-hermes-relay",
+			"telclaude-hermes-private",
 			"--relay-container",
 			"tc-hermes-relay",
 			"--out",
@@ -12150,7 +12087,9 @@ exit 99
 			]),
 		);
 		expect(readJson(evidencePath)).toMatchObject({ status: "pass", ran: true });
-		expect(fs.readFileSync(callsPath, "utf8")).toContain("network inspect telclaude-hermes-relay");
+		expect(fs.readFileSync(callsPath, "utf8")).toContain(
+			"network inspect telclaude-hermes-private",
+		);
 		expect(fs.readFileSync(callsPath, "utf8")).toContain(
 			"exec -e HERMES_HOME=/home/hermes/.hermes tc-hermes-contained python -c",
 		);
@@ -12220,7 +12159,7 @@ exit 99
 			"--container-name",
 			"tc-hermes-contained",
 			"--network",
-			"telclaude-hermes-relay",
+			"telclaude-hermes-private",
 			"--relay-container",
 			"tc-hermes-relay",
 			"--out",
@@ -12246,7 +12185,7 @@ cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'
 {
   "kind": "contained-docker",
   "containerName": "tc-hermes-contained",
-  "networkName": "telclaude-hermes-relay",
+  "networkName": "telclaude-hermes-private",
   "containerId": "tc-hermes-contained-container-id",
   "image": "nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
   "imageDigest": "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
@@ -13272,7 +13211,7 @@ if (container === "tc-hermes-contained") {
         memorySource: "telegram:default",
         profileId: "default",
         endpointId: "tc-hermes-private",
-        networkNamespace: "telclaude-hermes-relay"
+        networkNamespace: "telclaude-hermes-private"
       }
     }
   }, "${CLI_HEADLESS_TEST_CONTAINED_IP}");
@@ -13290,7 +13229,7 @@ if (container === "tc-hermes-contained") {
   } else {
     emit({result: {}});
   }
-} else if (container === "telclaude-agent-social") {
+} else if (container === "tc-hermes-social-sentinel") {
   if (auth !== "Bearer social") rpcError("social auth header missing");
   else if (payload.method === "initialize") emit({
     result: {
@@ -13300,7 +13239,7 @@ if (container === "tc-hermes-contained") {
         memorySource: "social",
         profileId: "social",
         endpointId: "tc-hermes-social",
-        networkNamespace: "telclaude-hermes-relay"
+        networkNamespace: "telclaude-hermes-private"
       }
     }
   }, "${CLI_HEADLESS_WRONG_CONTAINED_IP}");
@@ -13335,7 +13274,7 @@ NODE
 				"--expected-peer-address",
 				CLI_HEADLESS_TEST_CONTAINED_IP,
 				"--mcp-off-domain-container",
-				"telclaude-agent-social",
+				"tc-hermes-social-sentinel",
 				"--mcp-off-domain-peer-address",
 				CLI_HEADLESS_WRONG_CONTAINED_IP,
 				"--out",
@@ -13380,7 +13319,7 @@ NODE
 				?.offDomainObservedEntryHashes?.[0],
 		).toMatch(/^sha256:[a-f0-9]{64}$/);
 		expect(calls).toContain("exec -i tc-hermes-contained node --input-type=module -e");
-		expect(calls).toContain("exec -i telclaude-agent-social node --input-type=module -e");
+		expect(calls).toContain("exec -i tc-hermes-social-sentinel node --input-type=module -e");
 		expect(readJson(evidencePath)).toMatchObject({ status: "pass", ran: true });
 	});
 
@@ -13572,19 +13511,19 @@ NODE
 					sessionKey: "probe:private",
 					profileId: "default",
 					endpointId: "tc-hermes-private",
-					networkNamespace: "telclaude-hermes-relay",
+					networkNamespace: "telclaude-hermes-private",
 				},
 				wrongConnection: {
 					sessionKey: "probe:wrong",
 					profileId: "social",
 					endpointId: "tc-hermes-wrong",
-					networkNamespace: "telclaude-hermes-relay",
+					networkNamespace: "telclaude-hermes-private",
 				},
 				offDomainConnection: {
 					sessionKey: "probe:social",
 					profileId: "social",
 					endpointId: "tc-hermes-social",
-					networkNamespace: "telclaude-hermes-relay",
+					networkNamespace: "telclaude-hermes-private",
 				},
 				privateAuthority: {
 					actorId: "operator:probe",
@@ -13689,12 +13628,10 @@ NODE
 						apiKey: "RAW_SOCIAL_API_KEY",
 						handle: "operator",
 						displayName: "Operator",
-						agentUrl: "http://agent.internal/private",
 						heartbeatEnabled: true,
 						heartbeatIntervalHours: 4,
 						enableSkills: true,
 						allowedSkills: ["social-posting"],
-						agentSkillsAllowed: ["voice"],
 						notifyOnHeartbeat: "activity",
 					},
 				],

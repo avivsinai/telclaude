@@ -1,5 +1,5 @@
 /**
- * Agent-side session token client.
+ * Relay RPC session token client.
  *
  * Handles:
  * - Bootstrap: exchange static secret for session token at startup
@@ -236,8 +236,8 @@ export function getPublicKey(): string | null {
 }
 
 /**
- * Load a pre-minted session token from env (relay passes this to agent subprocess).
- * This allows the agent to call relay capabilities without the private key.
+ * Load a pre-minted session token from env. This allows a contained runtime
+ * client to call relay capabilities without holding the long-lived private key.
  */
 export function loadPreMintedToken(): boolean {
 	const envToken = process.env.TELCLAUDE_SESSION_TOKEN;

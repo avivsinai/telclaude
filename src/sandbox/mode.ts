@@ -1,14 +1,14 @@
 /**
  * Sandbox mode detection.
  *
- * Determines whether to use Docker-provided isolation or SDK's native sandbox.
+ * Determines whether the relay process is running inside Docker or on the host.
  *
  * Architecture:
- * - Docker mode: SDK sandbox DISABLED. Docker container provides isolation.
- * - Native mode: SDK sandbox ENABLED. bubblewrap (Linux) or Seatbelt (macOS).
+ * - Docker mode: the relay container provides process-level isolation.
+ * - Native mode: the relay process is host-local; LLM/persona execution still
+ *   routes through the contained Hermes runtime.
  *
- * This follows Anthropic's recommended pattern: use ONE isolation boundary,
- * not layered sandboxes which cause complexity and compatibility issues.
+ * This is posture detection only; runtime execution is always Hermes-wrapped.
  */
 
 import fs from "node:fs";
@@ -51,17 +51,10 @@ export function isDockerEnvironment(): boolean {
  */
 export function getSandboxMode(): SandboxMode {
 	if (isDockerEnvironment()) {
-		logger.debug("detected Docker environment - SDK sandbox will be disabled");
+		logger.debug("detected Docker environment");
 		return "docker";
 	}
 
-	logger.debug("detected native environment - SDK sandbox will be enabled");
+	logger.debug("detected native environment");
 	return "native";
-}
-
-/**
- * Check if SDK sandbox should be enabled for current environment.
- */
-export function shouldEnableSdkSandbox(): boolean {
-	return getSandboxMode() === "native";
 }

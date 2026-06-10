@@ -1032,7 +1032,7 @@ export function registerProvidersCommandGroup(parent: Command): void {
 
 	parent
 		.command("refresh")
-		.description("Refresh provider schema + prompt summary without restarting the relay or agent")
+		.description("Refresh provider schema + prompt summary without restarting the relay")
 		.action(async () => {
 			try {
 				await runProviderRefresh();

@@ -19,7 +19,9 @@ type RunnerCall = {
 	env?: NodeJS.ProcessEnv;
 };
 
-function createRunner(outputs: Record<string, { status?: number; stdout?: string; stderr?: string }>) {
+function createRunner(
+	outputs: Record<string, { status?: number; stdout?: string; stderr?: string }>,
+) {
 	const calls: RunnerCall[] = [];
 	const runner: ClaudePluginRunner = {
 		run(cmd, args, options) {
@@ -237,7 +239,14 @@ describe("managed plugin commands", () => {
 				"shaon@avivsinai-marketplace": [
 					{
 						scope: "user",
-						installPath: path.join(privateHome, "plugins", "cache", "avivsinai-marketplace", "shaon", "0.8.3"),
+						installPath: path.join(
+							privateHome,
+							"plugins",
+							"cache",
+							"avivsinai-marketplace",
+							"shaon",
+							"0.8.3",
+						),
 						version: "0.8.3",
 						installedAt: "2026-04-20T00:00:00.000Z",
 						lastUpdated: "2026-04-20T00:00:00.000Z",
@@ -282,7 +291,14 @@ describe("managed plugin commands", () => {
 				"shaon@avivsinai-marketplace": [
 					{
 						scope: "user",
-						installPath: path.join(privateHome, "plugins", "cache", "avivsinai-marketplace", "shaon", "0.8.3"),
+						installPath: path.join(
+							privateHome,
+							"plugins",
+							"cache",
+							"avivsinai-marketplace",
+							"shaon",
+							"0.8.3",
+						),
 						version: "0.8.3",
 						installedAt: "2026-04-20T00:00:00.000Z",
 						lastUpdated: "2026-04-20T00:00:00.000Z",
@@ -346,7 +362,14 @@ describe("managed plugin commands", () => {
 				"shaon@avivsinai-marketplace": [
 					{
 						scope: "user",
-						installPath: path.join(privateHome, "plugins", "cache", "avivsinai-marketplace", "shaon", "0.8.3"),
+						installPath: path.join(
+							privateHome,
+							"plugins",
+							"cache",
+							"avivsinai-marketplace",
+							"shaon",
+							"0.8.3",
+						),
 						version: "0.8.3",
 						installedAt: "2026-04-20T00:00:00.000Z",
 						lastUpdated: "2026-04-20T00:00:00.000Z",
@@ -365,7 +388,14 @@ describe("managed plugin commands", () => {
 				"shaon@avivsinai-marketplace": [
 					{
 						scope: "user",
-						installPath: path.join(socialHome, "plugins", "cache", "avivsinai-marketplace", "shaon", "0.8.3"),
+						installPath: path.join(
+							socialHome,
+							"plugins",
+							"cache",
+							"avivsinai-marketplace",
+							"shaon",
+							"0.8.3",
+						),
 						version: "0.8.3",
 						installedAt: "2026-04-20T00:00:00.000Z",
 						lastUpdated: "2026-04-20T00:00:00.000Z",

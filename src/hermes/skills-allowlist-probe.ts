@@ -270,7 +270,7 @@ export type SkillInvocationOutcome = {
 	readonly passed: boolean;
 	/** Runtime/profile checks must be observed through docker exec. */
 	readonly observationLayer?: "docker_exec";
-	/** Enforcement checks must prove the primary SDK hook, not canUseTool fallback. */
+	/** Enforcement checks must prove the primary PreToolUse gate, not a fallback. */
 	readonly enforcementLayer?: "pretooluse";
 	readonly detail?: string;
 };

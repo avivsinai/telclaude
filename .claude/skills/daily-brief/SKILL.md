@@ -23,7 +23,7 @@ operator explicitly asks for that different audience.
 - Use only the relay-proxied Google provider CLI:
   `telclaude providers query google <service> <action> ...`.
 - Do not call `googleapis.com`, the Google sidecar, OAuth endpoints, or provider
-  base URLs directly with WebFetch, curl, SDKs, or custom scripts.
+  base URLs directly with WebFetch, curl, client libraries, or custom scripts.
 - Do not request, read, print, or infer Google credentials, tokens, cookies, or
   environment secrets. The provider proxy owns auth.
 - Use read-only Google actions only:

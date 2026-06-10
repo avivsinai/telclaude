@@ -7,7 +7,7 @@ import {
 	listDraftSkills,
 } from "../../../commands/skills-promote.js";
 import { deleteSession } from "../../../config/sessions.js";
-import { getSessionManager } from "../../../sdk/session-manager.js";
+import { clearHermesSessionMapping } from "../../../hermes/session-map.js";
 import { inspectSkillSignature } from "../../../security/skill-scanner.js";
 import { sendSkillReviewCard } from "../create-helpers.js";
 import type {
@@ -205,7 +205,7 @@ export const skillPickerRenderer: CardRenderer<K> = {
 				}
 				if (s.sessionKey) {
 					deleteSession(s.sessionKey);
-					getSessionManager().clearSession(s.sessionKey);
+					clearHermesSessionMapping(s.sessionKey);
 				}
 				// Also refresh the entries list so any newly promoted skills show.
 				const refreshed = loadSkillPickerEntries();

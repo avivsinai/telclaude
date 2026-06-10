@@ -2,7 +2,7 @@ import { collectCronOverview, formatCronOverview } from "../../../commands/cron.
 import { collectSessionRows, formatSessionRows } from "../../../commands/sessions.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../../../commands/status.js";
 import { deleteSession } from "../../../config/sessions.js";
-import { getSessionManager } from "../../../sdk/session-manager.js";
+import { clearHermesSessionMapping } from "../../../hermes/session-map.js";
 import { revokeSessionAllowlist } from "../../../security/approvals.js";
 import { openSystemHealthCard } from "../../control-command-actions.js";
 import type {
@@ -225,7 +225,7 @@ export const statusRenderer: CardRenderer<K> = {
 					return { callbackText: "No session to reset", callbackAlert: true };
 				}
 				deleteSession(sessionKey);
-				getSessionManager().clearSession(sessionKey);
+				clearHermesSessionMapping(sessionKey);
 				// W1 — drop session-scoped approval grants alongside the session.
 				revokeSessionAllowlist(sessionKey);
 				return {

@@ -1022,7 +1022,10 @@ describe("Hermes model-relay probe", () => {
 		);
 		fs.writeFileSync(
 			logPath,
-			Buffer.concat([Buffer.from("runtime log without model credentials\n"), Buffer.alloc(1_000_001)]),
+			Buffer.concat([
+				Buffer.from("runtime log without model credentials\n"),
+				Buffer.alloc(1_000_001),
+			]),
 		);
 
 		const report = await runHermesModelRelayProbe({

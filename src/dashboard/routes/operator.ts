@@ -403,6 +403,7 @@ function summarizeSocialService(service: NonNullable<TelclaudeConfig["socialServ
 		id: service.id,
 		type: service.type,
 		enabled: service.enabled,
+		runtime: "hermes" as const,
 		hasHandle: Boolean(service.handle),
 		displayName: clampText(service.displayName, 80),
 		heartbeatEnabled: service.heartbeatEnabled,
@@ -410,7 +411,6 @@ function summarizeSocialService(service: NonNullable<TelclaudeConfig["socialServ
 		notifyOnHeartbeat: service.notifyOnHeartbeat,
 		enableSkills: service.enableSkills,
 		allowedSkillsCount: service.allowedSkills?.length ?? 0,
-		hasAgentUrl: Boolean(service.agentUrl),
 	};
 }
 
@@ -429,13 +429,13 @@ function summarizePersonaForDashboard(
 			claudeHome: status.profile.claudeHome,
 			source: status.profile.source,
 		},
-		agent: {
-			configured: status.agent.configured,
-			source: status.agent.source,
-			endpoint: status.agent.endpoint,
-			reachability: status.agent.reachability,
-			checkedAt: status.agent.checkedAt,
-			error: status.agent.error,
+		runtime: {
+			configured: status.runtime.configured,
+			source: status.runtime.source,
+			endpoint: status.runtime.endpoint,
+			reachability: status.runtime.reachability,
+			checkedAt: status.runtime.checkedAt,
+			error: status.runtime.error,
 		},
 		skills: {
 			policy: status.skills.policy,
@@ -796,7 +796,7 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 		try {
 			const cfg = loadConfig();
 			const services = (cfg.socialServices ?? []).map(summarizeSocialService);
-			const personaSnapshot = await collectPersonaStatus({ config: cfg, probeAgents: false });
+			const personaSnapshot = await collectPersonaStatus({ config: cfg, probeRuntime: false });
 			return reply.send({
 				ok: true,
 				securityProfile: cfg.security?.profile ?? "simple",

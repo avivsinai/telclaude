@@ -201,7 +201,7 @@ export function registerOAuthCommand(program: Command): void {
 						console.log();
 						console.log("Next steps:");
 						console.log(`  1. Set ${service.userIdEnvVar}=${result.userId} in docker/.env`);
-						console.log("  2. Restart social agent container");
+						console.log("  2. Restart the relay stack");
 					}
 				} catch (err) {
 					logger.error({ error: String(err) }, "oauth authorize failed");

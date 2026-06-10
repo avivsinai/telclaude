@@ -4,11 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import {
-	generateCodeChallenge,
-	generateCodeVerifier,
-	generatePKCE,
-} from "../../src/oauth/pkce.js";
+import { generateCodeChallenge, generateCodeVerifier, generatePKCE } from "../../src/oauth/pkce.js";
 
 // Base64url character set (RFC 4648 Section 5)
 const BASE64URL_REGEX = /^[A-Za-z0-9_-]+$/;

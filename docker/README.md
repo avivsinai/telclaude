@@ -11,21 +11,21 @@ See `docs/architecture.md` for the full system design. At a glance:
 │                        Docker Host                                  │
 │                                                                     │
 │  ┌───────────────┐  ┌────────────────┐  ┌────────────────────────┐ │
-│  │   telclaude   │  │ telclaude-agent│  │    agent-social        │ │
-│  │    (relay)    │  │ (private agent)│  │   (social agent)       │ │
+│  │   telclaude   │  │ google-services│  │  tc-hermes-contained   │ │
+│  │    (relay)    │  │   (sidecar)    │  │  + tc-hermes-social    │ │
 │  └───────┬───────┘  └───────┬────────┘  └───────┬────────────────┘ │
 │          │                  │                    │                   │
 │  ┌───────┴───────┐  ┌──────┴────────┐  ┌───────┴────────────────┐ │
-│  │ totp  │ vault │  │  /workspace   │  │  /social/sandbox       │ │
-│  │(2FA)  │(creds)│  │ (host mount)  │  │  (isolated)            │ │
+│  │ totp  │ vault │  │ Google egress │  │ relay-internal MCP     │ │
+│  │(2FA)  │(creds)│  │ network       │  │ + model relay only     │ │
 │  └───────────────┘  └───────────────┘  └────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**6 containers** (base stack): relay, telegram agent, social agent, Google services sidecar, TOTP sidecar, vault sidecar.
-**5 images**: `telclaude:latest`, `telclaude-agent:latest`, `telclaude-google-services:latest`, `telclaude-totp:latest`, `telclaude-vault:latest`.
+**4 containers** (base stack): relay, Google services sidecar, TOTP sidecar, vault sidecar.
+**4 images**: `telclaude:latest`, `telclaude-google-services:latest`, `telclaude-totp:latest`, `telclaude-vault:latest`.
 
-The optional Hermes private-runtime overlay adds a 7th container (`tc-hermes-contained`, pinned upstream image) on its own internal network — see [Hermes Private Runtime](#hermes-private-runtime-optional-overlay).
+The Hermes overlay adds `tc-hermes-contained` and `tc-hermes-social` (pinned upstream image) on its own internal network — see [Hermes Private Runtime](#hermes-private-runtime). This is the only LLM/persona runtime path.
 
 ## Security Features
 
@@ -85,11 +85,11 @@ for containers that need initial root privileges.
    cp telclaude-private.json.example telclaude-private.json
    ```
 
-5. **Generate RPC keys** (required for agent authentication):
+5. **Generate RPC keys** (required for relay/Hermes authority and operator authentication):
    ```bash
    # From the repo root (not docker/):
-   pnpm dev keygen telegram   # generates 4 keys for telegram agent
-   pnpm dev keygen social     # generates 4 keys for social agent
+   pnpm dev keygen telegram   # generates 4 keys for Telegram-side relay RPC
+   pnpm dev keygen social     # generates 4 keys for social-domain relay RPC
    # Copy the output into your .env file
    ```
 
@@ -123,7 +123,7 @@ If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude (relay container):
 docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 ```
 
-This stores credentials in the relay-only `telclaude-claude-auth` volume. Agents use the relay proxy, so you do **not** need to run `claude login` in the agent containers.
+This stores credentials in the relay-only `telclaude-claude-auth` volume. Hermes uses relay-owned model/provider capability, so you do **not** run `claude login` in a runtime container.
 
 ### Migration: Old Claude Profile Volume
 
@@ -161,7 +161,7 @@ Some volumes contain **critical secrets** that cannot be recovered if deleted.
 
 These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
 
-**Profile volume note:** The per-agent profile volumes (`telclaude-skills-telegram`, `telclaude-skills-social`) are **not** external. They store profile-local state plus official Claude plugins. Standalone telclaude skills still live in the shared `telclaude-skill-catalog`.
+**Profile volume note:** persona-scoped Claude plugin/profile volumes are relay-managed state. Standalone telclaude skills live in the shared `telclaude-skill-catalog`; the contained Hermes runtime receives only the curated Hermes allowlist.
 
 ### Safe Operations
 
@@ -204,15 +204,13 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 
 | Container | Path | Purpose | Persisted |
 |----------|------|---------|-----------|
-| `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
 | `telclaude` | `/data` | SQLite DB, config, sessions | Named volume |
 | `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | External volume |
-| `telclaude` + `telclaude-agent` + `agent-social` | `/home/telclaude-skill-catalog` | Shared active + draft skill catalog (`agent-social` mounts it read-only) | External volume |
-| `telclaude` + `telclaude-agent` | `/home/telclaude-private-profile` / `/home/telclaude-skills` | Private profile state and official Claude plugins | Named volume |
-| `telclaude` + `agent-social` | `/home/telclaude-social-profile` / `/home/telclaude-skills` | Social profile state and official Claude plugins | Named volume |
-| `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
-| `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
-| `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |
+| `telclaude` | `/home/telclaude-skill-catalog` | Shared active + draft standalone skill catalog | External volume |
+| `telclaude` | `/home/telclaude-private-profile` / `/home/telclaude-social-profile` | Persona-scoped official Claude plugin/profile state | Named volume |
+| `telclaude` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
+| `telclaude` | `/social/sandbox` | Social working area controlled by relay/Hermes authority | Named volume |
+| `telclaude` | `/social/memory` | Social memory (relay authoritative) | Named volume |
 
 ### Environment Variables
 
@@ -221,47 +219,47 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `TOTP_ENCRYPTION_KEY` | Yes | AES-256-GCM key for 2FA secrets. Generate: `openssl rand -base64 32` |
 | `VAULT_ENCRYPTION_KEY` | Yes | AES-256-GCM key for credential storage. Generate: `openssl rand -base64 32` |
-| `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for Anthropic proxy access (all agents). Generate: `openssl rand -hex 32` |
+| `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for relay-internal Anthropic proxy access. Generate: `openssl rand -hex 32` |
 | `TELEGRAM_BOT_TOKEN` | Vault/env | Bot token from @BotFather (vault preferred) |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` (vault preferred) |
 | `OPERATOR_RPC_AGENT_PRIVATE_KEY` | Host CLI only | Operator private key — signs operator-only relay mutations such as provider add/edit/remove/refresh |
 | `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator public key — relay verifies operator-only RPC mutations |
 | `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key — signs relay-observed operator RPC responses such as Hermes rollback evidence |
 | `OPERATOR_RPC_RELAY_PUBLIC_KEY` | Host CLI only | Operator relay public key — CLI verifies relay-observed operator RPC responses |
-| `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Agent private key — signs agent→relay requests. Generate with `telclaude keygen telegram` |
-| `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Agent public key — relay verifies agent→relay requests |
-| `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay→agent requests |
-| `TELEGRAM_RPC_RELAY_PUBLIC_KEY` | Yes | Relay public key — agent verifies relay→agent requests |
-| `SOCIAL_RPC_AGENT_PRIVATE_KEY` | Yes (if social enabled) | Agent private key for social agent bidirectional auth |
-| `SOCIAL_RPC_AGENT_PUBLIC_KEY` | Yes (if social enabled) | Agent public key — relay verifies social agent requests |
-| `SOCIAL_RPC_RELAY_PRIVATE_KEY` | Yes (if social enabled) | Relay private key for social agent requests |
-| `SOCIAL_RPC_RELAY_PUBLIC_KEY` | Yes (if social enabled) | Relay public key — social agent verifies relay requests |
+| `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Telegram-domain runtime private key — signs runtime→relay requests. Generate with `telclaude keygen telegram` |
+| `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Telegram-domain runtime public key — relay verifies runtime→relay requests |
+| `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay-observed Telegram-domain responses |
+| `TELEGRAM_RPC_RELAY_PUBLIC_KEY` | Yes | Relay public key — runtime/operator verifies relay-observed Telegram-domain responses |
+| `SOCIAL_RPC_AGENT_PRIVATE_KEY` | Yes (if social enabled) | Social-domain runtime private key |
+| `SOCIAL_RPC_AGENT_PUBLIC_KEY` | Yes (if social enabled) | Social-domain runtime public key — relay verifies social-domain requests |
+| `SOCIAL_RPC_RELAY_PRIVATE_KEY` | Yes (if social enabled) | Relay private key for social-domain responses |
+| `SOCIAL_RPC_RELAY_PUBLIC_KEY` | Yes (if social enabled) | Relay public key for social-domain verification |
 | `TELCLAUDE_GIT_PROXY_SECRET` | No | HMAC secret for git proxy session tokens. Generate: `openssl rand -hex 32` |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
-| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-social`) |
+| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,google-services`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
 Generate:
 - `telclaude keygen operator` for operator-only relay mutations and relay-observed rollback evidence. Keep `OPERATOR_RPC_AGENT_PRIVATE_KEY` and `OPERATOR_RPC_RELAY_PUBLIC_KEY` on the host where you run the CLI; put `OPERATOR_RPC_AGENT_PUBLIC_KEY` and `OPERATOR_RPC_RELAY_PRIVATE_KEY` in the relay container env.
-- `telclaude keygen telegram` / `telclaude keygen social` for agent scopes. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`.
+- `telclaude keygen telegram` / `telclaude keygen social` for runtime scopes. Each command generates two keypairs (4 keys): the runtime keypair (runtime signs, relay verifies) and the relay keypair (relay signs, runtime verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; private deployment secrets provide `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY` to the approved runtime path.
 
 Telegram admin wizards for `/providers add|edit|remove` do not require `OPERATOR_RPC_AGENT_PRIVATE_KEY`. They run inside the relay process, which writes the runtime overlay locally after Telegram admin/TOTP checks. The operator keypair is still required for host-side CLI or agent-container calls that hit the relay's operator-scope RPC endpoints over HTTP.
 
-`ANTHROPIC_PROXY_TOKEN` must match between relay and agent containers.
+`ANTHROPIC_PROXY_TOKEN` is relay-internal and must match the relay-side proxy configuration.
 
 ### Config Split
 
-Telclaude uses a two-file config split to keep secrets out of agent containers:
+Telclaude uses a two-file config split to keep secrets out of runtime-capable surfaces:
 
 | File | Mounted to | Contents |
 |------|-----------|----------|
-| `telclaude.json` | All containers | Policy: providers, network rules, rate limits, SDK config |
+| `telclaude.json` | Relay and approved sidecars | Policy: providers, network rules, rate limits, Hermes/runtime config |
 | `telclaude-private.json` | Relay only | Relay-only: allowedChats, permissions, deprecated secret fields |
 
-The relay deep-merges private on top of policy (`TELCLAUDE_PRIVATE_CONFIG` env var). Agents only read the policy file.
+The relay deep-merges private on top of policy (`TELCLAUDE_PRIVATE_CONFIG` env var). Hermes receives scoped runtime authority from the relay, not raw policy files.
 
 ### Relay-Compiled Claude Memory
 
@@ -333,58 +331,60 @@ Telclaude can communicate with private REST APIs (sidecars) for services like he
 See `telclaude.json.example` and `telclaude-private.json.example` for safe templates.
 Use local `docker-compose.override.yml` for host-specific services or volumes; keep private sidecars out of tracked compose files.
 
-## Hermes Private Runtime (Optional Overlay)
+## Hermes Private Runtime
 
-Telclaude can drive a pinned, unmodified upstream Hermes runtime instead of the Claude Agent SDK for the private persona. The relay stays the security envelope; Hermes is the agent loop behind it. This is an **opt-in** overlay — the base stack above does not start any Hermes container.
+Telclaude drives private Telegram, social, cron, and observer work through a pinned, unmodified upstream Hermes runtime. The relay stays the security envelope; Hermes is the agent loop behind it. Start the Hermes overlay for runtime operation; the base stack is not a complete LLM/persona deployment without it.
 
-The overlay (`docker-compose.hermes.yml`) adds one container, `tc-hermes-contained` (pinned upstream image digest), on a dedicated **internal-only** bridge network, `telclaude-hermes-relay` (default subnet `192.0.2.0/24`), that holds exactly two members: the relay (`192.0.2.10`) and the Hermes container (`192.0.2.11`). Do not attach sidecars, vault, providers, or egress helpers to this network.
+The overlay (`docker-compose.hermes.yml`) adds two pinned upstream Hermes containers on two **internal-only** bridge networks. `tc-hermes-contained` joins only `telclaude-hermes-private` (default `192.0.2.11`); `tc-hermes-social` joins only `telclaude-hermes-social` (default `192.0.3.11`). The relay joins both networks (`192.0.2.10` and `192.0.3.10`) and is the only non-runtime member. Do not attach sidecars, vault, providers, or egress helpers to these networks.
 
 ### Containment posture
 
-| Control | `tc-hermes-contained` |
-|---------|------------------------|
+| Control | `tc-hermes-contained` / `tc-hermes-social` |
+|---------|---------------------------------------------|
 | **User** | Non-root `10000:10000` |
 | **Capabilities** | `cap_drop: ALL`, `no-new-privileges` |
 | **Filesystem** | Read-only root; `noexec` tmpfs for `/tmp`, `/home/hermes`, `/run` |
 | **Resources** | 2GB memory, 2 CPUs, 256 PIDs |
 | **Model egress** | Model-provider hostnames (OpenAI, Anthropic, Google, OpenRouter, x.ai) pinned to a blackhole IP (`192.0.2.1`) — direct inference egress fails at the network layer |
 
-Inference is routed only through the relay's OpenAI Codex proxy (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). The entrypoint (`hermes-contained-entrypoint.sh`) curates skills from the upstream Hermes skills directory (`TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills`) into `HERMES_HOME` against the read-only allowlist (`hermes-contained-skills.allowlist`, 88 entries) — rejecting path traversal and any entry missing a `SKILL.md` — and mints a peer-bound Codex relay token so model traffic can only reach the relay's proxy route.
+Inference is routed only through the relay's OpenAI Codex proxy (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). The entrypoint (`hermes-contained-entrypoint.sh`) curates skills from the upstream Hermes skills directory (`TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills`) into `HERMES_HOME` against read-only allowlists — `hermes-contained-skills.allowlist` for private/cron/observer and `hermes-social-skills.allowlist` for social — rejecting path traversal and any entry missing a `SKILL.md`. Social does not inherit the broad private allowlist. The entrypoint also mints a peer-bound Codex relay token so model traffic can only reach the relay's proxy route.
 
-When the relay firewall is enabled, configure `security.network.additionalDomains` in the deployment config with `chatgpt.com` for the relay. Do not add `chatgpt.com` to the shared generated firewall allowlist: the base image is also used by agent containers, and compose sets `TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1` on agents so they keep reaching Codex only through the relay proxy.
+When the relay firewall is enabled, configure `security.network.additionalDomains` in the deployment config with `chatgpt.com` for the relay. The contained Hermes runtime reaches Codex only through the relay proxy.
 
 ### Relay live MCP bridge
 
-When enabled (`TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1`), the relay serves a relay-owned MCP bridge (memory search/write, provider read/prepare/execute, attachment get, outbound prepare/execute, audit note) over a relay-internal HTTP endpoint on port **8793** (path `/mcp`), reachable only from the contained peer. It is not an agent tool allowlist: each connection binds to an opaque, TTL-limited authority handle, memory access is domain-scoped (the private Hermes runtime can never read social memory), and provider/outbound writes are two-phase (prepare → human approval → execute) with one-time, Ed25519-signed, request-bound approval tokens.
+When enabled (`TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1`), the relay serves a relay-owned MCP bridge (memory search/write, provider read/prepare/execute, attachment get, outbound prepare/execute, audit note) over relay-internal HTTP endpoints on port **8793** (path `/mcp`), reachable only from the contained private/social peers on their own networks. It is not an agent tool allowlist: each connection binds to an opaque, TTL-limited authority handle, memory access is domain-scoped (the private Hermes runtime can never read social memory), and provider/outbound writes are two-phase (prepare → human approval → execute) with one-time, Ed25519-signed, request-bound approval tokens.
 
 ### Bring it up
 
 ```bash
 TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
-TELCLAUDE_HERMES_PRIVATE_RUNTIME=1 \
-docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaude tc-hermes-contained
+TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaude tc-hermes-contained tc-hermes-social
 ```
 
 ### Overlay environment variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TELCLAUDE_HERMES_PRIVATE_RUNTIME` | Yes (set `1`) | Enables the overlay; defaults to `0` (off) |
-| `TELCLAUDE_HERMES_API_SERVER_KEY` | Yes | Ephemeral Bearer shared between relay and the contained API server (port `8642`). Generate per `compose up`: `openssl rand -base64 48 \| tr '+/' '-_' \| tr -d '='` |
+| `TELCLAUDE_HERMES_API_SERVER_KEY` | Yes | Ephemeral Bearer shared between relay and the private contained API server (port `8642`). Generate per `compose up`: `openssl rand -base64 48 \| tr '+/' '-_' \| tr -d '='` |
+| `TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY` | Yes | Ephemeral Bearer shared between relay and the social contained API server (port `8642`). Generate separately from the private runtime key |
 | `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN` | Yes | Relay-scoped OpenAI Codex subscription token (relay owns the credential; Hermes only sees a peer-bound relay token) |
 | `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator RPC public key (`pnpm dev keygen operator`); relay verifies operator RPC mutations |
 | `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key; signs relay-observed RPC responses such as rollback evidence |
 | `TELCLAUDE_HERMES_IMAGE` | No | Override the pinned Hermes image digest (default pinned in the compose file) |
 | `TELCLAUDE_HERMES_INFERENCE_MODEL` | No | Hermes inference model (default `gpt-5.5`) |
 | `TELCLAUDE_HERMES_LIVE_MCP_ENABLED` | No | Enable the relay live MCP bridge (default `0`) |
-| `TELCLAUDE_HERMES_RELAY_IP` / `TELCLAUDE_HERMES_CONTAINED_IP` | No | Override the relay/contained IPs (defaults `192.0.2.10` / `192.0.2.11`) |
-| `TELCLAUDE_HERMES_RELAY_SUBNET` | No | Override the internal network CIDR (default `192.0.2.0/24`) |
+| `TELCLAUDE_HERMES_RELAY_IP` / `TELCLAUDE_HERMES_SOCIAL_RELAY_IP` | No | Override the relay IP on the private/social networks (defaults `192.0.2.10` / `192.0.3.10`) |
+| `TELCLAUDE_HERMES_CONTAINED_IP` / `TELCLAUDE_HERMES_SOCIAL_IP` | No | Override private/social runtime IPs (defaults `192.0.2.11` / `192.0.3.11`) |
+| `TELCLAUDE_HERMES_RELAY_SUBNET` / `TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET` | No | Override the private/social internal network CIDRs (defaults `192.0.2.0/24` / `192.0.3.0/24`) |
+| `TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS` | No | Extra relay live-MCP binds as `host@network` (default social bind `192.0.3.10@telclaude-hermes-social`) |
 
-The overlay default for `TELCLAUDE_INTERNAL_HOSTS` includes `tc-hermes-contained` so the relay firewall allows the contained peer. If you override that variable, include the contained host explicitly.
+The overlay default for `TELCLAUDE_INTERNAL_HOSTS` includes `tc-hermes-contained` and `tc-hermes-social` so the relay firewall allows both contained peers. If you override that variable, include both hosts explicitly.
 
 ### Proof spine
 
-Cutover from the SDK runtime to Hermes is gated by signed evidence, not trust. The runtime mode switch is operator-RPC controlled; production procedure requires a strict evidence chain before setting it to `hermes`. The `telclaude hermes` command group (`pnpm dev hermes ...`) generates and evaluates these artifacts — no-fork proof (`prove --upstream-clean`), feature probes (`probes` / `probe <surface>`), network-isolation probes (`network-probes`), and a byte-bound `proof-bundle` evaluated by `cutover-check`. Strict cutover is all-or-nothing per approved workflow bundle. See `docs/operator-playbook.md` and `docs/architecture.md` for the full proof-spine and trust-boundary rationale.
+Hermes runtime operation is gated by signed evidence, not trust. The `telclaude hermes` command group (`pnpm dev hermes ...`) generates and evaluates these artifacts — no-fork proof (`prove --upstream-clean`), feature probes (`probes` / `probe <surface>`), network-isolation probes (`network-probes`), and a byte-bound `proof-bundle` evaluated by `cutover-check`. Strict readiness is all-or-nothing per approved workflow bundle. See `docs/operator-playbook.md` and `docs/architecture.md` for the full proof-spine and trust-boundary rationale.
 
 ## Commands
 
@@ -397,14 +397,12 @@ docker compose down
 
 # View logs
 docker compose logs -f telclaude
-docker compose logs -f telclaude-agent
 
 # Rebuild after code changes
 docker compose up -d --build
 
 # Shell into container
 docker compose exec telclaude bash
-docker compose exec telclaude-agent bash
 
 # Run telclaude doctor
 docker compose exec telclaude telclaude doctor
@@ -418,7 +416,7 @@ docker volume ls | grep telclaude
 
 ## Network Firewall (Required)
 
-**The network firewall is required for Docker mode.** Both relay and agent enable it by default; the agent (tool runner) refuses to start without it because Docker mode disables the SDK sandbox, leaving Bash with no network isolation.
+**The network firewall is required for Docker mode.** The relay and sidecars enable it by default. Hermes runtime containment is provided by the internal-only overlay network, model-provider blackholing, relay-owned model proxy, and served-MCP authority.
 
 ### Configuration
 
@@ -443,12 +441,10 @@ The firewall creates a sentinel file at `/run/telclaude/firewall-active` when su
 
 If Docker IPv6 is enabled, the firewall enforces a default-deny IPv6 policy. When IPv6 is enabled but `ip6tables` is unavailable, the container will fail to start by default (`TELCLAUDE_IPV6_FAIL_CLOSED=1`). You can override this (not recommended) with `TELCLAUDE_IPV6_FAIL_CLOSED=0`.
 
-Internal RPC between the agent and relay is allowed by hostname. If you rename the
+Internal RPC between the relay and approved sidecars is allowed by hostname. If you rename the
 services, set `TELCLAUDE_INTERNAL_HOSTS` (comma-separated) to match.
 
-Note: The compose files enable the firewall in both relay and agent containers
-by default. The agent enforces the tool boundary; the relay firewall limits
-egress even though it does not run tools.
+Note: The compose files enable the firewall in relay/sidecar containers by default. The relay enforces the capability boundary and limits egress; Hermes is separately constrained by its overlay.
 
 ### Bypass (Testing Only)
 
@@ -463,11 +459,9 @@ This bypass is logged to the audit log.
 
 ## Troubleshooting
 
-### "Sandbox unavailable" (native mode only)
+### "Hermes unavailable"
 
-Docker mode disables the SDK sandbox, so this error should not appear inside the container.
-If you see it, you are likely running native mode outside Docker. On Linux, install
-`bubblewrap` and `socat` and retry.
+LLM/persona execution requires `tc-hermes-contained`, `tc-hermes-social`, and relay live MCP/model proxy configuration. Confirm `TELCLAUDE_HERMES_API_BASE_URL`, `TELCLAUDE_HERMES_API_KEY`, `TELCLAUDE_HERMES_SOCIAL_API_BASE_URL`, `TELCLAUDE_HERMES_SOCIAL_API_KEY`, `TELCLAUDE_HERMES_LIVE_MCP_ENABLED`, and the Hermes overlay are set and running.
 
 ### "Permission denied" on workspace
 

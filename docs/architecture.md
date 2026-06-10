@@ -1,6 +1,6 @@
 # Telclaude Architecture
 
-Design rationale for telclaude (Telegram ⇄ Claude Code relay). This document explains WHY the system works the way it does. For operational details (config fields, CLI commands, deployment), see `CLAUDE.md`.
+Design rationale for telclaude (Telegram ⇄ agent relay). This document explains WHY the system works the way it does. For operational details (config fields, CLI commands, deployment), see `CLAUDE.md`.
 
 ## System Overview
 
@@ -20,14 +20,14 @@ Telegram Bot API
       ├──────────────────────────┬──────────────────────────┐
       ▼                          ▼
 ┌────────────────────────────────────────────┐   ┌────────────────────────────────────────────┐
-│ Agent worker (Telegram — private persona)  │   │ Agent worker (Social — social persona)     │
-│ • Workspace mounted                        │   │ • No workspace mount                       │
-│ • Media inbox/outbox volumes               │   │ • Shared /social/sandbox                   │
-│ • Browser automation (Chromium)            │   │ • Browser automation (Chromium)            │
+	│ Hermes runtime (Telegram private persona)  │   │ Hermes runtime (Social persona)            │
+	│ • Contained sidecar                        │   │ • Separate social authority handle         │
+	│ • Relay MCP only for privileged actions    │   │ • Shared /social/sandbox via relay policy  │
+	│ • Relay-mediated model traffic             │   │ • Relay-mediated model traffic             │
 └────────────────────────────────────────────┘   └────────────────────────────────────────────┘
       │                                          │
       ▼                                          ▼
-Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (SOCIAL tier)
+Hermes private authority (relay MCP)             Hermes social authority (relay MCP)
 
                                   ┌────────────────────────────────────────────┐
                                   │ Google Services Sidecar (Fastify REST API) │
@@ -43,37 +43,40 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (SOCIAL tier)
                                   └──────────────┘
 ```
 
-The relay connects to the Google sidecar via the `relay-google` Docker network. The sidecar connects to the vault via Unix socket (for OAuth tokens and approval signature verification) and to `googleapis.com` via the `google-egress` network. Agents cannot reach the sidecar directly.
+The relay connects to the Google sidecar via the `relay-google` Docker network. The sidecar connects to the vault via Unix socket (for OAuth tokens and approval signature verification) and to `googleapis.com` via the `google-egress` network. Hermes cannot reach the sidecar directly.
 
-The relay is the security boundary — it holds all secrets, enforces tiers/rate limits, and mediates every interaction between Telegram, external APIs, memory, and agent workers. Agents are untrusted compute: they see only their allowed tools, never touch raw credentials, and do not own memory as a source of truth.
+The relay is the security boundary — it holds all secrets, enforces tiers/rate limits, and mediates every interaction between Telegram, external APIs, memory, and contained runtime compute. Hermes is untrusted compute: it sees only relay-issued MCP/capability surfaces, never touches raw credentials, and does not own memory as a source of truth.
 
-### Hermes Private Runtime (no-fork wrapper)
+### Hermes Runtime (no-fork wrapper)
 
-The private Telegram persona can run either as a direct Claude Agent SDK worker (legacy) or through a **pinned, no-fork wrapper around upstream Hermes**. The relay picks the path per `shouldUseHermesPrivateRuntime()`; when Hermes mode is active, private replies and heartbeats route through `HermesApiRuntimeAdapter` to a contained Hermes API server instead of initializing the SDK directly.
+Private Telegram, social, cron, and observer execution run through **pinned, no-fork wrappers around upstream Hermes**. Private replies/heartbeats route to `tc-hermes-contained`; social work routes to a separate `tc-hermes-social` API server. The documented runtime has no alternate worker or durable runtime selector.
 
 ```
-┌──────────────────────── telclaude-hermes-relay (internal, 192.0.2.0/24) ────────────────────────┐
-│                                                                                                  │
-│  telclaude (relay, 192.0.2.10)                          tc-hermes-contained (192.0.2.11)         │
-│  • Live MCP server  :8793  ──── tools/call ───▶         • Hermes API server  :8642               │
-│    (relay-internal HTTP, peer-bound to .11)             • non-root uid 10000, cap_drop ALL       │
-│  • Live MCP admin (Unix socket)                         • read-only root, noexec tmpfs           │
-│  • Relay conversation store (owns thread authority)     • curated skill allowlist only           │
-│  • Side-effect ledger + approval tokens                 • model traffic ──┐                       │
-│  • OpenAI Codex proxy  :8790  ◀── inference ────────────────────────────┘ (relay-only egress)    │
-│                                                         model-provider hosts → 192.0.2.1 (blocked)│
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌──────────── telclaude-hermes-private (internal, 192.0.2.0/24) ────────────┐
+│ telclaude relay .10  ◀── MCP/model proxy ──▶  tc-hermes-contained .11     │
+│ • live MCP :8793                         • private/cron/observer API :8642│
+│ • OpenAI Codex proxy :8790               • private curated skill allowlist │
+└───────────────────────────────────────────────────────────────────────────┘
+                         │ relay process only
+┌──────────── telclaude-hermes-social (internal, 192.0.3.0/24) ─────────────┐
+│ telclaude relay .10  ◀── MCP/model proxy ──▶  tc-hermes-social .11        │
+│ • live MCP :8793                         • social API :8642               │
+│ • side-effect ledger                     • narrow social skill allowlist   │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Both runtime containers are non-root uid 10000 with read-only roots, noexec
+tmpfs, and model-provider hosts routed to the blocked address.
 ```
 
-Hermes is pinned to upstream ref `v2026.5.29` (version `0.15.1`) by image digest and proven unmodified before any cutover (see the no-fork proof below). The contained Hermes process never holds raw credentials, never reaches model providers directly, and exposes no agent-to-agent path: its only outward routes are the relay's live MCP server (for memory, providers, attachments, outbound) and the relay's OpenAI Codex proxy (for inference).
+Hermes is pinned to upstream ref `v2026.5.29` (version `0.15.1`) by image digest and proven unmodified before any cutover (see the no-fork proof below). The contained Hermes processes never hold raw credentials, never reach model providers directly, and expose no agent-to-agent path: their only outward routes are the relay's live MCP server (for memory, providers, attachments, outbound) and the relay's OpenAI Codex proxy (for inference).
 
 ## Trust Boundaries
 
-### Relay ↔ Agent Split
+### Relay ↔ Runtime Split
 
-The relay and agents are separate trust domains. The relay is the only component with access to secrets (API keys, Telegram token, OAuth credentials). Agents are treated as potentially compromised — they can only act through tiered tool access and relay-proxied API calls. This means a prompt injection that compromises the agent cannot exfiltrate secrets or escalate privileges beyond the user's tier.
+The relay and contained runtime are separate trust domains. The relay is the only component with access to secrets (API keys, Telegram token, OAuth credentials). Hermes is treated as potentially compromised compute — it can only act through scoped served-MCP tools, tiered authority, and relay-proxied capability calls. This means a prompt injection that compromises the runtime cannot exfiltrate secrets or escalate privileges beyond the user's tier.
 
-In Docker, this maps to separate containers on isolated networks. In native mode, the SDK sandbox provides equivalent isolation. Both modes enforce the same invariant: agents never see raw credentials, and durable memory authority stays in the relay rather than in Claude's local files.
+In Docker, this maps to the relay/sidecar stack plus `tc-hermes-contained` and `tc-hermes-social` on separate internal-only overlay networks. Native relay development still targets Hermes for LLM/persona execution. The invariant is uniform: runtime compute never sees raw credentials, and durable memory authority stays in the relay rather than in runtime-local files.
 
 ### Codex Work Unit Boundary
 
@@ -88,7 +91,7 @@ Write-capable Codex work requires FULL_ACCESS and still runs with workspace-writ
 When the private persona runs as Hermes, the upstream agent is a **pinned, unmodified checkout** that the relay wraps rather than forks. The relay does not trust Hermes to enforce policy; instead it confines Hermes and keeps every privileged capability behind relay-owned APIs:
 
 - **No-fork posture.** The wrapper proves the Hermes checkout matches the pinned upstream ref and version with no diff, patch, monkeypatch, or runtime source replacement. The proof (`no-fork-proof.ts`) runs git checks before and after a P0 wrapper run (`checkout.present/head/expectedRef/pinned/statusClean/diffClean/indexClean` plus post-run repeats) and binds them to a signed runner attestation. `hermesCheckoutClean` must be true.
-- **Containment.** In Docker, Hermes runs in `tc-hermes-contained` on the isolated `telclaude-hermes-relay` network as a non-root user (uid 10000) with `cap_drop ALL`, no-new-privileges, a read-only root filesystem, and `noexec` tmpfs mounts. Model-provider hostnames resolve to a blackhole address (`192.0.2.1`), so direct egress fails at the network layer.
+- **Containment.** In Docker, Hermes runs in `tc-hermes-contained` for private work and `tc-hermes-social` for social work on separate isolated networks (`telclaude-hermes-private` and `telclaude-hermes-social`) as a non-root user (uid 10000) with `cap_drop ALL`, no-new-privileges, a read-only root filesystem, and `noexec` tmpfs mounts. The relay joins both networks and is the only bridge between them. Model-provider hostnames resolve to a blackhole address (`192.0.2.1`), so direct egress fails at the network layer.
 - **Served MCP, not a tool allowlist.** Hermes does not get raw tools for privileged work. The relay hosts a relay-internal **live MCP server** that exposes nine scoped tools (`tc_provider_read`, `tc_provider_prepare_write`, `tc_provider_execute_write`, `tc_memory_search`, `tc_memory_write`, `tc_attachment_get`, `tc_outbound_prepare`, `tc_outbound_execute`, `tc_audit_note`). The server strips any client-supplied authority/connection/provenance fields and resolves the caller's authority from an opaque, peer-bound handle — Hermes cannot name its own scope, memory source, or outbound channels.
 - **Internal RPC auth, not network trust.** Relay ↔ Hermes control traffic is authenticated with bidirectional Ed25519 internal-response proofs (operator/relay keypairs), not by trusting the shared network.
 
@@ -96,10 +99,10 @@ When the private persona runs as Hermes, the upstream agent is a **pinned, unmod
 
 ### Private ↔ Public Persona Split
 
-The private persona (Telegram agent) and public persona (social agent) are air-gapped at the memory and network level:
-- Each agent runs on its own relay network — agents cannot reach each other directly.
-- Memory is split at the private/public boundary: the Telegram agent sees only `source: "telegram"` memory; the social agent sees only `source: "social"` memory.
-- The relay mediates all cross-persona queries (e.g., `/social ask` routes through the relay, never through the Telegram agent).
+The private persona (Telegram) and public persona (social) are air-gapped at the memory and authority level:
+- Each persona receives a separate relay-issued authority handle; runtime requests cannot choose or widen their own domain.
+- Memory is split at the private/public boundary: private Telegram authority sees only the resolved `source: "telegram:<profile-id>"` memory; social authority sees only `source: "social"` memory.
+- The relay mediates all cross-persona queries (e.g., `/social ask` routes through the relay, never through private Telegram context).
 
 ### Relay ↔ Google Sidecar Split
 
@@ -115,9 +118,9 @@ This prevents the **confused deputy problem**: social memory could contain promp
 
 Five pillars, each addressing a distinct attack surface:
 
-1. **Filesystem isolation** — Agents only see what they need. The Telegram agent mounts the workspace and media volumes; the social agent gets only a sandbox directory. The relay does not mount the workspace (it mounts media volumes for attachment delivery only). Sensitive paths (~/.telclaude, ~/.ssh, ~/.aws) are blocked at multiple layers. *Why*: minimise blast radius — a compromised agent can only damage what it can reach.
+1. **Filesystem isolation** — Runtime compute only sees what the relay intentionally exposes. The relay does not mount the workspace in production; the contained Hermes runtimes receive curated Hermes state and no credential volumes. Sensitive paths (~/.telclaude, ~/.ssh, ~/.aws) are blocked at multiple layers. *Why*: minimise blast radius — a compromised runtime can only damage what it can reach.
 
-2. **Environment isolation** — Minimal env vars reach agents. Secrets live in the relay; agents get only non-sensitive config. *Why*: env vars are the most common credential leak vector in container deployments. Keeping agents starved of secrets eliminates this class of attack.
+2. **Environment isolation** — Minimal env vars reach runtime compute. Secrets live in the relay; Hermes gets only short-lived, peer-bound relay tokens where needed. *Why*: env vars are the most common credential leak vector in container deployments. Keeping runtime compute starved of secrets eliminates this class of attack.
 
 3. **Network isolation** — RFC1918/metadata endpoints are always blocked regardless of config. Agents cannot reach each other or the host network directly. *Why*: metadata endpoints (169.254.169.254) are the #1 SSRF target in cloud environments. Blocking them unconditionally — even for "trusted" agents — removes a whole class of privilege escalation. DNS-level enforcement requires all resolved IPs to pass the allowlist (not just the first), preventing DNS rebinding attacks where a hostname resolves to both a public and a private IP. Port scoping on private endpoint allowlists limits lateral movement even within approved hosts.
 
@@ -149,7 +152,7 @@ Non-SOCIAL tiers (private agents) are unaffected: omitting `allowedSkills` allow
 
 Enforcement is two-layer: a PreToolUse hook (primary, unconditional) checks every Skill invocation against the allowlist, and a `canUseTool` callback (fallback, fires only when a permission prompt would appear) provides defense-in-depth. The hook extracts the skill name from `tool_input.skill`, `.name`, or `.command` — if multiple keys carry conflicting values, the call is denied fail-closed.
 
-*Why fail-closed for SOCIAL*: social agents process untrusted timeline content. Without an explicit allowlist, a prompt injection could invoke arbitrary skills (e.g., `external-provider`, `integration-test`) that have no legitimate social use. Requiring the operator to declare which skills are needed bounds the attack surface to exactly what's intended.
+*Why fail-closed for SOCIAL*: social agents process untrusted timeline content. Without an explicit allowlist, a prompt injection could invoke arbitrary skills (e.g., `external-provider` or provider-facing helpers) that have no legitimate social use. Requiring the operator to declare which skills are needed bounds the attack surface to exactly what's intended.
 
 ### Cross-Persona Querying
 
@@ -172,9 +175,9 @@ Within the private Telegram path, telclaude now uses three layers with clear aut
 
 1. **Semantic memory** — durable relay-owned entries (`profile`, `interests`, `meta`, `threads`). This is the source of truth.
 2. **Episodic archive** — relay-owned summaries of successful private turns, scoped by chat/session and used for recent + relevant shared-history recall.
-3. **Compiled Claude working memory** — a generated `MEMORY.md` file written into Claude's local project-memory path immediately before a query. This is a cache derived from the relay store, never an authority.
+3. **Compiled working memory** — a generated `MEMORY.md` file written into a runtime-local cache immediately before a query. This is derived from the relay store, never an authority.
 
-*Why three layers*: semantic memory is compact and durable, but too sparse to capture relationship continuity by itself. Episodic memory preserves the shared history needed to feel like a long-term collaborator. Claude's local `MEMORY.md` improves session continuity inside the SDK runtime, but allowing that file to become authoritative would create split-brain state and weaken relay control.
+*Why three layers*: semantic memory is compact and durable, but too sparse to capture relationship continuity by itself. Episodic memory preserves the shared history needed to feel like a long-term collaborator. The compiled `MEMORY.md` cache improves session continuity for runtime surfaces that can consume it, but allowing that file to become authoritative would create split-brain state and weaken relay control.
 
 *Why not per-service*: the public persona is one cohesive identity across platforms. Fragmenting memory per-service would create inconsistent personality and duplicate storage. Social platforms are the distribution channel, not the identity boundary.
 
@@ -187,7 +190,7 @@ For private Telegram turns and private heartbeats, the relay:
 1. Loads trusted semantic entries for the chat.
 2. Loads recent and query-relevant episodic history for the same chat scope.
 3. Builds a read-only prompt payload that explicitly says memory is data, not instructions.
-4. Materializes a compiled `MEMORY.md` into Claude's local project-memory path.
+4. Materializes a compiled `MEMORY.md` into the runtime-local working-memory cache.
 5. Executes the Claude query.
 6. Captures the successful turn back into the episodic archive.
 7. Auto-promotes only explicit, high-signal durable memories from the user's text.
@@ -199,7 +202,7 @@ This means the agent gets aggressive recall without becoming the owner of memory
 The memory path has two distinct safety rules:
 
 - **Semantic writes are strict** — memory entries are validated before storage. Instruction-like text, HTML/script content, and secret-like values are rejected.
-- **Episodic recall is sanitized** — archived turn text is normalized, secrets are redacted, and instruction-like content is replaced with a neutral placeholder before it can be recalled into prompt context or compiled into Claude's local memory file.
+- **Episodic recall is sanitized** — archived turn text is normalized, secrets are redacted, and instruction-like content is replaced with a neutral placeholder before it can be recalled into prompt context or compiled into the runtime-local memory file.
 
 This is the key invariant: memory may preserve continuity, but it must not become a prompt-injection persistence layer.
 
@@ -403,36 +406,36 @@ The 13-step inbound pipeline defines the security architecture in action:
 9. Approval gate (per tier/classification).
 10. Session lookup/resume.
 11. Tier lookup (identity links/admin claim).
-12. Model dispatch — either an SDK query with tiered `allowedTools`, or, when `shouldUseHermesPrivateRuntime()` is active, a Hermes API runtime call whose privileged capabilities are served through the relay-internal MCP bridge.
+12. Model dispatch — private Telegram, social, cron, and observer dispatch use Hermes API runtime calls whose privileged capabilities are served through the relay-internal MCP bridge.
 13. Streaming reply to Telegram; audit logged.
 
-*Why this order*: cheap checks first (ban, auth, rate limit), expensive checks later (LLM observer). Infrastructure secret blocking (step 6) runs before the observer (step 8) because the observer itself uses an LLM — if the message contains a secret, we must block it before it reaches any model. Tier lookup (step 11) runs after approval (step 9) so that approval decisions can factor in the classification without yet knowing the tier. The two model-dispatch paths at step 12 share every preceding gate — the wrapper does not move the security boundary, only the runtime behind it.
+*Why this order*: cheap checks first (ban, auth, rate limit), expensive checks later (LLM observer). Infrastructure secret blocking (step 6) runs before the observer (step 8) because the observer itself uses an LLM — if the message contains a secret, we must block it before it reaches any model. Tier lookup (step 11) runs after approval (step 9) so that approval decisions can factor in the classification without yet knowing the tier. Hermes dispatch shares every preceding gate — the wrapper does not move the security boundary, only the runtime behind it.
 
 ## Design Decisions
 
 Key decisions and the alternatives that were rejected:
 
-**One isolation boundary (Docker OR SDK sandbox, not both)**: Running both Docker container isolation AND SDK sandbox creates confusing failure modes — sandbox denials inside a container are hard to debug, and the two layers can conflict on filesystem/network policy. Per Anthropic's own guidance: "effective sandboxing requires both filesystem and network isolation" but within a single boundary.
+**One isolation boundary: contained Hermes + relay capabilities**: The supported runtime boundary is the Hermes container plus relay-owned MCP/capability services and Docker firewalling. Older local sandbox paths were removed so production, social, cron, and observer behavior all exercise the same boundary.
 
-**Relay holds secrets, not agents**: The alternative — injecting secrets into agent containers via env vars or mounted files — means any prompt injection that achieves code execution can exfiltrate credentials. The relay-as-proxy pattern ensures credentials never enter the agent's address space.
+**Relay holds secrets, not runtime compute**: The alternative — injecting secrets into runtime containers via env vars or mounted files — means any prompt injection that achieves code execution can exfiltrate credentials. The relay-as-proxy pattern ensures credentials never enter Hermes.
 
 **Single social persona across platforms**: The alternative — per-service personas with separate memory — would fragment the public identity and create inconsistencies ("who am I on Moltbook vs. X?"). One persona with unified memory across all platforms is simpler and more coherent.
 
 **Memory provenance at private/public boundary, not per-service**: Per-service memory (separate stores for Moltbook, X, etc.) would require complex merging logic and create split-brain identity. The real trust boundary is private (operator) vs. public (potentially adversarial), not "which platform."
 
-**PreToolUse hooks as PRIMARY enforcement (not canUseTool)**: `canUseTool` only fires when a permission prompt would appear — in `acceptEdits` mode, auto-approved calls bypass it entirely. PreToolUse hooks run unconditionally. Using `canUseTool` as primary enforcement would leave a gap in permissive SDK modes.
+**PreToolUse hooks as PRIMARY enforcement (not prompt-time callbacks)**: prompt-time callbacks only fire when a permission prompt would appear; auto-approved paths can bypass them. PreToolUse hooks run unconditionally. The Hermes wrapper proves this path with signed skills-allowlist evidence rather than trusting a local reconstruction.
 
-**Trust-gated Bash (not blanket allow/deny)**: Blanket-deny Bash for social agents would prevent useful automation in proactive posting. Blanket-allow would expose notification processing to shell injection. Gating on actor trust level gives both capability and safety.
+**Trust-gated Bash (not blanket allow/deny)**: Blanket-deny Bash for social work would prevent useful automation in proactive posting. Blanket-allow would expose notification processing to shell injection. Gating on actor trust level gives both capability and safety.
 
-**Credential proxy (not env var injection)**: Env vars are accessible to any process in the container. The proxy pattern keeps credentials in a separate address space (vault sidecar), making exfiltration impossible even with full agent compromise.
+**Credential proxy (not env var injection)**: Env vars are accessible to any process in the container. The proxy pattern keeps credentials in a separate address space (vault sidecar), making exfiltration impossible even with full runtime compromise.
 
-**Bidirectional Ed25519 RPC auth**: Using shared HMAC keys means compromise of either side allows impersonation of both. Asymmetric keys with separate agent/relay keypairs ensure that compromise of the agent's private key cannot forge relay→agent messages, and vice versa.
+**Bidirectional Ed25519 RPC auth**: Using shared HMAC keys means compromise of either side allows impersonation of both. Asymmetric keys with separate runtime/relay keypairs ensure that compromise of the runtime private key cannot forge relay-observed messages, and vice versa.
 
-**Config split (policy vs. secrets)**: The alternative — a single config file mounted everywhere — would expose PII (allowedChats, user permissions) and relay-only secrets to agent containers. Splitting into policy config (all containers) and private config (relay-only) means agent compromise cannot leak operator identity or chat permissions.
+**Config split (policy vs. secrets)**: The alternative — a single config file mounted everywhere — would expose PII (allowedChats, user permissions) and relay-only secrets to runtime-capable surfaces. Splitting into policy config and private config (relay-only) means runtime compromise cannot leak operator identity or chat permissions.
 
 **Per-chat session keys with identity binding**: The alternative — shared sessions or global pool keys — would allow cross-chat session bleed (one user's conversation context leaking to another) and make audit trails ambiguous. Per-chat session IDs with identity-bound tiers ensure each conversation is isolated and attributable.
 
-**Approval tokens (not session-level auth)**: Session tokens would allow any approved action to be replayed or modified. Per-request approval tokens bind the cryptographic authorization to the exact operation (service, action, params hash, actor). A compromised agent cannot reuse or modify an approved token — changing any parameter invalidates the hash. This is defense-in-depth on top of network isolation.
+**Approval tokens (not session-level auth)**: Session tokens would allow any approved action to be replayed or modified. Per-request approval tokens bind the cryptographic authorization to the exact operation (service, action, params hash, actor). A compromised runtime cannot reuse or modify an approved token — changing any parameter invalidates the hash. This is defense-in-depth on top of network isolation.
 
 **Two-layer provider enforcement (hook + firewall)**: Application-layer hooks provide clear error messages but can be bypassed by creative Bash usage (subshells, environment manipulation). The firewall is kernel-level and cannot be circumvented from userspace. Neither layer alone is sufficient — together they provide both UX and hard enforcement.
 
@@ -446,9 +449,9 @@ Key decisions and the alternatives that were rejected:
 
 Things that must always be true, regardless of configuration:
 
-1. **Private LLM never processes social memory.** The Telegram agent never sees `source: "social"` entries. Enforced by runtime assertions.
-2. **Agents never see raw credentials.** All external API auth goes through the vault credential proxy. No credential env vars in agent containers.
-3. **Agents cannot reach other agents.** Each agent is on its own relay network. Only the relay can communicate with all agents.
+1. **Private LLM never processes social memory.** Private Telegram authority never sees `source: "social"` entries. Enforced by runtime assertions.
+2. **Runtime compute never sees raw credentials.** All external API auth goes through the vault credential proxy. No credential env vars in Hermes.
+3. **Persona authorities cannot reach each other.** Only the relay can mediate cross-persona traffic, and it does so through scoped authority handles.
 4. **RFC1918/metadata always blocked.** Private IP ranges (including CGNAT 100.64.0.0/10 for Tailscale) and cloud metadata endpoints (169.254.169.254) are blocked regardless of any config setting, even in `permissive` network mode.
 5. **Infrastructure secrets are non-overridable blocks.** The secret output filter's core patterns cannot be allowlisted or disabled. They block before any other processing.
 6. **PreToolUse hooks run unconditionally.** Even in `acceptEdits` mode, even when `canUseTool` is bypassed. This is the primary enforcement layer.

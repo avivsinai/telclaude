@@ -153,7 +153,7 @@ describe("gateway — statusesFromComposePs", () => {
 			Status: "Up 1 minute (healthy)",
 		});
 		const statuses = __internals.statusesFromComposePs(raw);
-		// All six expected services should be represented.
+		// All expected services should be represented.
 		expect(statuses.map((s) => s.service)).toEqual([...__internals.EXPECTED_SERVICES]);
 		const telclaude = statuses.find((s) => s.service === "telclaude");
 		expect(telclaude?.state).toBe("running");
@@ -662,8 +662,8 @@ describe("gateway — status table rendering", () => {
 			).join("\n"),
 		);
 		__internals.renderStatusTable({ ...ctx, out: (l) => lines.push(l) }, snapshot);
-		// Header + separator + 6 rows = 8 lines at minimum.
-		expect(lines.length).toBeGreaterThanOrEqual(8);
+		// Header + separator + one row per expected service.
+		expect(lines.length).toBeGreaterThanOrEqual(2 + __internals.EXPECTED_SERVICES.length);
 		expect(lines[0]).toContain("SERVICE");
 		expect(lines[0]).toContain("STATE");
 		for (const svc of __internals.EXPECTED_SERVICES) {

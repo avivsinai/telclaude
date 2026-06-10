@@ -194,7 +194,9 @@ describe("git-proxy-auth", () => {
 
 describe("git-proxy URL parsing", () => {
 	// Import parseGitUrl for testing
-	let parseGitUrl: (url: string) => { host: string; owner: string; repo: string; path: string } | null;
+	let parseGitUrl: (
+		url: string,
+	) => { host: string; owner: string; repo: string; path: string } | null;
 
 	beforeAll(async () => {
 		const module = await import("../../src/relay/git-proxy.js");

@@ -218,15 +218,7 @@ describe("telclaude pairing CLI", () => {
 		const { code } = await createPairingCode({ userId: 113, chatId: 11300 });
 		const program = buildProgram();
 		await expect(
-			program.parseAsync([
-				"node",
-				"telclaude",
-				"pairing",
-				"approve",
-				code,
-				"--tier",
-				"SUPERUSER",
-			]),
+			program.parseAsync(["node", "telclaude", "pairing", "approve", code, "--tier", "SUPERUSER"]),
 		).rejects.toThrow(/__process_exit__:1/);
 		expect(stderr.join("\n")).toMatch(/Invalid tier/);
 	});

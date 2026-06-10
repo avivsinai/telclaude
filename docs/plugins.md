@@ -13,11 +13,11 @@ This split is intentional:
 
 ## Persona model
 
-Each persona has its own Claude profile volume:
+The relay maintains persona-scoped Claude plugin state for operator-managed plugin installs:
 
-- private profile: `/home/telclaude-skills`
-- social profile: `/home/telclaude-skills` inside `agent-social`
-- relay mounts both real profile volumes at `/home/telclaude-private-profile` and `/home/telclaude-social-profile` so operator CLI commands act on the live Linux runtime state
+- private profile: `/home/telclaude-private-profile`
+- social profile: `/home/telclaude-social-profile`
+- contained Hermes receives only the curated Hermes skill allowlist; profile plugin state does not create an alternate runtime route
 
 Telclaude manages official plugins with:
 

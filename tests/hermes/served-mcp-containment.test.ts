@@ -337,7 +337,7 @@ async function startHarness(
 		ledger,
 		relayClients,
 		bindHost: "telclaude",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		nowMs: () => 120_000,
 	});
 	const privateContext = {
@@ -423,7 +423,7 @@ async function startBearerHarness(cleanup: Array<() => void | Promise<void>>) {
 		ledger,
 		relayClients,
 		bindHost: "telclaude",
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		nowMs: () => 120_000,
 	});
 	const nodeServer = createTelclaudeLiveMcpNodeHttpServer(server, {

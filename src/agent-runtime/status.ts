@@ -94,7 +94,7 @@ function collectClaudeCodeStatus(runner: RuntimeCommandRunner): AgentRuntimeStat
 		label: "Claude Code",
 		readiness: "ready",
 		version: firstLine(version.stdout) || "installed",
-		detail: "Claude SDK runtime available",
+		detail: "Claude Code runtime available",
 		capabilities: {
 			streaming: true,
 			jsonEvents: false,

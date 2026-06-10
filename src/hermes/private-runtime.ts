@@ -20,7 +20,7 @@ import {
 	openAiCodexRelayProofSignatureFailure,
 	openAiCodexRelayProofTokenSha256,
 } from "../relay/openai-codex-relay-proof.js";
-import type { StreamChunk } from "../sdk/client.js";
+import type { StreamChunk } from "../runtime/stream.js";
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
 import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import {
@@ -133,7 +133,7 @@ export type HermesPrivateRuntimeRequest = Omit<
 	"telclaudeSessionId" | "resumeHermesSessionId" | "mcpAuthority"
 > & {
 	telclaudeSessionId?: string;
-	mcpAuthority?: HermesPrivateMcpAuthorityOptions;
+	mcpAuthority?: HermesPrivateMcpAuthorityOptions | false;
 };
 
 export type HermesLaunchInvocation = {
@@ -208,7 +208,7 @@ export type HermesCliProbeReport = {
 	runtime?: {
 		kind: "contained-docker";
 		containerName: string;
-		networkName: "telclaude-hermes-relay";
+		networkName: "telclaude-hermes-private";
 		containerId: string;
 		image: string;
 		imageDigest: `sha256:${string}`;
@@ -271,37 +271,39 @@ export async function* executeHermesPrivateRuntime(input: {
 	let mcpAuthorityActivationId: string | undefined;
 	let runtimeRequest: HermesRuntimeRequest;
 	try {
-		const mcpAuthority = buildPrivateMcpAuthority(input.request, mcpAuthorityOptions);
-		const connection: TelclaudeMcpAuthorityConnection = {
-			sessionKey: input.request.sessionKey,
-			profileId: input.request.profileId,
-			endpointId: mcpAuthority.endpointId,
-			networkNamespace: mcpAuthority.networkNamespace,
-		};
-		const grant = registry.register({
-			connection,
-			authority: mcpAuthority,
-			nowMs: startedAt,
-			ttlMs: mcpAuthorityOptions?.ttlMs,
-		});
-		mcpAuthorityHandle = grant.handle;
-		const activation = input.mcpAuthorityActivation?.activate({
-			authorityHandle: grant.handle,
-			connection,
-			nowMs: startedAt,
-			ttlMs: runtimeAuthorityActivationTtlMs(input.request, mcpAuthorityOptions),
-		});
-		mcpAuthorityActivationId = activation?.id;
 		runtimeRequest = {
 			...requestWithoutPrivateAuthority,
 			telclaudeSessionId: record.telclaudeSessionId,
 			...(input.request.isNewSession ? {} : { resumeHermesSessionId: record.hermesSessionId }),
-			mcpAuthority: {
+		};
+		if (mcpAuthorityOptions !== false) {
+			const mcpAuthority = buildPrivateMcpAuthority(input.request, mcpAuthorityOptions);
+			const connection: TelclaudeMcpAuthorityConnection = {
+				sessionKey: input.request.sessionKey,
+				profileId: input.request.profileId,
+				endpointId: mcpAuthority.endpointId,
+				networkNamespace: mcpAuthority.networkNamespace,
+			};
+			const grant = registry.register({
+				connection,
+				authority: mcpAuthority,
+				nowMs: startedAt,
+				ttlMs: mcpAuthorityOptions?.ttlMs,
+			});
+			mcpAuthorityHandle = grant.handle;
+			const activation = input.mcpAuthorityActivation?.activate({
+				authorityHandle: grant.handle,
+				connection,
+				nowMs: startedAt,
+				ttlMs: runtimeAuthorityActivationTtlMs(input.request, mcpAuthorityOptions),
+			});
+			mcpAuthorityActivationId = activation?.id;
+			runtimeRequest.mcpAuthority = {
 				handle: grant.handle,
 				connection,
 				expiresAtMs: grant.expiresAtMs,
-			},
-		};
+			};
+		}
 	} catch (error) {
 		if (mcpAuthorityActivationId) {
 			tryRevokeMcpAuthorityActivation(
@@ -847,8 +849,8 @@ function parseHermesRuntimeEvidence(raw: unknown): HermesCliRuntimeEvidence {
 	if (raw.kind !== "contained-docker") {
 		throw new Error("runtime evidence kind is not contained-docker");
 	}
-	if (raw.networkName !== "telclaude-hermes-relay") {
-		throw new Error("runtime evidence networkName is not telclaude-hermes-relay");
+	if (raw.networkName !== "telclaude-hermes-private") {
+		throw new Error("runtime evidence networkName is not telclaude-hermes-private");
 	}
 	if (raw.relayHost !== "telclaude") {
 		throw new Error("runtime evidence relayHost is not telclaude");
@@ -920,7 +922,7 @@ function parseHermesRuntimeEvidence(raw: unknown): HermesCliRuntimeEvidence {
 	return {
 		kind: "contained-docker",
 		containerName,
-		networkName: "telclaude-hermes-relay",
+		networkName: "telclaude-hermes-private",
 		containerId: runtimeString(raw, "containerId"),
 		image: runtimeString(raw, "image"),
 		imageDigest: imageDigest as `sha256:${string}`,
@@ -1169,8 +1171,8 @@ export function readHermesCliHeadlessProbeReport(
 	if (runtime.kind !== "contained-docker") {
 		throw new Error("cli-headless probe report runtime kind is not contained-docker");
 	}
-	if (runtime.networkName !== "telclaude-hermes-relay") {
-		throw new Error("cli-headless probe report runtime network is not telclaude-hermes-relay");
+	if (runtime.networkName !== "telclaude-hermes-private") {
+		throw new Error("cli-headless probe report runtime network is not telclaude-hermes-private");
 	}
 	if (runtime.relayHost !== "telclaude") {
 		throw new Error("cli-headless probe report runtime relayHost is not telclaude");

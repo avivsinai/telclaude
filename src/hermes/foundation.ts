@@ -325,7 +325,7 @@ const CliHeadlessProbeEvidenceSchema = z
 			.object({
 				kind: z.literal("contained-docker"),
 				containerName: NonEmptyString,
-				networkName: z.literal("telclaude-hermes-relay"),
+				networkName: z.literal("telclaude-hermes-private"),
 				containerId: NonEmptyString,
 				image: NonEmptyString,
 				imageDigest: z.string().regex(SHA256_DIGEST_PATTERN),
@@ -688,12 +688,11 @@ const REQUIRED_ROLLBACK_REHEARSAL_CHECK_NAMES = [
 	"rollback.relayProofs",
 	"rollback.flagBefore",
 	"rollback.flagAfter",
-	"rollback.fallbackPath",
 	"rollback.controlSurface",
 	"rollback.observedSources",
 ] as const;
 export const HERMES_ROLLBACK_CONTROL_SURFACE =
-	"relay.capabilities:/v1/hermes.private-runtime.mode" as const;
+	"relay.capabilities:hermes-only-private-runtime" as const;
 export const HERMES_ROLLBACK_OBSERVATION_SURFACE =
 	"relay.capabilities:/v1/hermes.private-runtime.status" as const;
 export const HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV = "OPERATOR_RPC_RELAY_PUBLIC_KEY" as const;
@@ -1770,18 +1769,10 @@ const RollbackRelayPublicKeyLockSchema = z
 const RollbackRelayStateBodySchema = z
 	.object({
 		ok: z.literal(true),
-		effectiveMode: z.enum(["hermes", "legacy"]),
-		effectiveValue: z.enum(["1", "0"]),
-		rolloutAllowed: z.boolean(),
-		rolloutEnvValue: z.string().optional(),
-		controlMode: z.enum(["hermes", "legacy"]),
-		controlSource: z.enum([
-			"env-disabled",
-			"runtime-config",
-			"runtime-config-default",
-			"runtime-config-invalid",
-		]),
-		fallbackPath: NonEmptyString,
+		effectiveMode: z.literal("hermes"),
+		effectiveValue: z.literal("1"),
+		controlMode: z.literal("hermes"),
+		controlSource: z.literal("hermes-only"),
 	})
 	.strict();
 
@@ -1807,7 +1798,6 @@ export const RollbackRehearsalSchema = z
 		allowedToRun: z.boolean().optional(),
 		observedBeforeValue: NonEmptyString.optional(),
 		observedAfterValue: NonEmptyString.optional(),
-		observedFallbackPath: NonEmptyString.optional(),
 		observedAt: NonEmptyString.optional(),
 		controlSurface: NonEmptyString.optional(),
 		observationSurface: NonEmptyString.optional(),
@@ -1818,7 +1808,6 @@ export const RollbackRehearsalSchema = z
 		signedRelayTranscripts: z
 			.object({
 				before: RollbackRelayTranscriptSchema,
-				afterControl: RollbackRelayTranscriptSchema,
 				after: RollbackRelayTranscriptSchema,
 			})
 			.strict()
@@ -5724,11 +5713,8 @@ function rollbackRehearsalEvidenceFailures(
 	if (evidence.observedBeforeValue !== "1") {
 		failures.push("rollback rehearsal evidence observedBeforeValue is not 1");
 	}
-	if (evidence.observedAfterValue !== "0") {
-		failures.push("rollback rehearsal evidence observedAfterValue is not 0");
-	}
-	if (typeof evidence.observedFallbackPath !== "string") {
-		failures.push("rollback rehearsal evidence observedFallbackPath is missing");
+	if (evidence.observedAfterValue !== "1") {
+		failures.push("rollback rehearsal evidence observedAfterValue is not 1");
 	}
 	if (typeof evidence.observedAt !== "string") {
 		failures.push("rollback rehearsal evidence observedAt is missing");
@@ -5747,8 +5733,8 @@ function rollbackRehearsalEvidenceFailures(
 	if (evidence.observedAfterSource !== "relay-effective-mode") {
 		failures.push("rollback rehearsal evidence observedAfterSource is not relay-effective-mode");
 	}
-	if (evidence.observedAfterControlSource !== "runtime-config") {
-		failures.push("rollback rehearsal evidence observedAfterControlSource is not runtime-config");
+	if (evidence.observedAfterControlSource !== "hermes-only") {
+		failures.push("rollback rehearsal evidence observedAfterControlSource is not hermes-only");
 	}
 	failures.push(...rollbackRelayPublicKeyFailures(evidence, rollbackRehearsal, options));
 	failures.push(...rollbackRelayTranscriptFailures(evidence, options));
@@ -5998,21 +5984,6 @@ function rollbackRelayTranscriptFailures(
 			options,
 		),
 		...rollbackRelayTranscriptFailure(
-			"afterControl",
-			transcripts.afterControl,
-			evidence,
-			trustedKey.value,
-			{
-				method: "POST",
-				path: "/v1/hermes.private-runtime.mode",
-				body: JSON.stringify({ mode: "legacy" }),
-				effectiveValue: "0",
-				controlMode: "legacy",
-				controlSource: "runtime-config",
-			},
-			options,
-		),
-		...rollbackRelayTranscriptFailure(
 			"after",
 			transcripts.after,
 			evidence,
@@ -6021,9 +5992,9 @@ function rollbackRelayTranscriptFailures(
 				method: "POST",
 				path: "/v1/hermes.private-runtime.status",
 				body: "{}",
-				effectiveValue: "0",
-				effectiveMode: "legacy",
-				controlSource: "runtime-config",
+				effectiveValue: "1",
+				effectiveMode: "hermes",
+				controlSource: "hermes-only",
 			},
 			options,
 		),
@@ -6031,7 +6002,7 @@ function rollbackRelayTranscriptFailures(
 }
 
 function rollbackRelayTranscriptFailure(
-	label: "before" | "afterControl" | "after",
+	label: "before" | "after",
 	transcript: z.infer<typeof RollbackRelayTranscriptSchema>,
 	evidence: RollbackRehearsal,
 	trustedRelayPublicKey: string,
@@ -6039,14 +6010,10 @@ function rollbackRelayTranscriptFailure(
 		method: string;
 		path: string;
 		body: string;
-		effectiveValue: "1" | "0";
-		effectiveMode?: "hermes" | "legacy";
-		controlMode?: "hermes" | "legacy";
-		controlSource?:
-			| "env-disabled"
-			| "runtime-config"
-			| "runtime-config-default"
-			| "runtime-config-invalid";
+		effectiveValue: "1";
+		effectiveMode?: "hermes";
+		controlMode?: "hermes";
+		controlSource?: "hermes-only";
 	},
 	options: HermesSignedEvidenceValidationOptions,
 ): string[] {
@@ -6105,14 +6072,6 @@ function rollbackRelayTranscriptFailure(
 	}
 	if (label === "after" && response.data.effectiveValue !== evidence.observedAfterValue) {
 		failures.push("rollback after relay transcript does not match observedAfterValue");
-	}
-	if (
-		label === "afterControl" &&
-		response.data.controlSource !== evidence.observedAfterControlSource
-	) {
-		failures.push(
-			"rollback afterControl relay transcript does not match observedAfterControlSource",
-		);
 	}
 	return failures;
 }

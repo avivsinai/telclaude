@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JtiStore, canonicalHash, verifyApprovalToken } from "../../src/google-services/approval.js";
+import {
+	JtiStore,
+	canonicalHash,
+	verifyApprovalToken,
+} from "../../src/google-services/approval.js";
 import type { FetchRequest } from "../../src/google-services/types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -145,7 +149,13 @@ describe("verifyApprovalToken", () => {
 	});
 
 	it("rejects missing/invalid format", () => {
-		const result = verifyApprovalToken("bad-token", makeRequest(), "telegram:123", () => true, jtiStore);
+		const result = verifyApprovalToken(
+			"bad-token",
+			makeRequest(),
+			"telegram:123",
+			() => true,
+			jtiStore,
+		);
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.code).toBe("approval_required");
 	});

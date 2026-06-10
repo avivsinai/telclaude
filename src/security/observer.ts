@@ -1,17 +1,16 @@
 /**
- * Security observer using Claude Agent SDK with circuit breaker.
+ * Security observer using the Hermes runtime with circuit breaker.
  *
  * Analyzes incoming messages for security risks using:
  * 1. Fast-path regex patterns (instant, no API call)
- * 2. SDK + security-gate skill (LLM-based analysis)
+ * 2. Hermes + security-gate skill (LLM-based analysis)
  *
- * Circuit breaker prevents cascading failures when SDK is slow/failing.
+ * Circuit breaker prevents cascading failures when Hermes is slow/failing.
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
+import { executeHermesQuery } from "../hermes/private-execute.js";
 import { getChildLogger } from "../logging.js";
-import { isAssistantMessage } from "../sdk/message-guards.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
 import { checkStructuralIssues, fastPathClassify } from "./fast-path.js";
 import type { ObserverResult, SecurityClassification } from "./types.js";
@@ -82,15 +81,15 @@ export class SecurityObserver {
 			};
 		}
 
-		// 4. Check circuit breaker before SDK call
+		// 4. Check circuit breaker before Hermes call
 		if (!this.circuitBreaker.canExecute()) {
 			logger.warn("circuit breaker open, using fallback");
 			return this.fallbackResult("Circuit breaker open", Date.now() - startTime);
 		}
 
-		// 5. Use SDK with security-gate skill for LLM analysis
+		// 5. Use Hermes with security-gate skill for LLM analysis
 		try {
-			const result = await this.classifyWithSdk(message, context);
+			const result = await this.classifyWithHermes(message, context);
 			this.circuitBreaker.recordSuccess();
 
 			// Apply dangerThreshold adjustments
@@ -126,12 +125,12 @@ export class SecurityObserver {
 			};
 		} catch (err) {
 			this.circuitBreaker.recordFailure();
-			logger.error({ error: String(err) }, "observer SDK error");
+			logger.error({ error: String(err) }, "observer Hermes error");
 			return this.fallbackResult(String(err), Date.now() - startTime);
 		}
 	}
 
-	private async classifyWithSdk(
+	private async classifyWithHermes(
 		message: string,
 		context: { permissionTier: PermissionTier; hasFlaggedHistory?: boolean },
 	): Promise<Omit<ObserverResult, "latencyMs">> {
@@ -147,36 +146,32 @@ Context:
 
 Respond with JSON only.`;
 
-		const abortController = new AbortController();
-		const timeout = setTimeout(() => abortController.abort(), this.config.maxLatencyMs);
+		let response = "";
+		const stream = executeHermesQuery(prompt, {
+			cwd: this.config.cwd ?? process.cwd(),
+			tier: context.permissionTier,
+			poolKey: "security-observer",
+			telclaudeSessionId: "security-observer",
+			profileId: "security-observer",
+			enableSkills: true,
+			allowedSkills: ["security-gate"],
+			timeoutMs: this.config.maxLatencyMs,
+			userId: "security-observer",
+			systemPromptAppend: "Use the security-gate skill semantics. Respond with JSON only.",
+			mcpAuthority: false,
+		});
 
-		try {
-			const q = query({
-				prompt,
-				options: {
-					cwd: this.config.cwd ?? process.cwd(),
-					settingSources: ["project"],
-					allowedTools: ["Skill"],
-					maxTurns: 1,
-					abortController,
-				},
-			});
-
-			let response = "";
-			for await (const msg of q) {
-				if (isAssistantMessage(msg)) {
-					for (const block of msg.message.content) {
-						if (block.type === "text") {
-							response += block.text;
-						}
-					}
-				}
+		for await (const chunk of stream) {
+			if (chunk.type === "text") {
+				response += chunk.content;
+				continue;
 			}
-
-			return this.parseClassificationResponse(response);
-		} finally {
-			clearTimeout(timeout);
+			if (chunk.type === "done" && !chunk.result.success) {
+				throw new Error(chunk.result.error ?? "security observer Hermes query failed");
+			}
 		}
+
+		return this.parseClassificationResponse(response);
 	}
 
 	private parseClassificationResponse(response: string): Omit<ObserverResult, "latencyMs"> {

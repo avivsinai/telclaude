@@ -5,7 +5,7 @@ import type { EffectiveOperatorProfile } from "./profiles.js";
 export type ModelFallbackState = "default" | "override" | "profile" | "fallback";
 
 export type ModelRoute = {
-	/** Runtime model override. Undefined means use the Claude SDK default. */
+	/** Runtime model override. Undefined means use the Hermes default model. */
 	effectiveModel?: string;
 	effectiveProviderId: string;
 	fallbackState: ModelFallbackState;
@@ -15,7 +15,7 @@ export type ModelRoute = {
 	profileId?: string;
 };
 
-const SDK_DEFAULT_DETAIL = "SDK default";
+const HERMES_DEFAULT_DETAIL = "Hermes default";
 
 export function isExecutableProviderId(providerId: string): boolean {
 	return MODEL_CATALOG.some(
@@ -62,7 +62,7 @@ function resolveSelectionRoute(
 		return {
 			effectiveProviderId: "anthropic",
 			fallbackState: "fallback",
-			detail: `${SDK_DEFAULT_DETAIL} (ignored ${source} ${requestedProviderId}:${requestedModelId})`,
+			detail: `${HERMES_DEFAULT_DETAIL} (ignored ${source} ${requestedProviderId}:${requestedModelId})`,
 			requestedProviderId,
 			requestedModelId,
 		};
@@ -73,7 +73,7 @@ function resolveSelectionRoute(
 		return {
 			effectiveProviderId: "anthropic",
 			fallbackState: "fallback",
-			detail: `${SDK_DEFAULT_DETAIL} (unknown model: ${requestedModelId})`,
+			detail: `${HERMES_DEFAULT_DETAIL} (unknown model: ${requestedModelId})`,
 			requestedProviderId,
 			requestedModelId,
 		};
@@ -125,7 +125,7 @@ export function resolveModelRoute(
 		if (profileRoute.fallbackState === "fallback") {
 			return {
 				...profileRoute,
-				detail: `${profileRoute.detail}; using ${SDK_DEFAULT_DETAIL}`,
+				detail: `${profileRoute.detail}; using ${HERMES_DEFAULT_DETAIL}`,
 			};
 		}
 		return profileRoute;
@@ -133,7 +133,7 @@ export function resolveModelRoute(
 	return {
 		effectiveProviderId: "anthropic",
 		fallbackState: "default",
-		detail: SDK_DEFAULT_DETAIL,
+		detail: HERMES_DEFAULT_DETAIL,
 	};
 }
 

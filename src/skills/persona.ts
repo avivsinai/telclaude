@@ -12,7 +12,7 @@ const ARCHIVED_DIR = "archived";
 
 export type SkillPersonaContext =
 	| { kind: "telegram" }
-	| { kind: "social"; serviceId: string; agentSkillsAllowed?: readonly string[] };
+	| { kind: "social"; serviceId: string; allowedAgentSkills?: readonly string[] };
 
 export type SkillProvenance =
 	| { kind: "user" }
@@ -163,7 +163,7 @@ function classifyBlockReason(
 	}
 	if (context.kind !== "social") return "persona_mismatch";
 	if (entry.provenance.serviceId !== context.serviceId) return "service_mismatch";
-	if (!new Set(context.agentSkillsAllowed ?? []).has(entry.name)) {
+	if (!new Set(context.allowedAgentSkills ?? []).has(entry.name)) {
 		return "agent_skill_not_allowed";
 	}
 	return null;
@@ -257,7 +257,7 @@ export function resolveSkillPersonaContext(options: {
 	userId?: string;
 	telemetrySource?: "telegram" | "social";
 	telemetryServiceId?: string;
-	agentSkillsAllowed?: readonly string[];
+	allowedAgentSkills?: readonly string[];
 }): SkillPersonaContext {
 	if (options.telemetrySource === "social" || options.tier === "SOCIAL") {
 		const serviceId =
@@ -265,7 +265,7 @@ export function resolveSkillPersonaContext(options: {
 		return {
 			kind: "social",
 			serviceId: serviceId ?? "social",
-			agentSkillsAllowed: options.agentSkillsAllowed ?? [],
+			allowedAgentSkills: options.allowedAgentSkills ?? [],
 		};
 	}
 	return { kind: "telegram" };

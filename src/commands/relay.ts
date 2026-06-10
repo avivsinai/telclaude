@@ -1,6 +1,4 @@
-import { execSync } from "node:child_process";
 import fsSync from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
@@ -57,9 +55,7 @@ import {
 	DEFAULT_NETWORK_CONFIG,
 	getNetworkIsolationSummary,
 	getSandboxMode,
-	getSandboxRuntimeVersion,
 } from "../sandbox/index.js";
-import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { ensureActivityLogTable } from "../social/activity-log.js";
 import {
@@ -77,50 +73,6 @@ import { startWebhookServer } from "../webhooks/server.js";
 import { findInstalledSkills } from "./doctor-helpers.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
-
-/**
- * Check if a binary is available on PATH.
- */
-function isBinaryAvailable(name: string): boolean {
-	try {
-		execSync(`which ${name}`, { stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Check host dependencies for native sandbox mode.
- * Returns list of missing dependencies.
- */
-interface SandboxDepsCheck {
-	criticalMissing: string[]; // Security-critical, hard fail
-	optionalMissing: string[]; // Nice-to-have, warn only
-}
-
-function checkNativeSandboxDeps(): SandboxDepsCheck {
-	const criticalMissing: string[] = [];
-	const optionalMissing: string[] = [];
-	const platform = os.platform();
-
-	if (platform === "linux") {
-		// Linux REQUIRES bubblewrap for sandbox (security-critical)
-		if (!isBinaryAvailable("bwrap")) {
-			criticalMissing.push("bubblewrap (bwrap)");
-		}
-		// socat needed for network proxy (security-critical for network isolation)
-		if (!isBinaryAvailable("socat")) {
-			criticalMissing.push("socat");
-		}
-	}
-	// ripgrep is nice-to-have for Grep tool but not security-critical
-	if (!isBinaryAvailable("rg")) {
-		optionalMissing.push("ripgrep (rg)");
-	}
-
-	return { criticalMissing, optionalMissing };
-}
 
 export type RelayOptions = {
 	verbose?: boolean;
@@ -155,15 +107,11 @@ export function shouldValidateTelegramEnv(input: { readonly probeNoTelegram?: bo
 export function validateProbeNoTelegramRelayMode(input: {
 	readonly probeNoTelegram?: boolean;
 	readonly dryRun?: boolean;
-	readonly privateRuntimeEnabled?: boolean;
 	readonly liveMcpEnabled?: boolean;
 	readonly liveMcpAdminEnabled?: boolean;
 }): string | null {
 	if (!input.probeNoTelegram) return null;
 	if (!input.dryRun) return "--probe-no-telegram requires --dry-run";
-	if (!input.privateRuntimeEnabled) {
-		return "--probe-no-telegram requires TELCLAUDE_HERMES_PRIVATE_RUNTIME=1";
-	}
 	if (!input.liveMcpEnabled) {
 		return "--probe-no-telegram requires TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1";
 	}
@@ -214,7 +162,6 @@ export function registerRelayCommand(program: Command): void {
 				const probeNoTelegramError = validateProbeNoTelegramRelayMode({
 					probeNoTelegram: opts.probeNoTelegram,
 					dryRun: opts.dryRun ?? false,
-					privateRuntimeEnabled: process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME === "1",
 					liveMcpEnabled: liveMcpRuntimeConfig.enabled,
 					liveMcpAdminEnabled: liveMcpAdminConfig.enabled,
 				});
@@ -292,28 +239,21 @@ export function registerRelayCommand(program: Command): void {
 						console.log("  Anthropic OAuth refresh: disabled (vault daemon not running)");
 					}
 
-					// Start git proxy if in Docker mode with remote agent
-					// This allows secure git operations without exposing tokens to the agent
-					if (process.env.TELCLAUDE_AGENT_URL) {
-						startGitProxyServer();
-						console.log("  Git proxy: enabled (transparent auth injection)");
+					startGitProxyServer();
+					console.log("  Git proxy: enabled (transparent auth injection)");
 
-						// Start HTTP credential proxy if vault daemon is available
-						// This allows agents to call HTTP APIs without seeing credentials
-						if (vaultAvailable) {
-							startHttpCredentialProxy({ vaultSocketPath });
-							console.log("  HTTP proxy: enabled (credential injection via vault)");
+					if (vaultAvailable) {
+						startHttpCredentialProxy({ vaultSocketPath });
+						console.log("  HTTP proxy: enabled (credential injection via vault)");
 
-							// Initialize token manager for Ed25519 session tokens
-							const tokenInit = await initTokenManager();
-							if (tokenInit) {
-								console.log("  Session tokens: enabled (Ed25519 v3)");
-							} else {
-								console.log("  Session tokens: disabled (vault signing key unavailable)");
-							}
+						const tokenInit = await initTokenManager();
+						if (tokenInit) {
+							console.log("  Session tokens: enabled (Ed25519 v3)");
 						} else {
-							console.log("  HTTP proxy: disabled (vault daemon not running)");
+							console.log("  Session tokens: disabled (vault signing key unavailable)");
 						}
+					} else {
+						console.log("  HTTP proxy: disabled (vault daemon not running)");
 					}
 				} else {
 					console.log("  Capabilities: disabled");
@@ -590,17 +530,10 @@ export function registerRelayCommand(program: Command): void {
 					}
 				}
 
-				// Detect sandbox mode and verify sandbox availability
+				// Detect sandbox mode and verify host isolation posture
 				const sandboxMode = getSandboxMode();
-				const usesRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 				if (sandboxMode === "docker") {
-					if (usesRemoteAgent) {
-						console.log("Sandbox: Docker mode (relay-only, SDK runs in agent container)");
-					} else {
-						console.log(
-							"Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)",
-						);
-					}
+					console.log("Sandbox: Docker mode (container provides isolation)");
 					// SECURITY: Docker mode REQUIRES firewall for network isolation
 					if (process.env.TELCLAUDE_FIREWALL !== "1") {
 						if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
@@ -614,7 +547,7 @@ export function registerRelayCommand(program: Command): void {
 							);
 						} else {
 							console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
-							console.error("In Docker mode, the SDK sandbox is disabled.");
+							console.error("In Docker mode, container isolation is the active boundary.");
 							console.error("Without TELCLAUDE_FIREWALL=1, container egress is not isolated");
 							console.error("and can reach arbitrary endpoints (including cloud metadata).\n");
 							console.error("To fix:");
@@ -646,53 +579,7 @@ export function registerRelayCommand(program: Command): void {
 						console.log("  Firewall: verified (sentinel file present)");
 					}
 				} else {
-					// Native mode: verify SDK sandbox runtime is available
-					const sandboxVersion = getSandboxRuntimeVersion();
-					if (!sandboxVersion) {
-						console.error("\n❌ SECURITY ERROR: Sandbox runtime not available.\n");
-						console.error(
-							"In native mode, the SDK sandbox (@anthropic-ai/sandbox-runtime) is required.",
-						);
-						console.error(
-							"This provides filesystem and network isolation via bubblewrap (Linux) or Seatbelt (macOS).\n",
-						);
-						console.error("To fix:");
-						console.error(
-							"  - Run: pnpm install (sandbox-runtime should be installed as a dependency)",
-						);
-						console.error("  - On Linux: ensure bubblewrap is installed (apt install bubblewrap)");
-						console.error("  - Alternatively, run in Docker mode for container-based isolation\n");
-						process.exit(1);
-					}
-					console.log(`Sandbox: Native mode (SDK sandbox v${sandboxVersion})`);
-
-					// Check for host dependencies (bwrap, socat, rg)
-					const { criticalMissing, optionalMissing } = checkNativeSandboxDeps();
-
-					// Security-critical deps are a hard fail
-					if (criticalMissing.length > 0) {
-						console.error(
-							`\n❌ SECURITY ERROR: Missing critical sandbox dependencies: ${criticalMissing.join(", ")}\n`,
-						);
-						console.error("These are required for secure sandbox operation on Linux.");
-						console.error(
-							"Without them, the sandbox cannot provide filesystem/network isolation.\n",
-						);
-						console.error("To fix:");
-						console.error("  - Install: apt install bubblewrap socat");
-						console.error("  - Or run in Docker mode for container-based isolation\n");
-						process.exit(1);
-					}
-
-					// Optional deps are just a warning
-					if (optionalMissing.length > 0) {
-						console.warn(`  ⚠️  Missing optional: ${optionalMissing.join(", ")}`);
-						if (os.platform() === "linux") {
-							console.warn("     Install: apt install ripgrep");
-						} else {
-							console.warn("     Install: brew install ripgrep");
-						}
-					}
+					console.log("Sandbox: Native relay process; LLM/persona runtime is contained Hermes");
 				}
 
 				// Network policy - default is strict allowlist
@@ -784,10 +671,6 @@ export function registerRelayCommand(program: Command): void {
 					if (schedulerHandles.length > 0) {
 						logger.info({ count: schedulerHandles.length }, "schedulers stopped");
 					}
-
-					// Clean up session pool
-					await destroySessionManager();
-					logger.info("session pool destroyed");
 				};
 
 				process.on("SIGINT", () => void shutdown());
@@ -833,8 +716,6 @@ export function registerRelayCommand(program: Command): void {
 				for (const scheduler of schedulerHandles) {
 					await scheduler.stop();
 				}
-				await destroySessionManager();
-
 				console.log("Relay stopped.");
 			} catch (err) {
 				logger.error({ error: String(err) }, "relay command failed");

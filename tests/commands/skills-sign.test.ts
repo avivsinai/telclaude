@@ -33,14 +33,7 @@ function makeVaultMock(opts: { signature?: string; valid?: boolean } = {}): Mock
 function writeDraft(
 	root: string,
 	name: string,
-	content = [
-		"---",
-		"name: test",
-		"description: test skill",
-		"---",
-		"",
-		"Body.",
-	].join("\n"),
+	content = ["---", "name: test", "description: test skill", "---", "", "Body."].join("\n"),
 ): string {
 	const dir = path.join(root, ".claude", "skills-draft", name);
 	fs.mkdirSync(dir, { recursive: true });

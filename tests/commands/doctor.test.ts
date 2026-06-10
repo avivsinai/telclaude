@@ -32,7 +32,6 @@ function makeMinimalConfig(overrides: Record<string, unknown> = {}): TelclaudeCo
 		},
 		inbound: { reply: { enabled: true, timeoutSeconds: 600, typingIntervalSeconds: 8 } },
 		logging: {},
-		sdk: { betas: [] },
 		openai: {},
 		transcription: { provider: "openai", model: "whisper-1", timeoutSeconds: 60 },
 		imageGeneration: {

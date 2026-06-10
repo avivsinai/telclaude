@@ -104,31 +104,29 @@ describe("fetchWithGuard", () => {
 	it("blocks URLs resolving to private IPs", async () => {
 		mockDNSResults.set("evil-redirect.example", ["192.168.1.1"]);
 
-		await expect(
-			fetchWithGuard({ url: "http://evil-redirect.example/foo" }),
-		).rejects.toThrow(FetchGuardError);
+		await expect(fetchWithGuard({ url: "http://evil-redirect.example/foo" })).rejects.toThrow(
+			FetchGuardError,
+		);
 
-		await expect(
-			fetchWithGuard({ url: "http://evil-redirect.example/foo" }),
-		).rejects.toThrow(/private\/internal IP/);
+		await expect(fetchWithGuard({ url: "http://evil-redirect.example/foo" })).rejects.toThrow(
+			/private\/internal IP/,
+		);
 	});
 
 	it("blocks URLs resolving to metadata IPs (non-overridable)", async () => {
 		mockDNSResults.set("sneaky.example", ["169.254.169.254"]);
 
-		await expect(
-			fetchWithGuard({ url: "http://sneaky.example/latest/meta-data" }),
-		).rejects.toThrow(FetchGuardError);
+		await expect(fetchWithGuard({ url: "http://sneaky.example/latest/meta-data" })).rejects.toThrow(
+			FetchGuardError,
+		);
 
-		await expect(
-			fetchWithGuard({ url: "http://sneaky.example/latest/meta-data" }),
-		).rejects.toThrow(/non-overridable/);
+		await expect(fetchWithGuard({ url: "http://sneaky.example/latest/meta-data" })).rejects.toThrow(
+			/non-overridable/,
+		);
 	});
 
 	it("blocks literal private IP URLs", async () => {
-		await expect(fetchWithGuard({ url: "http://10.0.0.1/admin" })).rejects.toThrow(
-			FetchGuardError,
-		);
+		await expect(fetchWithGuard({ url: "http://10.0.0.1/admin" })).rejects.toThrow(FetchGuardError);
 	});
 
 	it("blocks literal metadata IP URLs", async () => {
@@ -148,9 +146,7 @@ describe("fetchWithGuard", () => {
 	it("blocks when DNS resolves to mixed public+private IPs (dual-stack bypass)", async () => {
 		mockDNSResults.set("dual.example", ["93.184.216.34", "10.0.0.1"]);
 
-		await expect(fetchWithGuard({ url: "http://dual.example/" })).rejects.toThrow(
-			FetchGuardError,
-		);
+		await expect(fetchWithGuard({ url: "http://dual.example/" })).rejects.toThrow(FetchGuardError);
 
 		await expect(fetchWithGuard({ url: "http://dual.example/" })).rejects.toThrow(
 			/private\/internal IP/,
@@ -194,9 +190,7 @@ describe("fetchWithGuard", () => {
 	it("blocks IPv6 unique-local addresses", async () => {
 		mockDNSResults.set("v6ula.example", ["fd12:3456::1"]);
 
-		await expect(fetchWithGuard({ url: "http://v6ula.example/" })).rejects.toThrow(
-			FetchGuardError,
-		);
+		await expect(fetchWithGuard({ url: "http://v6ula.example/" })).rejects.toThrow(FetchGuardError);
 	});
 
 	it("blocks IPv4-mapped IPv6 private addresses", async () => {
@@ -420,9 +414,9 @@ describe("fetchWithGuard", () => {
 			}),
 		);
 
-		await expect(
-			fetchWithGuard({ url: "http://legit2.example/" }),
-		).rejects.toThrow(/non-overridable/);
+		await expect(fetchWithGuard({ url: "http://legit2.example/" })).rejects.toThrow(
+			/non-overridable/,
+		);
 	});
 
 	it("enforces max redirect cap", async () => {
@@ -440,9 +434,9 @@ describe("fetchWithGuard", () => {
 			);
 		}
 
-		await expect(
-			fetchWithGuard({ url: "http://chain.example/start" }),
-		).rejects.toThrow(/Too many redirects/);
+		await expect(fetchWithGuard({ url: "http://chain.example/start" })).rejects.toThrow(
+			/Too many redirects/,
+		);
 	});
 
 	it("detects redirect loops", async () => {
@@ -466,22 +460,20 @@ describe("fetchWithGuard", () => {
 			}),
 		);
 
-		await expect(
-			fetchWithGuard({ url: "http://loop.example/a" }),
-		).rejects.toThrow(/Redirect loop detected/);
+		await expect(fetchWithGuard({ url: "http://loop.example/a" })).rejects.toThrow(
+			/Redirect loop detected/,
+		);
 	});
 
 	it("handles redirect with missing Location header", async () => {
 		mockDNSResults.set("bad.example", ["93.184.216.34"]);
 
 		const mockFetch = vi.spyOn(globalThis, "fetch");
-		mockFetch.mockResolvedValueOnce(
-			new Response(null, { status: 302 }),
-		);
+		mockFetch.mockResolvedValueOnce(new Response(null, { status: 302 }));
 
-		await expect(
-			fetchWithGuard({ url: "http://bad.example/" }),
-		).rejects.toThrow(/missing Location header/);
+		await expect(fetchWithGuard({ url: "http://bad.example/" })).rejects.toThrow(
+			/missing Location header/,
+		);
 	});
 
 	it("respects custom maxRedirects option", async () => {
@@ -574,9 +566,9 @@ describe("fetchWithGuard", () => {
 		// for the actual TCP connection.
 		mockDNSResults.set("rebind.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-			new Response("safe", { status: 200 }),
-		);
+		const mockFetch = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response("safe", { status: 200 }));
 
 		const result = await fetchWithGuard({
 			url: "http://rebind.example/",

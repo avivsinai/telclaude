@@ -38,7 +38,7 @@ describe("auditSandboxPosture", () => {
 		const fixture = createFixture({
 			composeContent: `
 services:
-  telclaude-agent:
+  tc-hermes-contained:
     network_mode: host
     privileged: true
     security_opt:
@@ -66,7 +66,7 @@ services:
 		const fixture = createFixture({
 			composeContent: `
 services:
-  telclaude-agent:
+  tc-hermes-contained:
     volumes:
       - ./escape-link:/workspace:ro
 `,
@@ -83,11 +83,11 @@ services:
 		expect(findings.some((f) => f.message.includes("/etc"))).toBe(true);
 	});
 
-	it("flags permissive network mode and sensitive env exposure for agent services", () => {
+	it("flags permissive network mode and sensitive env exposure for runtime services", () => {
 		const fixture = createFixture({
 			composeContent: `
 services:
-  telclaude-agent:
+  tc-hermes-contained:
     environment:
       - TELEGRAM_BOT_TOKEN=\${TELEGRAM_BOT_TOKEN:-}
 `,
@@ -112,7 +112,7 @@ TELCLAUDE_NETWORK_MODE=permissive
 		const fixture = createFixture({
 			composeContent: `
 services:
-  telclaude-agent:
+  tc-hermes-contained:
     security_opt:
       - no-new-privileges:true
     volumes:
@@ -136,30 +136,48 @@ TELCLAUDE_LOG_LEVEL=info
 		const compose = fs.readFileSync(composePath, "utf8");
 		const telclaude = serviceBlock(compose, "telclaude");
 		const hermes = serviceBlock(compose, "tc-hermes-contained");
+		const socialHermes = serviceBlock(compose, "tc-hermes-social");
 		const telclaudeEnv = envMap(listValues(telclaude, "environment"));
 		const hermesEnv = envMap(listValues(hermes, "environment"));
+		const socialHermesEnv = envMap(listValues(socialHermes, "environment"));
 		const requiredApiKey =
 			"${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}";
+		const requiredSocialApiKey =
+			"${TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY:?generate an ephemeral social key for this compose up}";
 
 		expect(telclaude).toContain("tc-hermes-contained:");
+		expect(telclaude).toContain("tc-hermes-social:");
 		expect(telclaude).toContain("condition: service_started");
 		expect(telclaude).not.toContain("condition: service_healthy");
-		expect(telclaude).toContain("hermes-relay-net:");
+		expect(telclaude).toContain("hermes-private-net:");
 		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}");
+		expect(telclaude).toContain("hermes-social-net:");
+		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}");
 		expect(listValues(telclaude, "tmpfs")).toEqual([
 			"/tmp:size=512M,mode=1777",
 			"/home/node:size=256M,uid=1000,gid=1000,mode=0755",
 			"/run/telclaude:size=1M,uid=1000,gid=1000,mode=0700,noexec",
 		]);
-		expect(hermes).toContain("hermes-relay-net:");
+		expect(hermes).toContain("hermes-private-net:");
 		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-192.0.2.11}");
-		expect(compose).toContain("name: telclaude-hermes-relay");
+		expect(socialHermes).toContain("hermes-social-net:");
+		expect(socialHermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_IP:-192.0.3.11}");
+		expect(compose).toContain("name: telclaude-hermes-private");
+		expect(compose).toContain("name: telclaude-hermes-social");
 		expect(compose).toContain("internal: true");
 		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-192.0.2.0/24}");
+		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-192.0.3.0/24}");
 
 		expect(telclaudeEnv.TELCLAUDE_HERMES_API_KEY).toBe(requiredApiKey);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_API_BASE_URL).toBe("http://tc-hermes-contained:8642");
+		expect(telclaudeEnv.TELCLAUDE_HERMES_SOCIAL_API_KEY).toBe(requiredSocialApiKey);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_SOCIAL_API_BASE_URL).toBe("http://tc-hermes-social:8642");
+		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_NETWORK).toBe("telclaude-hermes-private");
+		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS).toBe(
+			"${TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS:-${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}@telclaude-hermes-social}",
+		);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS).toBe(
-			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11}",
+			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11,192.0.3.11}",
 		);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED).toBe(
 			"${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}",
@@ -196,47 +214,83 @@ TELCLAUDE_LOG_LEVEL=info
 			TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:
 				"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
 			TELCLAUDE_INTERNAL_HOSTS: "telclaude",
+			TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS: "1",
 			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-contained-skills.allowlist",
 			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
 			NO_COLOR: "1",
 		});
-
-		expect(hermes).toContain("image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:");
-		expect(hermes).toContain(
-			'entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]',
-		);
-		expect(hermes).toContain('command: ["gateway", "run"]');
-		expect(hermes).not.toMatch(/image:.*:latest\b/);
-		expect(hermes).toContain('user: "10000:10000"');
-		expect(listValues(hermes, "cap_drop")).toEqual(["ALL"]);
-		expect(hermes).not.toMatch(/^\s+cap_add:/m);
-		expect(hermes).not.toMatch(/^\s+privileged:\s*true\b/m);
-		expect(listValues(hermes, "security_opt")).toEqual(["no-new-privileges:true"]);
-		expect(hermes).not.toContain("seccomp:unconfined");
-		expect(hermes).not.toContain("apparmor:unconfined");
-		expect(hermes).toContain("read_only: true");
+		expect(socialHermesEnv).toEqual({
+			API_SERVER_ENABLED: "true",
+			API_SERVER_HOST: "0.0.0.0",
+			API_SERVER_PORT: "8642",
+			API_SERVER_KEY: requiredSocialApiKey,
+			HERMES_HOME: "/home/hermes/.hermes-social",
+			HOME: "/home/hermes",
+			HERMES_INFERENCE_PROVIDER: "openai-codex",
+			HERMES_INFERENCE_MODEL: "${TELCLAUDE_HERMES_SOCIAL_INFERENCE_MODEL:-gpt-5.5}",
+			HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+			TELCLAUDE_HERMES_MCP_RELAY_TOKEN:
+				"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}",
+			TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS: `\${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}`,
+			TELCLAUDE_HERMES_MCP_URL: "http://telclaude:8793/mcp",
+			TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:
+				"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
+			TELCLAUDE_INTERNAL_HOSTS: "telclaude",
+			TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS: "1",
+			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-social-skills.allowlist",
+			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
+			NO_COLOR: "1",
+		});
 		expect(listValues(hermes, "volumes")).toEqual([
 			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 			"..:/opt/data/telclaude-runner:ro",
 		]);
-		expect(hermes).not.toMatch(/^\s+env_file:/m);
-		expect(listValues(hermes, "extra_hosts")).toEqual([
-			'"api.anthropic.com:192.0.2.1"',
-			'"api.openai.com:192.0.2.1"',
-			'"auth.openai.com:192.0.2.1"',
-			'"chatgpt.com:192.0.2.1"',
-			'"generativelanguage.googleapis.com:192.0.2.1"',
-			'"openrouter.ai:192.0.2.1"',
-			'"api.x.ai:192.0.2.1"',
+		expect(listValues(socialHermes, "volumes")).toEqual([
+			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
+			"./hermes-social-skills.allowlist:/tmp/telclaude-hermes-social-skills.allowlist:ro",
+			"..:/opt/data/telclaude-runner:ro",
 		]);
-		expect(listValues(hermes, "tmpfs")).toEqual([
-			"/tmp:size=128M,mode=1777,noexec",
-			"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
-			"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec",
-		]);
-		expect(hermes).toContain("start_period: 360s");
-		expect(hermes).toContain("http://127.0.0.1:8642/health");
+		expect(
+			fs.readFileSync(path.resolve(process.cwd(), "docker/hermes-social-skills.allowlist"), "utf8"),
+		).toContain("social-media/xurl");
+		expect(
+			fs.readFileSync(path.resolve(process.cwd(), "docker/hermes-social-skills.allowlist"), "utf8"),
+		).not.toContain("github/github-auth");
+
+		for (const block of [hermes, socialHermes]) {
+			expect(block).toContain("image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:");
+			expect(block).toContain(
+				'entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]',
+			);
+			expect(block).toContain('command: ["gateway", "run"]');
+			expect(block).not.toMatch(/image:.*:latest\b/);
+			expect(block).toContain('user: "10000:10000"');
+			expect(listValues(block, "cap_drop")).toEqual(["ALL"]);
+			expect(block).not.toMatch(/^\s+cap_add:/m);
+			expect(block).not.toMatch(/^\s+privileged:\s*true\b/m);
+			expect(listValues(block, "security_opt")).toEqual(["no-new-privileges:true"]);
+			expect(block).not.toContain("seccomp:unconfined");
+			expect(block).not.toContain("apparmor:unconfined");
+			expect(block).toContain("read_only: true");
+			expect(block).not.toMatch(/^\s+env_file:/m);
+			expect(listValues(block, "extra_hosts")).toEqual([
+				'"api.anthropic.com:192.0.2.1"',
+				'"api.openai.com:192.0.2.1"',
+				'"auth.openai.com:192.0.2.1"',
+				'"chatgpt.com:192.0.2.1"',
+				'"generativelanguage.googleapis.com:192.0.2.1"',
+				'"openrouter.ai:192.0.2.1"',
+				'"api.x.ai:192.0.2.1"',
+			]);
+			expect(listValues(block, "tmpfs")).toEqual([
+				"/tmp:size=128M,mode=1777,noexec",
+				"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
+				"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec",
+			]);
+			expect(block).toContain("start_period: 360s");
+			expect(block).toContain("http://127.0.0.1:8642/health");
+		}
 
 		const forbiddenEnvKeys = [
 			"ANTHROPIC_API_KEY",
@@ -249,18 +303,26 @@ TELCLAUDE_LOG_LEVEL=info
 			"TOTP_ENCRYPTION_KEY",
 			"VAULT_ENCRYPTION_KEY",
 		];
-		for (const key of [...Object.keys(telclaudeEnv), ...Object.keys(hermesEnv)]) {
+		for (const key of [
+			...Object.keys(telclaudeEnv),
+			...Object.keys(hermesEnv),
+			...Object.keys(socialHermesEnv),
+		]) {
 			if (
 				key === "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN" &&
-				hermesEnv[key] ===
-					"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}"
+				(hermesEnv[key] ===
+					"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}" ||
+					socialHermesEnv[key] ===
+						"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}")
 			) {
 				continue;
 			}
 			if (
 				key === "TELCLAUDE_HERMES_MCP_RELAY_TOKEN" &&
-				hermesEnv[key] ===
-					"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}"
+				(hermesEnv[key] ===
+					"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}" ||
+					socialHermesEnv[key] ===
+						"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}")
 			) {
 				continue;
 			}
@@ -271,6 +333,7 @@ TELCLAUDE_LOG_LEVEL=info
 			if (/(KEY|SECRET|TOKEN|OAUTH|VAULT|PROVIDER)/.test(variableName)) {
 				expect([
 					"TELCLAUDE_HERMES_API_SERVER_KEY",
+					"TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY",
 					"TELCLAUDE_HERMES_MCP_RELAY_TOKEN",
 					"TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID",
 					"OPERATOR_RPC_AGENT_PUBLIC_KEY",

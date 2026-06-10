@@ -11,9 +11,7 @@ function writeSkill(root: string, relativeDir: string): void {
 	fs.mkdirSync(skillDir, { recursive: true });
 	fs.writeFileSync(
 		path.join(skillDir, "SKILL.md"),
-		["---", `name: ${path.basename(skillDir)}`, "description: test", "---", "", "Body."].join(
-			"\n",
-		),
+		["---", `name: ${path.basename(skillDir)}`, "description: test", "---", "", "Body."].join("\n"),
 		"utf8",
 	);
 }
@@ -76,17 +74,22 @@ describe("persona skill load plans", () => {
 		);
 	});
 
-	it("loads nested user-authored skills by SDK runtime name", () => {
+	it("loads nested user-authored skills by Hermes runtime name", () => {
 		writeSkill(skillCatalog, "software-development/plan");
 
 		const inventory = listSkillInventory(projectRoot);
-		expect(inventory.find((entry) => entry.relativeDir === "software-development/plan")).toMatchObject({
+		expect(
+			inventory.find((entry) => entry.relativeDir === "software-development/plan"),
+		).toMatchObject({
 			name: "plan",
 			relativeDir: "software-development/plan",
 			provenance: { kind: "user" },
 		});
 
-		const plan = buildSkillLoadPlan({ kind: "social", serviceId: "xtwitter" }, { cwd: projectRoot });
+		const plan = buildSkillLoadPlan(
+			{ kind: "social", serviceId: "xtwitter" },
+			{ cwd: projectRoot },
+		);
 		expect(plan.names).toContain("plan");
 		expect(plan.names).not.toContain("software-development/plan");
 	});
@@ -170,7 +173,7 @@ describe("persona skill load plans", () => {
 		);
 
 		const allowedPlan = buildSkillLoadPlan(
-			{ kind: "social", serviceId: "xtwitter", agentSkillsAllowed: ["x-helper"] },
+			{ kind: "social", serviceId: "xtwitter", allowedAgentSkills: ["x-helper"] },
 			{ cwd: projectRoot },
 		);
 		expect(allowedPlan.names).toContain("memory");

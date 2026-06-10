@@ -13,7 +13,6 @@
  */
 
 import type { Api } from "grammy";
-import { remoteCodexWorkUnitExecutor } from "../agent/codex-work-unit-client.js";
 import { getChildLogger } from "../logging.js";
 import {
 	emitCompletionNotification,
@@ -74,19 +73,8 @@ export function startHostedBackgroundRunner(
 ): BackgroundRunnerHandle {
 	const { api, onCompleted: extraHook, ...runnerOpts } = options;
 
-	// In Docker mode the relay holds no workspace, so Codex work units must run
-	// in the agent container. When an agent URL is configured, delegate the
-	// `codex-work-unit` kind to the agent endpoint instead of spawning Codex
-	// locally in the relay. An explicit caller override (e.g. tests) wins.
-	const executors = { ...runnerOpts.executors };
-	if (process.env.TELCLAUDE_AGENT_URL && !executors["codex-work-unit"]) {
-		executors["codex-work-unit"] = remoteCodexWorkUnitExecutor;
-		logger.info("delegating codex work units to the agent endpoint");
-	}
-
 	return startBackgroundRunner({
 		...runnerOpts,
-		executors,
 		onCompleted: async ({ job, outcome }) => {
 			try {
 				await emitCompletionNotification(job, api ? { api } : {});

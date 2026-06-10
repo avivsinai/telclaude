@@ -106,7 +106,7 @@ function ensureInsideRoot(candidatePath: string, root: string, label: string): s
 function resolveWorkspaceRoot(options?: CodexWorkUnitExecutorOptions): string {
 	return resolveRoot(
 		options?.rootCwd ??
-			process.env.TELCLAUDE_AGENT_WORKDIR ??
+			process.env.TELCLAUDE_WORKDIR ??
 			process.env.WORKSPACE_PATH ??
 			process.cwd(),
 	);

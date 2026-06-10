@@ -11,7 +11,12 @@ import {
 	SkillRootUnavailableError,
 } from "../../src/commands/skill-path.js";
 
-function writeSkillFile(root: string, skillName: string, relativePath: string, content: string): string {
+function writeSkillFile(
+	root: string,
+	skillName: string,
+	relativePath: string,
+	content: string,
+): string {
 	const filePath = path.join(root, "skills", skillName, relativePath);
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, content, "utf8");
@@ -77,7 +82,12 @@ describe("resolveSkillAssetPath", () => {
 		);
 		fs.mkdirSync(path.dirname(projectFile), { recursive: true });
 		fs.writeFileSync(projectFile, "project", "utf8");
-		const configuredFile = writeSkillFile(claudeHome, "weather", "scripts/weather.sh", "configured");
+		const configuredFile = writeSkillFile(
+			claudeHome,
+			"weather",
+			"scripts/weather.sh",
+			"configured",
+		);
 
 		expect(resolveSkillAssetPath("weather", "scripts/weather.sh", { cwd: projectRoot })).toBe(
 			configuredFile,
@@ -144,9 +154,9 @@ describe("resolveSkillAssetPath", () => {
 	});
 
 	it("rejects traversal attempts in relative paths", () => {
-		expect(() =>
-			resolveSkillAssetPath("weather", "../secrets.txt", { cwd: projectRoot }),
-		).toThrow("Skill path must stay within the skill directory.");
+		expect(() => resolveSkillAssetPath("weather", "../secrets.txt", { cwd: projectRoot })).toThrow(
+			"Skill path must stay within the skill directory.",
+		);
 	});
 
 	it("rejects traversal-style skill names", () => {

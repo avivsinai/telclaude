@@ -348,38 +348,28 @@ describe("exec-policy", () => {
 
 	describe("deriveGlobFromCommand", () => {
 		it("derives glob with first positional arg", async () => {
-			const { deriveGlobFromCommand } = await import(
-				"../../src/security/exec-policy.js"
-			);
+			const { deriveGlobFromCommand } = await import("../../src/security/exec-policy.js");
 			expect(deriveGlobFromCommand("npm test --watch")).toBe("npm test*");
 			expect(deriveGlobFromCommand("pnpm build")).toBe("pnpm build*");
 		});
 
 		it("derives glob with just the binary when first arg is a flag", async () => {
-			const { deriveGlobFromCommand } = await import(
-				"../../src/security/exec-policy.js"
-			);
+			const { deriveGlobFromCommand } = await import("../../src/security/exec-policy.js");
 			expect(deriveGlobFromCommand("grep -i foo")).toBe("grep*");
 		});
 
 		it("returns null for shell metacharacters", async () => {
-			const { deriveGlobFromCommand } = await import(
-				"../../src/security/exec-policy.js"
-			);
+			const { deriveGlobFromCommand } = await import("../../src/security/exec-policy.js");
 			expect(deriveGlobFromCommand("grep foo | wc")).toBe(null);
 		});
 
 		it("strips env assignments", async () => {
-			const { deriveGlobFromCommand } = await import(
-				"../../src/security/exec-policy.js"
-			);
+			const { deriveGlobFromCommand } = await import("../../src/security/exec-policy.js");
 			expect(deriveGlobFromCommand("FOO=1 npm test")).toBe("npm test*");
 		});
 
 		it("returns null for empty input", async () => {
-			const { deriveGlobFromCommand } = await import(
-				"../../src/security/exec-policy.js"
-			);
+			const { deriveGlobFromCommand } = await import("../../src/security/exec-policy.js");
 			expect(deriveGlobFromCommand("")).toBe(null);
 			expect(deriveGlobFromCommand("   ")).toBe(null);
 		});

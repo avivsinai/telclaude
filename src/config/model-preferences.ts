@@ -3,8 +3,8 @@
  *
  * The model picker writes into this table when an operator taps a model.
  * Telegram session execution reads Anthropic preferences from here and passes
- * them as Claude SDK model overrides; non-Anthropic providers remain catalog
- * metadata until a separate runtime exists.
+ * them as Hermes model overrides; non-Anthropic providers remain catalog
+ * metadata until a relay execution path exists.
  */
 
 import { z } from "zod";

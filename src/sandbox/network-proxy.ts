@@ -1,18 +1,17 @@
 /**
  * Network Proxy Configuration
  *
- * Provides domain allowlist configuration for sandboxed network access.
+ * Provides domain allowlist configuration for relay firewall and guarded fetch access.
  *
- * IMPORTANT: Method (GET/POST) and port restrictions defined here are NOT enforced
- * at runtime. The @anthropic-ai/sandbox-runtime library only supports domain-based
- * filtering. These configurations are used for:
+ * IMPORTANT: Method (GET/POST) and port restrictions defined here are policy
+ * metadata unless a specific caller enforces them. These configurations are used for:
  * - Doctor diagnostics (to show intended policy)
- * - Future reference if sandbox-runtime adds method/port support
+ * - Firewall/domain rendering
  * - Documentation of security intent
  *
  * What IS enforced:
- * - Domain allowlist (via sandbox-runtime)
- * - Private network blocking (127.x, 10.x, 192.168.x, etc.) via sandboxAskCallback
+ * - Domain allowlist in Docker firewall / guarded fetch paths
+ * - Private network blocking (127.x, 10.x, 192.168.x, etc.) in guarded fetch paths
  * - Cloud metadata endpoint blocking (169.254.169.254, etc.)
  *
  * What is NOT enforced:
@@ -848,7 +847,7 @@ export interface NetworkIsolationSummary {
 	allowedDomains: number;
 	/**
 	 * Domains configured for POST access.
-	 * NOTE: Method restrictions are NOT enforced at runtime by sandbox-runtime.
+	 * NOTE: Method restrictions are informational unless a caller enforces them.
 	 * This is informational only (shows intended policy).
 	 */
 	domainsWithPost: string[];
@@ -858,7 +857,7 @@ export interface NetworkIsolationSummary {
 	isPermissive: boolean;
 	/**
 	 * Port restrictions configured in policy.
-	 * NOTE: Port restrictions are NOT enforced at runtime by sandbox-runtime.
+	 * NOTE: Port restrictions are informational unless a caller enforces them.
 	 * This is informational only (shows intended policy).
 	 */
 	allowedPorts?: number[];
@@ -914,19 +913,17 @@ export interface NetworkSelfTestResult {
  * Run network isolation self-tests.
  *
  * IMPORTANT: These are POLICY checks only - they test the checkNetworkRequest() logic,
- * not actual runtime enforcement. The sandbox-runtime only enforces:
- * - Domain allowlist (via sandboxAskCallback for private networks)
- * - Cloud metadata blocking
+ * not actual runtime enforcement.
  *
  * Tests for method/port restrictions pass the policy check but are NOT enforced
- * at runtime by sandbox-runtime.
+ * at runtime unless a caller enforces them.
  */
 export function runNetworkSelfTest(
 	config: NetworkProxyConfig = DEFAULT_NETWORK_CONFIG,
 ): NetworkSelfTestResult {
 	const tests: NetworkSelfTestResult["tests"] = [];
 
-	// Test 1: Allowed domain with GET should pass (ENFORCED by sandbox-runtime)
+	// Test 1: Allowed domain with GET should pass.
 	{
 		const result = checkNetworkRequest("registry.npmjs.org", "GET", 443, config);
 		tests.push({
@@ -966,7 +963,7 @@ export function runNetworkSelfTest(
 		});
 	}
 
-	// Test 5: Unknown domain should be blocked (ENFORCED by sandbox-runtime)
+	// Test 5: Unknown domain should be blocked.
 	{
 		const result = checkNetworkRequest("evil.com", "GET", 443, config);
 		tests.push({
@@ -977,7 +974,7 @@ export function runNetworkSelfTest(
 	}
 
 	// Test 6: POST to github.com - POLICY CHECK ONLY, NOT ENFORCED AT RUNTIME
-	// sandbox-runtime does not support method restrictions
+	// Method restrictions are policy metadata unless a caller enforces them.
 	{
 		const result = checkNetworkRequest("github.com", "POST", 443, config);
 		const shouldBlock = !config.allowedDomains.some(

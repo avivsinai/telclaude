@@ -110,7 +110,7 @@ export async function runCronPreprocess(
 	signal: AbortSignal,
 	options?: { rootCwd?: string },
 ): Promise<CronPreprocessResult> {
-	const rootCwd = options?.rootCwd ?? process.env.TELCLAUDE_AGENT_WORKDIR ?? process.cwd();
+	const rootCwd = options?.rootCwd ?? process.env.TELCLAUDE_WORKDIR ?? process.cwd();
 	const command = validateCommand(config.command, rootCwd);
 	const args = (config.args ?? []).map((arg, index) =>
 		validateToken(arg, `preprocess arg ${index}`),

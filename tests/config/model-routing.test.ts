@@ -39,13 +39,13 @@ describe("model routing", () => {
 		}
 	});
 
-	it("uses the SDK default with no preference", () => {
+	it("uses the Hermes default with no preference", () => {
 		clearChatModelPreference(123);
 
 		expect(resolveModelRoute(123)).toEqual({
 			effectiveProviderId: "anthropic",
 			fallbackState: "default",
-			detail: "SDK default",
+			detail: "Hermes default",
 		});
 	});
 
@@ -65,7 +65,7 @@ describe("model routing", () => {
 		);
 	});
 
-	it("falls back to SDK default for catalog-only providers", () => {
+	it("falls back to Hermes default for catalog-only providers", () => {
 		setChatModelPreference({
 			chatId: 123,
 			providerId: "openai",
@@ -158,7 +158,7 @@ describe("model routing", () => {
 		expect(route.detail).toContain("profile default anthropic:claude-sonnet-4-5-20250929");
 	});
 
-	it("degrades to SDK default when profile default is not executable", () => {
+	it("degrades to Hermes default when profile default is not executable", () => {
 		const route = resolveModelRoute(123, {
 			profile: {
 				id: "engineer",

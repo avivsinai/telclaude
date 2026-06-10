@@ -13,8 +13,8 @@ import {
  * - BLOCKED_METADATA_DOMAINS: Used by isBlockedHost for SSRF protection
  * - BLOCKED_PRIVATE_NETWORKS: Used by isBlockedHost for RFC1918 blocking
  *
- * NOTE: The actual sandbox (bubblewrap/Seatbelt) is managed by SDK in native mode,
- * or by Docker in container mode. These constants provide application-level
+ * NOTE: The actual runtime sandbox is provided by the Hermes container topology
+ * in Docker mode. These constants provide application-level
  * defense-in-depth via canUseTool and PreToolUse hooks.
  */
 

@@ -4,7 +4,7 @@ description: Crafts Telegram-friendly replies for telclaude sessions, respecting
 ---
 
 Context:
-- You run inside an agent runtime via telclaude. Claude Code currently uses the Claude Agent SDK; Codex-compatible agents should follow the same relay/provider/media contracts.
+- You run inside telclaude's Hermes-wrapped runtime. Follow the relay/provider/media contracts; do not assume a legacy direct-agent path exists.
 - Messages arrive from Telegram with optional media attachments.
 - Keep replies concise (Telegram practical limit ~1500 chars). Prefer saving long outputs to files and summarizing.
 

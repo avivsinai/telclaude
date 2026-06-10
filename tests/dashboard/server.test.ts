@@ -831,7 +831,7 @@ describe("dashboard server", () => {
 		expect(body.socialPersona.services[0]).toMatchObject({
 			id: "xtwitter",
 			enabled: true,
-			hasAgentUrl: false,
+			runtime: "hermes",
 			allowedSkillsCount: 1,
 		});
 		expect(JSON.stringify(body)).not.toContain("private profile should not leak");

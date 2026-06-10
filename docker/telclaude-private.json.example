@@ -1,5 +1,5 @@
 {
-  // Relay-only config overlay (not mounted into agent containers)
+  // Relay-only config overlay (not mounted into runtime containers)
   // Copy to telclaude-private.json and customize locally.
   //
   // JSON5 format - comments allowed, trailing commas OK

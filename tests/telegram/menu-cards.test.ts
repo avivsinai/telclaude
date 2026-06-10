@@ -47,7 +47,9 @@ describe("menu cards", () => {
 
 		const render = skillsMenuRenderer.render(card);
 		const buttonLabels =
-			render.keyboard?.inline_keyboard.flat().map((button) => ("text" in button ? button.text : "")) ?? [];
+			render.keyboard?.inline_keyboard
+				.flat()
+				.map((button) => ("text" in button ? button.text : "")) ?? [];
 		expect(buttonLabels).toEqual(["↻ Refresh"]);
 
 		const result = await skillsMenuRenderer.execute({

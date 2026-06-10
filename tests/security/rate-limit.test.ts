@@ -185,9 +185,7 @@ describe("RateLimiter", () => {
 				.prepare("SELECT limiter_type, window_start FROM rate_limits ORDER BY window_start")
 				.all() as Array<{ limiter_type: string; window_start: number }>;
 
-			expect(remaining).toEqual([
-				{ limiter_type: "multimedia_tts", window_start: twoHoursAgo },
-			]);
+			expect(remaining).toEqual([{ limiter_type: "multimedia_tts", window_start: twoHoursAgo }]);
 		});
 	});
 });

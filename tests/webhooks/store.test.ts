@@ -291,7 +291,9 @@ describe("webhook store", () => {
 		expect(calls).toBe(1);
 		expect(
 			getDb()
-				.prepare("SELECT background_job_id AS jobId FROM webhook_deliveries WHERE signature_digest = ?")
+				.prepare(
+					"SELECT background_job_id AS jobId FROM webhook_deliveries WHERE signature_digest = ?",
+				)
 				.get(digest),
 		).toMatchObject({ jobId: "job-heal" });
 	});

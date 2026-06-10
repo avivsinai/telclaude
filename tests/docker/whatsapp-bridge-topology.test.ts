@@ -41,23 +41,14 @@ describe("WhatsApp bridge Docker topology", () => {
 		const relay = serviceBlock(compose, "telclaude");
 		const whatsappNetwork = networkBlock(compose, "relay-whatsapp-net");
 
-		expect(relay).toContain(
-			"TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social",
-		);
+		expect(relay).toContain("TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude");
 		expect(relay).toContain(whatsappSidecarUrlEnv);
 		expect(relay).toContain("- relay-whatsapp-net");
 		expect(whatsappNetwork).toContain("name: telclaude-relay-whatsapp");
 		expect(whatsappNetwork).toContain("internal: true");
 		expect(relay?.match(internalHostsEnvPattern)?.[1]).not.toContain("whatsapp-bridge");
 
-		for (const service of [
-			"telclaude-agent",
-			"agent-social",
-			"google-services",
-			"totp",
-			"vault",
-			"tc-hermes-contained",
-		]) {
+		for (const service of ["google-services", "totp", "vault"]) {
 			expect(serviceBlock(compose, service) ?? "").not.toContain("- relay-whatsapp-net");
 		}
 	});
@@ -76,6 +67,6 @@ describe("WhatsApp bridge Docker topology", () => {
 
 		expect(hermesCompose).not.toContain("relay-whatsapp-net");
 		expect(hermesCompose).not.toContain("whatsapp-bridge");
-		expect(hermesCompose).toContain("telclaude-hermes-relay");
+		expect(hermesCompose).toContain("telclaude-hermes-private");
 	});
 });

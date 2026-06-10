@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { buildRpcAuthHeaders } from "../agent/token-client.js";
 import { type InternalResponseProof, verifyInternalResponseProof } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { buildRpcAuthHeaders } from "./rpc-auth-client.js";
 
 const logger = getChildLogger({ module: "relay-capabilities-client" });
 
@@ -78,17 +78,10 @@ type HermesPrivateRuntimeRelayProof = {
 
 type HermesPrivateRuntimeState = {
 	ok: true;
-	effectiveMode: "hermes" | "legacy";
-	effectiveValue: "1" | "0";
-	rolloutAllowed: boolean;
-	rolloutEnvValue?: string;
-	controlMode: "hermes" | "legacy";
-	controlSource:
-		| "env-disabled"
-		| "runtime-config"
-		| "runtime-config-default"
-		| "runtime-config-invalid";
-	fallbackPath: string;
+	effectiveMode: "hermes";
+	effectiveValue: "1";
+	controlMode: "hermes";
+	controlSource: "hermes-only";
 	relayProof: HermesPrivateRuntimeRelayProof;
 };
 
@@ -109,18 +102,10 @@ const InternalResponseProofSchema = z
 const HermesPrivateRuntimeStateSchema = z
 	.object({
 		ok: z.literal(true),
-		effectiveMode: z.enum(["hermes", "legacy"]),
-		effectiveValue: z.enum(["1", "0"]),
-		rolloutAllowed: z.boolean(),
-		rolloutEnvValue: z.string().optional(),
-		controlMode: z.enum(["hermes", "legacy"]),
-		controlSource: z.enum([
-			"env-disabled",
-			"runtime-config",
-			"runtime-config-default",
-			"runtime-config-invalid",
-		]),
-		fallbackPath: z.string().min(1),
+		effectiveMode: z.literal("hermes"),
+		effectiveValue: z.literal("1"),
+		controlMode: z.literal("hermes"),
+		controlSource: z.literal("hermes-only"),
 		relayProof: InternalResponseProofSchema,
 	})
 	.strict();
@@ -196,15 +181,6 @@ export async function relayGetHermesPrivateRuntimeState(): Promise<HermesPrivate
 	const path = "/v1/hermes.private-runtime.status";
 	const body = "{}";
 	const payload = await postJsonWithScope<unknown>(path, {}, "operator");
-	return parseHermesPrivateRuntimeState(payload, { method: "POST", path, body });
-}
-
-export async function relaySetHermesPrivateRuntimeMode(input: {
-	mode: "hermes" | "legacy";
-}): Promise<HermesPrivateRuntimeState> {
-	const path = "/v1/hermes.private-runtime.mode";
-	const body = JSON.stringify(input);
-	const payload = await postJsonWithScope<unknown>(path, input, "operator");
 	return parseHermesPrivateRuntimeState(payload, { method: "POST", path, body });
 }
 

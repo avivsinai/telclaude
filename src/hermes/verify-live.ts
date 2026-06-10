@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { StreamChunk } from "../sdk/client.js";
+import type { StreamChunk } from "../runtime/stream.js";
 import { TELCLAUDE_MCP_TOOL_NAMES } from "./mcp/policy.js";
 import { buildHermesPrivateRuntimeAdapterFromEnv } from "./private-execute.js";
 import {

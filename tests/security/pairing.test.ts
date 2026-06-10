@@ -180,18 +180,14 @@ describe("DM pairing", () => {
 			const found = requests.find((r) => r.userId === userId);
 			expect(found).toBeDefined();
 			expect(found!.codeHash).not.toBe(code);
-			expect(found!.codeHash).toBe(
-				crypto.createHash("sha256").update(code, "utf8").digest("hex"),
-			);
+			expect(found!.codeHash).toBe(crypto.createHash("sha256").update(code, "utf8").digest("hex"));
 		});
 
 		it("signs with pairing-v1 domain separator", async () => {
 			const userId = 7;
 			const chatId = 700;
 			const { code } = await createPairingCode({ userId, chatId });
-			const request = listPairingRequests({ status: "pending" }).find(
-				(r) => r.userId === userId,
-			)!;
+			const request = listPairingRequests({ status: "pending" }).find((r) => r.userId === userId)!;
 			const hash = crypto.createHash("sha256").update(code, "utf8").digest("hex");
 			const payload = `${userId}:${chatId}:${hash}`;
 			const okV1 = crypto.verify(
@@ -352,9 +348,7 @@ describe("DM pairing", () => {
 				);
 				expect(stillPending).toHaveLength(0);
 
-				const revoked = listPairingRequests({ status: "revoked" }).filter(
-					(r) => r.userId === user,
-				);
+				const revoked = listPairingRequests({ status: "revoked" }).filter((r) => r.userId === user);
 				expect(revoked).toHaveLength(2);
 			} finally {
 				vi.restoreAllMocks();
@@ -546,15 +540,15 @@ describe("DM pairing", () => {
 		});
 
 		it("formatPairingRateNotice returns distinct text per reason", () => {
-			expect(formatPairingRateNotice({ allowed: false, reason: "cooldown", retryAfterMs: 60_000 })).toContain(
-				"wait",
-			);
+			expect(
+				formatPairingRateNotice({ allowed: false, reason: "cooldown", retryAfterMs: 60_000 }),
+			).toContain("wait");
 			expect(
 				formatPairingRateNotice({ allowed: false, reason: "pending_limit", retryAfterMs: 60_000 }),
 			).toContain("maximum");
-			expect(formatPairingRateNotice({ allowed: false, reason: "lockout", retryAfterMs: 60_000 })).toContain(
-				"failed",
-			);
+			expect(
+				formatPairingRateNotice({ allowed: false, reason: "lockout", retryAfterMs: 60_000 }),
+			).toContain("failed");
 		});
 
 		it("createLocalPairingSigner round-trips a sign/verify", async () => {

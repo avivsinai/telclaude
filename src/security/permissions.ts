@@ -1,7 +1,7 @@
 /**
- * Permission tier system for controlling Claude's capabilities.
+ * Permission tier system for controlling runtime capabilities.
  *
- * Uses SDK allowedTools arrays instead of CLI flags.
+ * Uses tool permission arrays plus Hermes/relay policy gates.
  *
  * SECURITY NOTE ON WRITE_LOCAL:
  * The WRITE_LOCAL tier provides protection against *accidental* damage, NOT
@@ -10,7 +10,7 @@
  * - Modifying shell configs that execute on next session
  * - Using language interpreters to bypass bash restrictions
  *
- * For true isolation against malicious users, run the agent in a container
+ * For true isolation against malicious users, run runtime compute in a container
  * (Docker) or VM. WRITE_LOCAL is appropriate for trusted users who might
  * accidentally run dangerous commands.
  */
@@ -20,7 +20,7 @@ import { parse as shellParse } from "shell-quote";
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
-import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
+import { getSandboxMode } from "../sandbox/mode.js";
 import {
 	chatIdToString,
 	escapeRegex,
@@ -145,13 +145,12 @@ export function getUserPermissionTier(
 		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
 	}
 
-	// Note: In native mode, SDK sandbox provides isolation.
-	// In Docker mode, the container provides isolation.
-	// FULL_ACCESS is safe in both cases since there's always a security boundary.
-	if (tier === "FULL_ACCESS" && !shouldEnableSdkSandbox()) {
+	// FULL_ACCESS still requires the relay/Hermes boundary; this log only records
+	// the relay process posture.
+	if (tier === "FULL_ACCESS" && getSandboxMode() === "docker") {
 		logger.debug(
 			{ userId: normalizedId, tier },
-			"FULL_ACCESS granted (Docker mode - container provides isolation)",
+			"FULL_ACCESS granted (Docker relay mode - contained Hermes remains runtime boundary)",
 		);
 	}
 
@@ -582,9 +581,7 @@ function normalizePath(inputPath: string): string {
 function matchesSensitiveCredentialPath(inputPath: string): boolean {
 	const normalizedInput = normalizePath(inputPath);
 
-	// Exempt the Claude SDK's own temp directory (/tmp/claude-{uid}/).
-	// The SDK stores task output, session data, etc. there — blocking it
-	// breaks the Task tool which reads subagent output files.
+	// Exempt task-runtime temp directories used by managed subagent execution.
 	const uid = process.getuid?.();
 	if (uid !== undefined && normalizedInput.startsWith(`/tmp/claude-${uid}/`)) {
 		return false;
