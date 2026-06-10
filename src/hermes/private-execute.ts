@@ -6,6 +6,7 @@ import {
 	type HermesPrivateMcpAuthorityOptions,
 	type HermesPrivateRuntimeRequest,
 	type HermesRuntimeAdapter,
+	type HermesRuntimeMcpAuthorityActivation,
 } from "./private-runtime.js";
 import { readHermesPrivateRuntimeEffectiveState } from "./private-runtime-control.js";
 import { hermesSessionMap } from "./session-map.js";
@@ -31,6 +32,7 @@ export type HermesPrivateQueryOptions = {
 };
 
 let privateRuntimeAdapter: HermesRuntimeAdapter | null = null;
+let privateRuntimeMcpAuthorityActivation: HermesRuntimeMcpAuthorityActivation | null = null;
 
 export function shouldUseHermesPrivateRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
 	return readHermesPrivateRuntimeEffectiveState(env).effectiveMode === "hermes";
@@ -38,6 +40,12 @@ export function shouldUseHermesPrivateRuntime(env: NodeJS.ProcessEnv = process.e
 
 export function setHermesPrivateRuntimeAdapterForTest(adapter: HermesRuntimeAdapter | null): void {
 	privateRuntimeAdapter = adapter;
+}
+
+export function setHermesPrivateRuntimeMcpAuthorityActivation(
+	activation: HermesRuntimeMcpAuthorityActivation | null,
+): void {
+	privateRuntimeMcpAuthorityActivation = activation;
 }
 
 export function buildHermesPrivateRuntimeAdapterFromEnv(
@@ -125,6 +133,9 @@ export async function* executeHermesPrivateQuery(
 			runtime,
 			sessions: hermesSessionMap,
 			request,
+			...(privateRuntimeMcpAuthorityActivation
+				? { mcpAuthorityActivation: privateRuntimeMcpAuthorityActivation }
+				: {}),
 		});
 	} finally {
 		clearTimeout(timeout);

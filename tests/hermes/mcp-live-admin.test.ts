@@ -233,6 +233,7 @@ function config(
 		port: 0,
 		path: "/mcp",
 		networkName: "telclaude-hermes-relay",
+		runtimeTransportToken: "tc-live-mcp-runtime-token",
 		...overrides,
 	};
 }

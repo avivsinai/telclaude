@@ -21,6 +21,7 @@ import type {
 } from "./ledger-execute.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js";
 import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
+import { telclaudeMcpToolDefinitions } from "./tool-schemas.js";
 
 export const TELCLAUDE_LIVE_MCP_TRANSPORT = "http_relay_internal_network";
 export const TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER = "x-telclaude-live-mcp-observed-peer-address";
@@ -43,8 +44,8 @@ export type TelclaudeLiveMcpRelayClients = Omit<
 >;
 
 export type TelclaudeLiveMcpConnectionContext = {
-	readonly authorityHandle: string;
-	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly authorityHandle?: string;
+	readonly connection?: TelclaudeMcpAuthorityConnection;
 	readonly authority?: TelclaudeMcpAuthority;
 	readonly observedPeerAddress?: string;
 };
@@ -200,7 +201,7 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 
 			if (method === "tools/list") {
 				return jsonResult(id, {
-					tools: TELCLAUDE_MCP_TOOL_NAMES.map((name) => ({ name })),
+					tools: telclaudeMcpToolDefinitions(),
 				});
 			}
 
@@ -217,14 +218,13 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 				return jsonError(id, -32601, "MCP method denied");
 			}
 
-			if (!context) {
-				return jsonError(id, -32001, "MCP connection is not authorized");
-			}
-
 			const call = parseToolCall(params);
 			if (!call.ok) return jsonError(id, call.code, call.reason);
 			if (!isTelclaudeToolName(call.name)) {
 				return jsonError(id, -32601, "MCP tool denied");
+			}
+			if (!context?.authorityHandle || !context.connection) {
+				return jsonError(id, -32001, "MCP runtime authority is not active");
 			}
 			if (containsPrototypePollutionKey(call.args)) {
 				return jsonError(id, -32602, "MCP tools/call arguments contain forbidden prototype key");

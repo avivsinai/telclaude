@@ -24,5 +24,5 @@ export const TELCLAUDE_MCP_SERVER_POLICY = {
 } as const;
 
 export const TELCLAUDE_HERMES_MCP_SERVER_NAME = "telclaudeRelay";
-export const TELCLAUDE_HERMES_MCP_URL = "http://telclaude:8790/v1/hermes/mcp";
+export const TELCLAUDE_HERMES_MCP_URL = "http://telclaude:8793/mcp";
 export const TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV = "TELCLAUDE_HERMES_MCP_RELAY_TOKEN";

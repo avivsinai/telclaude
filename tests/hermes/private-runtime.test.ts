@@ -254,6 +254,78 @@ describe("Hermes private runtime seam", () => {
 		});
 	});
 
+	it("activates the live MCP transport authority only while the runtime is executing", async () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const sessions = new HermesSessionMap(() => "tc-session-1");
+		let activated:
+			| {
+					authorityHandle: string;
+					connection: NonNullable<HermesRuntimeRequest["mcpAuthority"]>["connection"];
+			  }
+			| undefined;
+		const revoked: Array<{ id: string; reason?: string; nowMs?: number }> = [];
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* (request) {
+				expect(activated).toMatchObject({
+					authorityHandle: request.mcpAuthority?.handle,
+					connection: request.mcpAuthority?.connection,
+				});
+				expect(revoked).toHaveLength(0);
+				yield { type: "done", response: "ok" };
+			},
+		};
+
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions,
+				mcpAuthorityRegistry: registry,
+				mcpAuthorityActivation: {
+					activate(input) {
+						activated = {
+							authorityHandle: input.authorityHandle,
+							connection: input.connection,
+						};
+						expect(
+							registry.resolve({
+								handle: input.authorityHandle,
+								connection: input.connection,
+								nowMs: 1_001,
+							}),
+						).toMatchObject({ ok: true });
+						return { id: "tc_mcp_active_test", expiresAtMs: 6_000 };
+					},
+					revoke(id, reason, nowMs) {
+						revoked.push({ id, reason, nowMs });
+						return true;
+					},
+				},
+				request: baseRequest({
+					mcpAuthority: {
+						providerScopes: ["calendar"],
+						endpointId: "endpoint-private",
+						networkNamespace: "netns-private",
+						ttlMs: 5_000,
+					},
+				}),
+				now: () => 1_000,
+			}),
+		);
+
+		expect(chunks.at(-1)).toMatchObject({
+			type: "done",
+			result: { response: "ok", success: true },
+		});
+		expect(activated?.authorityHandle).toMatch(/^tc_mcp_/);
+		expect(revoked).toEqual([
+			{
+				id: "tc_mcp_active_test",
+				reason: "Hermes private runtime completed",
+				nowMs: 1_000,
+			},
+		]);
+	});
+
 	it("rejects malformed private MCP turn refs before invoking the runtime", async () => {
 		let runtimeInvoked = false;
 		const runtime: HermesRuntimeAdapter = {

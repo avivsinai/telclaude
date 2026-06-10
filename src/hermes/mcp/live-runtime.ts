@@ -12,7 +12,11 @@ import type {
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
 	TelclaudeMcpSideEffectApprovalTokenResolver,
 } from "./ledger-execute.js";
-import { createTelclaudeLiveMcpConnectionResolver } from "./live-connection-resolver.js";
+import {
+	createTelclaudeLiveMcpConnectionResolver,
+	type TelclaudeLiveMcpRuntimeAuthorityActivation,
+	type TelclaudeLiveMcpRuntimeAuthorityActivationInput,
+} from "./live-connection-resolver.js";
 import {
 	listenTelclaudeLiveMcpRelayHttpServer,
 	type TelclaudeLiveMcpListenEndpoint,
@@ -44,6 +48,7 @@ export type TelclaudeLiveMcpRuntimeConfig = {
 	readonly path: string;
 	readonly networkName: string;
 	readonly allowedPeerAddresses?: readonly string[];
+	readonly runtimeTransportToken?: string;
 };
 
 export type TelclaudeLiveMcpRuntime = {
@@ -54,6 +59,12 @@ export type TelclaudeLiveMcpRuntime = {
 	issueProbeTokenBundle(
 		input: TelclaudeLiveMcpRuntimeProbeTokenInput,
 	): TelclaudeLiveMcpProbeTokenBundle;
+	activateRuntimeAuthority(
+		input: Omit<TelclaudeLiveMcpRuntimeAuthorityActivationInput, "peerAddress"> & {
+			readonly peerAddress?: string;
+		},
+	): TelclaudeLiveMcpRuntimeAuthorityActivation;
+	revokeRuntimeAuthority(id: string, reason?: string, nowMs?: number): boolean;
 	stop(): Promise<void>;
 };
 
@@ -112,6 +123,7 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 			path: DEFAULT_TELCLAUDE_LIVE_MCP_PATH,
 			networkName: DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
 			allowedPeerAddresses: undefined,
+			runtimeTransportToken: undefined,
 		};
 	}
 	const config = {
@@ -124,6 +136,7 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 			DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
 		),
 		allowedPeerAddresses: parsePeerAllowlist(env.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS),
+		runtimeTransportToken: requiredLiveMcpRelayToken(env.TELCLAUDE_HERMES_MCP_RELAY_TOKEN),
 	};
 	assertLiveMcpRuntimeConfig(config);
 	return config;
@@ -140,6 +153,7 @@ export async function startTelclaudeLiveMcpRuntime(
 		registry,
 		nowMs: options.nowMs,
 		allowedPeerAddresses: options.config.allowedPeerAddresses,
+		runtimeTransportToken: options.config.runtimeTransportToken,
 	});
 	const ledger =
 		options.ledger ??
@@ -202,6 +216,17 @@ export async function startTelclaudeLiveMcpRuntime(
 		registry,
 		ledger,
 		issueProbeTokenBundle,
+		activateRuntimeAuthority(input) {
+			if (stopped) throw new Error("live MCP runtime is stopped");
+			return resolver.activateRuntimeAuthority({
+				...input,
+				peerAddress:
+					input.peerAddress ?? singleAllowedPeerAddress(options.config.allowedPeerAddresses),
+			});
+		},
+		revokeRuntimeAuthority(id, reason, nowMs) {
+			return resolver.revokeRuntimeAuthority(id, reason, nowMs);
+		},
 		async stop() {
 			if (stopped) return;
 			stopped = true;
@@ -253,6 +278,12 @@ function disabledRuntime(): TelclaudeLiveMcpRuntime {
 		issueProbeTokenBundle() {
 			throw new Error("live MCP runtime is disabled");
 		},
+		activateRuntimeAuthority() {
+			throw new Error("live MCP runtime is disabled");
+		},
+		revokeRuntimeAuthority() {
+			return false;
+		},
 		async stop() {
 			// no-op
 		},
@@ -282,6 +313,14 @@ function nonEmptyEnv(value: string | undefined, fallback: string): string {
 	return trimmed && trimmed.length > 0 ? trimmed : fallback;
 }
 
+function requiredLiveMcpRelayToken(value: string | undefined): string {
+	const trimmed = value?.trim();
+	if (!trimmed) {
+		throw new Error("TELCLAUDE_HERMES_MCP_RELAY_TOKEN is required when live MCP is enabled");
+	}
+	return trimmed;
+}
+
 function csv(value: string | undefined): string[] | undefined {
 	const entries = (value ?? "")
 		.split(",")
@@ -305,6 +344,9 @@ function parsePeerAllowlist(value: string | undefined): string[] | undefined {
 function assertLiveMcpRuntimeConfig(config: TelclaudeLiveMcpRuntimeConfig): void {
 	assertLiveMcpBindHost(config);
 	assertPeerAllowlistForBindHost(config);
+	if (config.enabled && !config.runtimeTransportToken?.trim()) {
+		throw new Error("TELCLAUDE_HERMES_MCP_RELAY_TOKEN is required when live MCP is enabled");
+	}
 }
 
 function assertLiveMcpBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
@@ -337,6 +379,10 @@ function requiresPeerAllowlist(host: string): boolean {
 
 function normalizeHostAddress(host: string): string {
 	return normalizePeerAddress(host.trim().replace(/^\[(.*)\]$/, "$1"));
+}
+
+function singleAllowedPeerAddress(values: readonly string[] | undefined): string | undefined {
+	return values?.length === 1 ? values[0] : undefined;
 }
 
 function normalizePeerAddress(value: string): string {

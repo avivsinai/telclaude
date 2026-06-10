@@ -87,6 +87,16 @@ export type HermesRuntimeMcpAuthorityGrant = {
 	readonly expiresAtMs: number;
 };
 
+export type HermesRuntimeMcpAuthorityActivation = {
+	activate(input: {
+		readonly authorityHandle: string;
+		readonly connection: TelclaudeMcpAuthorityConnection;
+		readonly nowMs?: number;
+		readonly ttlMs?: number;
+	}): { readonly id: string; readonly expiresAtMs: number };
+	revoke(id: string, reason?: string, nowMs?: number): boolean;
+};
+
 export type HermesPrivateMcpAuthorityOptions = {
 	readonly domain?: TelclaudeMcpDomain;
 	readonly memorySource?: MemorySource;
@@ -244,6 +254,7 @@ export async function* executeHermesPrivateRuntime(input: {
 	sessions: HermesSessionMap;
 	request: HermesPrivateRuntimeRequest;
 	mcpAuthorityRegistry?: TelclaudeMcpAuthorityRegistry;
+	mcpAuthorityActivation?: HermesRuntimeMcpAuthorityActivation;
 	now?: () => number;
 }): AsyncGenerator<StreamChunk, void, unknown> {
 	const now = input.now ?? Date.now;
@@ -257,6 +268,7 @@ export async function* executeHermesPrivateRuntime(input: {
 	});
 	const { mcpAuthority: mcpAuthorityOptions, ...requestWithoutPrivateAuthority } = input.request;
 	let mcpAuthorityHandle: string | undefined;
+	let mcpAuthorityActivationId: string | undefined;
 	let runtimeRequest: HermesRuntimeRequest;
 	try {
 		const mcpAuthority = buildPrivateMcpAuthority(input.request, mcpAuthorityOptions);
@@ -273,6 +285,13 @@ export async function* executeHermesPrivateRuntime(input: {
 			ttlMs: mcpAuthorityOptions?.ttlMs,
 		});
 		mcpAuthorityHandle = grant.handle;
+		const activation = input.mcpAuthorityActivation?.activate({
+			authorityHandle: grant.handle,
+			connection,
+			nowMs: startedAt,
+			ttlMs: runtimeAuthorityActivationTtlMs(input.request, mcpAuthorityOptions),
+		});
+		mcpAuthorityActivationId = activation?.id;
 		runtimeRequest = {
 			...requestWithoutPrivateAuthority,
 			telclaudeSessionId: record.telclaudeSessionId,
@@ -284,6 +303,17 @@ export async function* executeHermesPrivateRuntime(input: {
 			},
 		};
 	} catch (error) {
+		if (mcpAuthorityActivationId) {
+			tryRevokeMcpAuthorityActivation(
+				input.mcpAuthorityActivation,
+				mcpAuthorityActivationId,
+				"Hermes private runtime setup failed",
+				now(),
+			);
+		}
+		if (mcpAuthorityHandle) {
+			registry.revoke(mcpAuthorityHandle, "Hermes private runtime setup failed", now());
+		}
 		const message = redactHermesRuntimeText(error instanceof Error ? error.message : String(error));
 		yield {
 			type: "done",
@@ -373,10 +403,40 @@ export async function* executeHermesPrivateRuntime(input: {
 			},
 		};
 	} finally {
+		if (mcpAuthorityActivationId) {
+			tryRevokeMcpAuthorityActivation(
+				input.mcpAuthorityActivation,
+				mcpAuthorityActivationId,
+				"Hermes private runtime completed",
+				now(),
+			);
+		}
 		if (mcpAuthorityHandle) {
 			registry.revoke(mcpAuthorityHandle, "Hermes private runtime completed", now());
 		}
 	}
+}
+
+function tryRevokeMcpAuthorityActivation(
+	activation: HermesRuntimeMcpAuthorityActivation | undefined,
+	id: string,
+	reason: string,
+	nowMs: number,
+): void {
+	try {
+		activation?.revoke(id, reason, nowMs);
+	} catch {
+		// Registry revocation is the durable cleanup; activation adapters must not block it.
+	}
+}
+
+function runtimeAuthorityActivationTtlMs(
+	request: HermesPrivateRuntimeRequest,
+	options: HermesPrivateMcpAuthorityOptions | undefined,
+): number | undefined {
+	if (options?.ttlMs !== undefined) return options.ttlMs;
+	if (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0) return undefined;
+	return Math.trunc(request.timeoutMs) + 30_000;
 }
 
 function buildPrivateMcpAuthority(

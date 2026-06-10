@@ -14,6 +14,7 @@ import {
 	generateTelclaudeMcpSideEffectApprovalToken,
 	TelclaudeMcpSideEffectJtiStore,
 } from "../hermes/mcp/approval-token.js";
+import { hermesMcpAuthorityRegistry } from "../hermes/mcp/authority-registry.js";
 import type { TelclaudeMcpSideEffectApprovalTokenResolver } from "../hermes/mcp/ledger-execute.js";
 import {
 	createTelclaudeLiveMcpProbeAdminStarter,
@@ -31,6 +32,7 @@ import {
 import { createGoogleProviderSidecarApprovalTokenIssuer } from "../hermes/mcp/provider-sidecar-token.js";
 import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effect-human-approval.js";
 import { createTelclaudeMcpSideEffectLedger } from "../hermes/mcp/side-effect-ledger.js";
+import { setHermesPrivateRuntimeMcpAuthorityActivation } from "../hermes/private-execute.js";
 import { createRelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
@@ -378,6 +380,7 @@ export function registerRelayCommand(program: Command): void {
 				});
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: liveMcpRuntimeConfig,
+					registry: hermesMcpAuthorityRegistry,
 					ledger: liveMcpLedger,
 					sideEffectApprovalTokenResolver:
 						liveMcpSideEffectApprovals?.sideEffectApprovalTokenResolver,
@@ -437,11 +440,16 @@ export function registerRelayCommand(program: Command): void {
 					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),
 				});
 				if (liveMcpRuntime.enabled && liveMcpRuntime.endpoint) {
+					setHermesPrivateRuntimeMcpAuthorityActivation({
+						activate: (input) => liveMcpRuntime.activateRuntimeAuthority(input),
+						revoke: (id, reason, nowMs) => liveMcpRuntime.revokeRuntimeAuthority(id, reason, nowMs),
+					});
 					schedulerHandles.push({
 						stop: async () => {
 							try {
 								await liveMcpRuntime.stop();
 							} finally {
+								setHermesPrivateRuntimeMcpAuthorityActivation(null);
 								liveMcpSideEffectApprovals?.close();
 							}
 						},
@@ -472,6 +480,7 @@ export function registerRelayCommand(program: Command): void {
 						}`,
 					);
 				} else {
+					setHermesPrivateRuntimeMcpAuthorityActivation(null);
 					console.log("  Hermes live MCP: disabled");
 				}
 

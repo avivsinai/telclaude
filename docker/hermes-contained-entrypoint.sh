@@ -39,6 +39,8 @@ CODEX_PROVIDER=${HERMES_INFERENCE_PROVIDER:-}
 CODEX_MODEL=${HERMES_INFERENCE_MODEL:-}
 CODEX_BASE_URL=${HERMES_CODEX_BASE_URL:-}
 CODEX_RELAY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:-}
+TELCLAUDE_MCP_URL=${TELCLAUDE_HERMES_MCP_URL:-http://telclaude:8793/mcp}
+TELCLAUDE_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:-}
 
 [ -d "$SOURCE_SKILLS_DIR" ] || die "source skills directory missing: $SOURCE_SKILLS_DIR"
 [ -f "$ALLOWLIST_PATH" ] || die "skill allowlist missing: $ALLOWLIST_PATH"
@@ -140,9 +142,17 @@ if [ "$CODEX_PROVIDER" = "openai-codex" ]; then
 	[ "$CODEX_BASE_URL" = "http://telclaude:8790/v1/openai-codex-proxy" ] || \
 		die "HERMES_CODEX_BASE_URL must point at the Telclaude OpenAI Codex relay proxy"
 	[ -n "$CODEX_RELAY_TOKEN" ] || die "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN is required"
+	[ -n "$TELCLAUDE_MCP_RELAY_TOKEN" ] || die "TELCLAUDE_HERMES_MCP_RELAY_TOKEN is required"
+	[ "$TELCLAUDE_MCP_URL" = "http://telclaude:8793/mcp" ] || \
+		die "TELCLAUDE_HERMES_MCP_URL must point at the Telclaude live MCP relay"
 	case "$CODEX_RELAY_TOKEN" in
 		*[!A-Za-z0-9._~+/@:=,-]*)
 			die "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN contains unsupported characters"
+			;;
+	esac
+	case "$TELCLAUDE_MCP_RELAY_TOKEN" in
+		*[!A-Za-z0-9._~+/@:=,-]*)
+			die "TELCLAUDE_HERMES_MCP_RELAY_TOKEN contains unsupported characters"
 			;;
 	esac
 	case "$CODEX_MODEL" in
@@ -165,12 +175,39 @@ model:
   openai_runtime: auto
 skills:
   creation_nudge_interval: 0
+mcp_servers:
+  telclaudeRelay:
+    type: http
+    url: ${TELCLAUDE_MCP_URL}
+    headers:
+      Authorization: "Bearer ${TELCLAUDE_MCP_RELAY_TOKEN}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+    supports_parallel_tool_calls: false
+    tools:
+      include:
+        - tc_provider_read
+        - tc_provider_prepare_write
+        - tc_provider_execute_write
+        - tc_memory_search
+        - tc_memory_write
+        - tc_attachment_get
+        - tc_outbound_prepare
+        - tc_outbound_execute
+        - tc_audit_note
+      exclude: []
+      resources: false
+      prompts: false
+    sampling:
+      enabled: false
 EOF
 	cat > "${HERMES_HOME}/secret-manifest.json" <<'EOF'
 {
   "schemaVersion": 1,
   "rawCredentialPolicy": "relay-owned-only",
-  "relayTokenBinding": "run-peer-bound"
+  "relayTokenBinding": "run-peer-bound",
+  "mcpTransportTokenBinding": "contained-peer-active-authority"
 }
 EOF
 	tmp_auth="${HERMES_HOME}/auth.json.tmp.$$"
@@ -217,7 +254,7 @@ EOF
 	else
 		chmod 600 "${HERMES_HOME}/config.yaml" "${HERMES_HOME}/secret-manifest.json" "${HERMES_HOME}/auth.json"
 	fi
-	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE
+	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE TELCLAUDE_HERMES_MCP_RELAY_TOKEN TELCLAUDE_MCP_RELAY_TOKEN
 fi
 
 if [ "$(id -u)" = "0" ]; then

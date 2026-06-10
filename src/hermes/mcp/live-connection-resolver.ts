@@ -19,6 +19,15 @@ export type TelclaudeLiveMcpConnectionGrant = {
 	readonly peerAddress?: string;
 };
 
+export type TelclaudeLiveMcpRuntimeAuthorityActivation = {
+	readonly id: string;
+	readonly authorityHandle: string;
+	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly issuedAtMs: number;
+	readonly expiresAtMs: number;
+	readonly peerAddress?: string;
+};
+
 export type TelclaudeLiveMcpConnectionIssueInput = {
 	readonly authorityHandle: string;
 	readonly connection: TelclaudeMcpAuthorityConnection;
@@ -32,11 +41,23 @@ export type TelclaudeLiveMcpProbePeerBypassIssueInput = TelclaudeLiveMcpConnecti
 	readonly probePurpose: "off-domain-peer-negative-control";
 };
 
+export type TelclaudeLiveMcpRuntimeAuthorityActivationInput = {
+	readonly authorityHandle: string;
+	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly nowMs?: number;
+	readonly ttlMs?: number;
+	readonly peerAddress?: string;
+};
+
 export type TelclaudeLiveMcpConnectionResolver = {
 	issue(input: TelclaudeLiveMcpConnectionIssueInput): TelclaudeLiveMcpConnectionGrant;
 	issueProbePeerBypass(
 		input: TelclaudeLiveMcpProbePeerBypassIssueInput,
 	): TelclaudeLiveMcpConnectionGrant;
+	activateRuntimeAuthority(
+		input: TelclaudeLiveMcpRuntimeAuthorityActivationInput,
+	): TelclaudeLiveMcpRuntimeAuthorityActivation;
+	revokeRuntimeAuthority(id: string, reason?: string, nowMs?: number): boolean;
 	resolveConnection(request: http.IncomingMessage): TelclaudeLiveMcpConnectionContext | null;
 	revoke(token: string, reason?: string, nowMs?: number): boolean;
 	revokeConnection(
@@ -52,6 +73,7 @@ export type CreateTelclaudeLiveMcpConnectionResolverOptions = {
 	readonly registry: TelclaudeMcpAuthorityRegistry;
 	readonly nowMs?: () => number;
 	readonly allowedPeerAddresses?: readonly string[];
+	readonly runtimeTransportToken?: string;
 };
 
 type ConnectionTokenRecord = {
@@ -65,11 +87,26 @@ type ConnectionTokenRecord = {
 	revokeReason?: string;
 };
 
+type RuntimeAuthorityActivationRecord = {
+	readonly id: string;
+	readonly authorityHandle: string;
+	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly issuedAtMs: number;
+	readonly expiresAtMs: number;
+	readonly peerAddress?: string;
+	revokedAtMs?: number;
+	revokeReason?: string;
+};
+
 export function createTelclaudeLiveMcpConnectionResolver(
 	options: CreateTelclaudeLiveMcpConnectionResolverOptions,
 ): TelclaudeLiveMcpConnectionResolver {
 	const records = new Map<string, ConnectionTokenRecord>();
+	const runtimeAuthorityActivations = new Map<string, RuntimeAuthorityActivationRecord>();
 	const allowedPeers = normalizedPeerSet(options.allowedPeerAddresses);
+	const runtimeTransportTokenHash = normalizeRuntimeTransportTokenHash(
+		options.runtimeTransportToken,
+	);
 	const now = () => normalizeNowMs(options.nowMs?.() ?? Date.now());
 
 	function issueConnectionGrant(
@@ -116,10 +153,55 @@ export function createTelclaudeLiveMcpConnectionResolver(
 			return issueConnectionGrant(input, true);
 		},
 
+		activateRuntimeAuthority(input) {
+			if (!runtimeTransportTokenHash) {
+				throw new Error("live MCP runtime transport token is not configured");
+			}
+			const issuedAtMs = normalizeNowMs(input.nowMs ?? now());
+			const ttlMs = normalizeTtlMs(input.ttlMs ?? DEFAULT_LIVE_MCP_CONNECTION_TTL_MS);
+			const token = `tc_mcp_active_${crypto.randomBytes(18).toString("base64url")}`;
+			const connection = normalizeConnection(input.connection);
+			const authorityHandle = requiredTrimmed(input.authorityHandle, "authorityHandle");
+			const peerAddress = normalizeOptionalIssuePeerAddress(input.peerAddress);
+			if (peerAddress && allowedPeers && !allowedPeers.has(peerAddress)) {
+				throw new Error("live MCP runtime peerAddress is not in allowedPeerAddresses");
+			}
+			const record: RuntimeAuthorityActivationRecord = {
+				id: token,
+				authorityHandle,
+				connection,
+				issuedAtMs,
+				expiresAtMs: issuedAtMs + ttlMs,
+				...(peerAddress ? { peerAddress } : {}),
+			};
+			runtimeAuthorityActivations.set(token, record);
+			return {
+				id: token,
+				authorityHandle,
+				connection,
+				issuedAtMs,
+				expiresAtMs: issuedAtMs + ttlMs,
+				...(peerAddress ? { peerAddress } : {}),
+			};
+		},
+
+		revokeRuntimeAuthority(id, reason, nowMs = now()) {
+			const record = runtimeAuthorityActivations.get(id.trim());
+			if (!record || record.revokedAtMs !== undefined) return false;
+			record.revokedAtMs = normalizeNowMs(nowMs);
+			if (reason?.trim()) record.revokeReason = reason.trim();
+			return true;
+		},
+
 		resolveConnection(request) {
 			const peerAddress = normalizeOptionalPeerAddress(request.socket.remoteAddress);
 			const token = extractBearerToken(request.headers.authorization);
 			if (!token) return null;
+
+			if (runtimeTransportTokenHash && hashToken(token) === runtimeTransportTokenHash) {
+				return resolveRuntimeTransportAuthority(peerAddress);
+			}
+			if (!token.startsWith(TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX)) return null;
 
 			const record = records.get(hashToken(token));
 			if (!record) return null;
@@ -179,13 +261,52 @@ export function createTelclaudeLiveMcpConnectionResolver(
 					removed += 1;
 				}
 			}
+			for (const [id, record] of runtimeAuthorityActivations) {
+				if (record.expiresAtMs <= resolvedNow) {
+					runtimeAuthorityActivations.delete(id);
+					removed += 1;
+				}
+			}
 			return removed;
 		},
 
 		clear() {
 			records.clear();
+			runtimeAuthorityActivations.clear();
 		},
 	};
+
+	function resolveRuntimeTransportAuthority(
+		peerAddress: string | undefined,
+	): TelclaudeLiveMcpConnectionContext | null {
+		const resolvedNow = now();
+		if (!peerAllowed(peerAddress, allowedPeers)) return null;
+		const active = [...runtimeAuthorityActivations.values()].filter((record) => {
+			if (record.revokedAtMs !== undefined || record.expiresAtMs <= resolvedNow) return false;
+			return record.peerAddress ? record.peerAddress === peerAddress : true;
+		});
+		if (active.length !== 1) {
+			return {
+				...(peerAddress ? { observedPeerAddress: peerAddress } : {}),
+			};
+		}
+		const record = active[0];
+		if (!record) return null;
+
+		const authority = options.registry.resolve({
+			handle: record.authorityHandle,
+			connection: record.connection,
+			nowMs: resolvedNow,
+		});
+		if (!authority.ok) return null;
+
+		return {
+			authorityHandle: record.authorityHandle,
+			connection: { ...record.connection },
+			authority: authority.authority,
+			...(peerAddress ? { observedPeerAddress: peerAddress } : {}),
+		};
+	}
 }
 
 function createConnectionToken(): string {
@@ -197,7 +318,7 @@ function extractBearerToken(headerValue: string | string[] | undefined): string 
 	const match = headerValue.trim().match(/^Bearer\s+(.+)$/i);
 	if (!match) return null;
 	const token = match[1]?.trim();
-	return token?.startsWith(TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX) ? token : null;
+	return token && token.length > 0 ? token : null;
 }
 
 function hashToken(token: string): string {
@@ -253,7 +374,18 @@ function normalizeRequiredIpAddress(value: string, field: string): string {
 }
 
 function peerAllowed(peerAddress: string | undefined, allowedPeers: Set<string> | null): boolean {
-	return !!peerAddress && !!allowedPeers && allowedPeers.has(peerAddress);
+	if (!peerAddress) return false;
+	if (allowedPeers) return allowedPeers.has(peerAddress);
+	return isLoopbackIp(peerAddress);
+}
+
+function isLoopbackIp(peerAddress: string): boolean {
+	return peerAddress === "::1" || peerAddress === "127.0.0.1" || /^127\./.test(peerAddress);
+}
+
+function normalizeRuntimeTransportTokenHash(token: string | undefined): string | null {
+	const trimmed = token?.trim();
+	return trimmed ? hashToken(trimmed) : null;
 }
 
 function sameConnection(

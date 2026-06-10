@@ -74,7 +74,9 @@ describe("Telclaude live MCP relay-side server", () => {
 		);
 		expect(initialize.capabilities).toEqual({ tools: { listChanged: false } });
 
-		const tools = resultOf<{ tools: Array<{ name: string }> }>(
+		const tools = resultOf<{
+			tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+		}>(
 			await harness.server.handleJsonRpc({
 				jsonrpc: "2.0",
 				id: "tools",
@@ -82,6 +84,28 @@ describe("Telclaude live MCP relay-side server", () => {
 			}),
 		);
 		expect(tools.tools.map((tool) => tool.name)).toEqual([...TELCLAUDE_MCP_TOOL_NAMES]);
+		expect(tools.tools).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "tc_provider_read",
+					description: expect.stringContaining("provider"),
+					inputSchema: expect.objectContaining({
+						type: "object",
+						required: ["service", "action"],
+						properties: expect.objectContaining({
+							service: expect.objectContaining({ type: "string" }),
+							action: expect.objectContaining({ type: "string" }),
+						}),
+					}),
+				}),
+				expect.objectContaining({
+					name: "tc_memory_write",
+					inputSchema: expect.objectContaining({
+						required: ["id", "category", "content"],
+					}),
+				}),
+			]),
+		);
 
 		await expectEmptySurface(harness.server.handleJsonRpc(rpc("resources/list")));
 		await expectEmptySurface(harness.server.handleJsonRpc(rpc("prompts/list")));

@@ -201,6 +201,7 @@ describe("Telclaude live MCP runtime", () => {
 			path: "/mcp",
 			networkName: "telclaude-hermes-relay",
 			allowedPeerAddresses: undefined,
+			runtimeTransportToken: undefined,
 		};
 
 		expect(readTelclaudeLiveMcpRuntimeConfig({})).toEqual(disabledConfig);
@@ -218,6 +219,7 @@ describe("Telclaude live MCP runtime", () => {
 				TELCLAUDE_HERMES_LIVE_MCP_PATH: "mcp",
 				TELCLAUDE_HERMES_LIVE_MCP_NETWORK: "tc-net",
 				TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS: "10.0.0.5, 10.0.0.6",
+				TELCLAUDE_HERMES_MCP_RELAY_TOKEN: "tc-live-mcp-runtime-token",
 			}),
 		).toEqual({
 			enabled: true,
@@ -226,6 +228,7 @@ describe("Telclaude live MCP runtime", () => {
 			path: "/mcp",
 			networkName: "tc-net",
 			allowedPeerAddresses: ["10.0.0.5", "10.0.0.6"],
+			runtimeTransportToken: "tc-live-mcp-runtime-token",
 		});
 		expect(() =>
 			readTelclaudeLiveMcpRuntimeConfig({
@@ -237,6 +240,7 @@ describe("Telclaude live MCP runtime", () => {
 			readTelclaudeLiveMcpRuntimeConfig({
 				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
 				TELCLAUDE_HERMES_LIVE_MCP_HOST: "10.0.0.4",
+				TELCLAUDE_HERMES_MCP_RELAY_TOKEN: "tc-live-mcp-runtime-token",
 			}),
 		).toThrow("TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS is required");
 		for (const host of ["0.0.0.0", "::", "[::]"]) {
@@ -245,6 +249,7 @@ describe("Telclaude live MCP runtime", () => {
 					TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
 					TELCLAUDE_HERMES_LIVE_MCP_HOST: host,
 					TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS: "10.0.0.5",
+					TELCLAUDE_HERMES_MCP_RELAY_TOKEN: "tc-live-mcp-runtime-token",
 				}),
 			).toThrow("TELCLAUDE_HERMES_LIVE_MCP_HOST must not bind");
 		}
@@ -258,8 +263,158 @@ describe("Telclaude live MCP runtime", () => {
 		expect(
 			readTelclaudeLiveMcpRuntimeConfig({
 				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+				TELCLAUDE_HERMES_MCP_RELAY_TOKEN: "tc-live-mcp-runtime-token",
 			}).allowedPeerAddresses,
 		).toBeUndefined();
+		expect(() =>
+			readTelclaudeLiveMcpRuntimeConfig({
+				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+			}),
+		).toThrow("TELCLAUDE_HERMES_MCP_RELAY_TOKEN is required");
+	});
+
+	it("maps the contained transport bearer to exactly one active runtime authority", async () => {
+		const runtime = await startTelclaudeLiveMcpRuntime({
+			config: config({ runtimeTransportToken: "tc-contained-mcp-transport-token" }),
+			nowMs: () => 2_000,
+		});
+		try {
+			if (!runtime.registry) throw new Error("runtime registry missing");
+			const startupDiscovery = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				{
+					jsonrpc: "2.0",
+					id: "startup-tools",
+					method: "tools/list",
+				},
+			);
+			expect(startupDiscovery.httpStatus).toBe(200);
+			expect(startupDiscovery.body).toMatchObject({
+				result: {
+					tools: expect.arrayContaining([expect.objectContaining({ name: "tc_provider_read" })]),
+				},
+			});
+
+			const idleToolCall = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				providerReadCall("idle-call"),
+			);
+			expect(idleToolCall).toMatchObject({
+				httpStatus: 200,
+				body: { error: { code: -32001, message: "MCP runtime authority is not active" } },
+			});
+
+			const grant = runtime.registry.register({
+				connection: connection(),
+				authority: authority(),
+				nowMs: 1_000,
+				ttlMs: 60_000,
+			});
+			const activation = runtime.activateRuntimeAuthority({
+				authorityHandle: grant.handle,
+				connection: connection(),
+				nowMs: 1_000,
+				ttlMs: 60_000,
+			});
+
+			const listed = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				{
+					jsonrpc: "2.0",
+					id: "tools",
+					method: "tools/list",
+				},
+			);
+			expect(listed).toMatchObject({
+				httpStatus: 200,
+				body: {
+					result: {
+						tools: expect.arrayContaining([
+							expect.objectContaining({
+								name: "tc_provider_read",
+								inputSchema: expect.objectContaining({
+									type: "object",
+									required: ["service", "action"],
+								}),
+							}),
+						]),
+					},
+				},
+			});
+			const activeToolCall = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				providerReadCall("active-call"),
+			);
+			expect(activeToolCall).toMatchObject({
+				httpStatus: 200,
+				body: {
+					error: {
+						code: -32001,
+						message: expect.stringContaining("live MCP relay client adapter is not configured"),
+					},
+				},
+			});
+
+			const secondGrant = runtime.registry.register({
+				connection: connection({ sessionKey: "telegram:ops-2" }),
+				authority: authority(),
+				nowMs: 1_000,
+				ttlMs: 60_000,
+			});
+			const secondActivation = runtime.activateRuntimeAuthority({
+				authorityHandle: secondGrant.handle,
+				connection: connection({ sessionKey: "telegram:ops-2" }),
+				nowMs: 1_000,
+				ttlMs: 60_000,
+			});
+			const ambiguous = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				{
+					jsonrpc: "2.0",
+					id: "ambiguous",
+					method: "tools/list",
+				},
+			);
+			expect(ambiguous).toMatchObject({
+				httpStatus: 200,
+				body: {
+					result: {
+						tools: expect.arrayContaining([expect.objectContaining({ name: "tc_provider_read" })]),
+					},
+				},
+			});
+			const ambiguousToolCall = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				providerReadCall("ambiguous-call"),
+			);
+			expect(ambiguousToolCall).toMatchObject({
+				httpStatus: 200,
+				body: { error: { code: -32001, message: "MCP runtime authority is not active" } },
+			});
+
+			expect(runtime.revokeRuntimeAuthority(secondActivation.id, "test complete", 1_500)).toBe(
+				true,
+			);
+			const unambiguous = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				{
+					jsonrpc: "2.0",
+					id: "unambiguous",
+					method: "tools/list",
+				},
+			);
+			expect(unambiguous.httpStatus).toBe(200);
+			expect(runtime.revokeRuntimeAuthority(activation.id, "test complete", 1_500)).toBe(true);
+		} finally {
+			await runtime.stop();
+		}
 	});
 });
 
@@ -272,7 +427,24 @@ function config(
 		port: 0,
 		path: "/mcp",
 		networkName: "telclaude-hermes-relay",
+		runtimeTransportToken: "tc-live-mcp-runtime-token",
 		...overrides,
+	};
+}
+
+function providerReadCall(id: string): Record<string, unknown> {
+	return {
+		jsonrpc: "2.0",
+		id,
+		method: "tools/call",
+		params: {
+			name: "tc_provider_read",
+			arguments: {
+				service: "bank",
+				action: "balances.list",
+				params: {},
+			},
+		},
 	};
 }
 
