@@ -826,12 +826,12 @@ export async function refineSocialDraftText(params: {
 		serviceId,
 	);
 
-	const poolKey = `${serviceId}:draft-refine:${draft.id}`;
+	const runtimeSessionId = ["social", serviceId, "draft-refine", draft.id].join(":");
 	const stream = executeHermesQuery(bundle.prompt, {
 		cwd: resolveHermesSocialWorkdir(serviceId),
 		tier: "SOCIAL",
-		poolKey,
-		telclaudeSessionId: poolKey,
+		poolKey: runtimeSessionId,
+		telclaudeSessionId: runtimeSessionId,
 		profileId: `social:${serviceId}`,
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
