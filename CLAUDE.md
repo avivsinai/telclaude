@@ -5,7 +5,7 @@
 ## Intent
 - Status: alpha (0.x); breaking changes allowed until 1.0.
 - Goal: keep this file lean for project memory; use imports for depth.
-- Hermes wrapper: telclaude is becoming a pristine **no-fork wrapper** around upstream Hermes (pinned `nousresearch/hermes-agent`), not a fork or patch set. The relay stays the security envelope; the private runtime can route to a contained Hermes process via the relay-owned MCP bridge instead of the Claude SDK. Production cutover is all-or-nothing per workflow bundle, gated by strict parity + no-fork proof (`src/hermes/`, `telclaude hermes cutover-check`).
+- Hermes wrapper: telclaude is a pristine **no-fork wrapper** around upstream Hermes (pinned `nousresearch/hermes-agent`), not a fork or patch set. The wrapper is live in production: the relay stays the security envelope and routes the private runtime to a contained Hermes process via the relay-owned MCP bridge, with the Claude SDK path (`legacy`) as the rollback mode. Production cutover is all-or-nothing per workflow bundle, gated by strict parity + no-fork proof (`src/hermes/`, `telclaude hermes cutover-check`).
 
 ## Ground rules
 - Write clean TypeScript; remove dead code.
@@ -83,6 +83,13 @@
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
 - `src/hermes/` — no-fork Hermes wrapper: `foundation` (artifact schemas + `evaluateCutoverCheck`), `parity-roster` (canonical parity rows + descope), `no-fork-proof` / `no-fork-attestation` (pinned-checkout-clean proof + runner attestation), `inventory`, `private-runtime` / `private-execute` / `private-runtime-control` (relay-driven hermes|legacy mode), `api-adapter` (`HermesApiRuntimeAdapter` → contained Hermes API server), `api-server-containment`, `relay-conversation-store` / `session-map` (relay-owned conversation + session authority), `model-relay`, `approval-continuation*`, edge probes (`edge-adapter-contract` with `PreparedOutbound`/`AttachmentRef`/`DeliveryReceipt`, `edge-adapter-runtime`/`-probes`/`-attestation`), `served-mcp-*` (memory/provider/containment evidence + attestations), `skills-allowlist-*`, `network-probe*`, `provider-*-probe`, `workflow-*` / `*-ledger*` (run + side-effect ledgers), `rollback-rehearsal`, `pro-review`, `attestation-validation`.
 - `src/hermes/mcp/` — relay-owned MCP bridge (NOT an agent tool allowlist): `live-server` / `live-runtime` / `live-listen` (relay-internal HTTP `/mcp`, 9 `tc_*` tools), `authority-registry` (opaque handle ↔ actor/domain/scope binding), `bridge` (per-connection request validation + dispatch), `side-effect-ledger` (+`-attestation`/`-probe`) (two-phase prepare→approve→execute for provider/outbound side effects), `approval-token` (Ed25519 one-time JTI side-effect tokens), `side-effect-human-approval`, `ledger-execute`, `provider-routing` / `provider-sidecar-token`, `live-connection-resolver` / `live-admin` / `live-probe-tokens` (connection auth + adversarial probe tokens), `policy`.
+- `src/background/` — background job host + store (codex work units, cron runs).
+- `src/agent-runtime/` — agent-side codex work-unit executor + runtime status.
+- `src/curator/` — curator inbox: store, collectors, actions, signed producer auth.
+- `src/webhooks/` — signed webhook ingress (auth, CIDR policy).
+- `src/dashboard/` — local loopback-only web dashboard.
+- `src/crypto/` — canonical hashing, encrypted file store, keytar store.
+- `src/skills/` — persona skill loading; `src/status/` — persona status.
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
 - `.claude/skills/` and `.agents/skills/` — operator skills, including codex-work-unit, security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
 - `docs/architecture.md` — design rationale & security invariants.
@@ -105,11 +112,9 @@
 | `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |
 | `pnpm dev integration-test --all` | Integration tests |
-| `pnpm dev identity link --generate` | Generate identity link code |
+| `pnpm dev identity link <user-id>` | Generate identity link code |
 | `pnpm dev auth oauth authorize xtwitter` | OAuth authorize |
 | `pnpm dev auth oauth list` / `pnpm dev auth oauth revoke xtwitter` | OAuth list / revoke |
-| `pnpm dev social pending` | List pending post ideas |
-| `pnpm dev social promote <id>` | Promote post idea |
 | `pnpm dev maintenance cron status` | Cron scheduler status |
 | `pnpm dev maintenance cron list [--all] [--json]` | List cron jobs |
 | `pnpm dev maintenance cron add --name <n> --every <dur>\|--cron <expr>` | Add cron job |

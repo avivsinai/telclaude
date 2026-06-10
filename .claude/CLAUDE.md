@@ -32,6 +32,13 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 - **weather**: Fetches weather forecasts via wttr.in (no API key needed)
 - **video-frames**: Extracts frames from videos via ffmpeg for visual analysis
 - **gifgrep**: Searches and downloads GIFs from Tenor/Giphy
+- **codex-work-unit**: Delegates a bounded single-shot repo task to Codex as a background job
+- **cron-manager**: Creates, inspects, updates, and removes scheduled jobs (natural-language schedules)
+- **daily-brief**: Read-only morning brief (calendar, inbox highlights, weather)
+- **meeting-prep**: Pre-meeting briefing from read-only Calendar/Gmail context
+- **weekly-business-report**: Weekly business digest workflow
+- **humanizer**: Audits and rewrites drafted text against AI writing tells
+- **skill-manage**: Creates/patches/archives agent-authored skills via the guarded managed-skill writer
 
 ## Tool Access by Tier
 | Tier | Available Tools |
