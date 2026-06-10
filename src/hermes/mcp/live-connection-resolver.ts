@@ -298,7 +298,11 @@ export function createTelclaudeLiveMcpConnectionResolver(
 			connection: record.connection,
 			nowMs: resolvedNow,
 		});
-		if (!authority.ok) return null;
+		if (!authority.ok) {
+			return {
+				...(peerAddress ? { observedPeerAddress: peerAddress } : {}),
+			};
+		}
 
 		return {
 			authorityHandle: record.authorityHandle,

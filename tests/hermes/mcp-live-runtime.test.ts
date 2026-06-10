@@ -416,6 +416,75 @@ describe("Telclaude live MCP runtime", () => {
 			await runtime.stop();
 		}
 	});
+
+	it("keeps startup discovery alive when an activation outlives its registry grant", async () => {
+		const runtime = await startTelclaudeLiveMcpRuntime({
+			config: config({ runtimeTransportToken: "tc-contained-mcp-transport-token" }),
+			nowMs: () => 2_000,
+		});
+		try {
+			if (!runtime.registry) throw new Error("runtime registry missing");
+			const grant = runtime.registry.register({
+				connection: connection(),
+				authority: authority(),
+				nowMs: 1_000,
+				ttlMs: 60_000,
+			});
+			runtime.activateRuntimeAuthority({
+				authorityHandle: grant.handle,
+				connection: connection(),
+				nowMs: 1_000,
+				ttlMs: 90_000,
+			});
+			expect(runtime.registry.revoke(grant.handle, "test registry grant expired", 1_500)).toBe(
+				true,
+			);
+
+			const initialize = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				{
+					jsonrpc: "2.0",
+					id: "initialize",
+					method: "initialize",
+				},
+			);
+			expect(initialize).toMatchObject({
+				httpStatus: 200,
+				body: {
+					result: {
+						serverInfo: { name: "telclaude-live-mcp-relay" },
+					},
+				},
+			});
+
+			const listed = await postRpc(runtime.endpoint?.url, "Bearer tc-contained-mcp-transport-token", {
+				jsonrpc: "2.0",
+				id: "tools",
+				method: "tools/list",
+			});
+			expect(listed).toMatchObject({
+				httpStatus: 200,
+				body: {
+					result: {
+						tools: expect.arrayContaining([expect.objectContaining({ name: "tc_provider_read" })]),
+					},
+				},
+			});
+
+			const call = await postRpc(
+				runtime.endpoint?.url,
+				"Bearer tc-contained-mcp-transport-token",
+				providerReadCall("revoked-grant-call"),
+			);
+			expect(call).toMatchObject({
+				httpStatus: 200,
+				body: { error: { code: -32001, message: "MCP runtime authority is not active" } },
+			});
+		} finally {
+			await runtime.stop();
+		}
+	});
 });
 
 function config(
