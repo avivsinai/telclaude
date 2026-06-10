@@ -84,27 +84,74 @@ jobs:
 
       - name: Persist William Hermes deploy keys
         run: |
+          set -euo pipefail
           shell_env_file="/home/avivsinai/.telclaude-ops/william-release/william-operator.env"
           compose_env_file="/home/avivsinai/telclaude/docker/.env"
           tmp_file="$(mktemp)"
+          key_dir="$(mktemp -d)"
+          trap 'rm -f "$tmp_file"; rm -rf "$key_dir"' EXIT
           touch "$shell_env_file" "$compose_env_file"
           chmod 600 "$shell_env_file" "$compose_env_file"
-          hermes_key_pattern='^(export[[:space:]]+)?TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN)='
-          grep -Ev "$hermes_key_pattern" "$shell_env_file" > "$tmp_file" || true
+          read_deploy_env() {
+            local key="$1"
+            local file line
+            for file in "$shell_env_file" "$compose_env_file"; do
+              line="$(grep -E "^(export[[:space:]]+)?${key}=" "$file" 2>/dev/null | tail -n 1 || true)"
+              [ -n "$line" ] || continue
+              printf '%s' "$line" | sed -E "s/^(export[[:space:]]+)?${key}=//"
+              return 0
+            done
+            return 1
+          }
+          generate_ed25519_pair() {
+            local stem="$1"
+            local pem_path="$key_dir/${stem}.pem"
+            openssl genpkey -algorithm ED25519 -out "$pem_path" >/dev/null 2>&1
+            printf '%s_PRIVATE=%s\n' "$stem" "$(openssl pkey -in "$pem_path" -outform DER | base64 -w0)"
+            printf '%s_PUBLIC=%s\n' "$stem" "$(openssl pkey -in "$pem_path" -pubout -outform DER | base64 -w0)"
+          }
+          operator_agent_private_key="$(read_deploy_env OPERATOR_RPC_AGENT_PRIVATE_KEY || true)"
+          operator_agent_public_key="$(read_deploy_env OPERATOR_RPC_AGENT_PUBLIC_KEY || true)"
+          operator_relay_private_key="$(read_deploy_env OPERATOR_RPC_RELAY_PRIVATE_KEY || true)"
+          operator_relay_public_key="$(read_deploy_env OPERATOR_RPC_RELAY_PUBLIC_KEY || true)"
+          if [ -z "$operator_agent_private_key" ] || [ -z "$operator_agent_public_key" ] || [ -z "$operator_relay_private_key" ] || [ -z "$operator_relay_public_key" ]; then
+            while IFS='=' read -r key value; do
+              case "$key" in
+                OPERATOR_AGENT_PRIVATE) operator_agent_private_key="$value" ;;
+                OPERATOR_AGENT_PUBLIC) operator_agent_public_key="$value" ;;
+                OPERATOR_RELAY_PRIVATE) operator_relay_private_key="$value" ;;
+                OPERATOR_RELAY_PUBLIC) operator_relay_public_key="$value" ;;
+              esac
+            done < <(
+              generate_ed25519_pair OPERATOR_AGENT
+              generate_ed25519_pair OPERATOR_RELAY
+            )
+          fi
+          for secret in "$TELCLAUDE_HERMES_API_SERVER_KEY" "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY" "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN" "$operator_agent_private_key" "$operator_agent_public_key" "$operator_relay_private_key" "$operator_relay_public_key"; do
+            [ -n "$secret" ] && echo "::add-mask::${secret}"
+          done
+          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
+          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
+          grep -Ev "$shell_key_pattern" "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
             printf 'export TELCLAUDE_HERMES_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'export TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
             printf 'export TELCLAUDE_HERMES_MCP_RELAY_TOKEN=%q\n' "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN"
+            printf 'export OPERATOR_RPC_AGENT_PRIVATE_KEY=%q\n' "$operator_agent_private_key"
+            printf 'export OPERATOR_RPC_AGENT_PUBLIC_KEY=%q\n' "$operator_agent_public_key"
+            printf 'export OPERATOR_RPC_RELAY_PRIVATE_KEY=%q\n' "$operator_relay_private_key"
+            printf 'export OPERATOR_RPC_RELAY_PUBLIC_KEY=%q\n' "$operator_relay_public_key"
           } > "$shell_env_file"
-          grep -Ev "$hermes_key_pattern" "$compose_env_file" > "$tmp_file" || true
+          grep -Ev "$compose_key_pattern" "$compose_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
             printf 'TELCLAUDE_HERMES_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
             printf 'TELCLAUDE_HERMES_MCP_RELAY_TOKEN=%s\n' "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN"
+            printf 'OPERATOR_RPC_AGENT_PUBLIC_KEY=%s\n' "$operator_agent_public_key"
+            printf 'OPERATOR_RPC_RELAY_PRIVATE_KEY=%s\n' "$operator_relay_private_key"
           } > "$compose_env_file"
-          rm -f "$tmp_file"
 
       - name: Build and deploy
         run: |
@@ -121,7 +168,7 @@ jobs:
           trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" ps || true; docker network ls || true; fi; exit "$status"' EXIT
           docker compose "${compose_files[@]}" down --remove-orphans || true
           docker rm -f tc-hermes-contained tc-hermes-social telclaude-agent telclaude-agent-social >/dev/null 2>&1 || true
-          for network in telclaude-hermes-private telclaude-hermes-social docker_hermes-private-net docker_hermes-social-net; do
+          for network in telclaude-hermes-private telclaude-hermes-social docker_hermes-private-net docker_hermes-social-net telclaude-hermes-relay telclaude-agent-relay telclaude-agent-egress telclaude-social-relay telclaude-social-egress; do
             docker network rm "$network" >/dev/null 2>&1 || true
           done
           while IFS= read -r network_id; do
