@@ -121,9 +121,9 @@ docs/hermes/**/*.pem
 docs/hermes/**/.cache/
 docs/hermes/**/cache/
 
-# Backup files that may contain secrets
+# Backup files that may contain secrets (*.bak* also catches e.g. telclaude.json.bak-20260101)
 *.backup
-*.bak
+*.bak*
 *.old
 *~
 *.orig
