@@ -1279,7 +1279,9 @@ function mintTelegramInboundTurnAuthority(input: TelegramInboundTurnAuthorityInp
 		input.messageThreadId === undefined
 			? conversationId
 			: `${conversationId}:thread:${input.messageThreadId}`;
-	const { token } = input.conversationStore.mint({
+	// Resume the chat's existing relay conversation when authority matches;
+	// minting per-turn would violate UNIQUE(channel, conversation_id).
+	const { token } = input.conversationStore.resumeOrMint({
 		channel: "social",
 		conversationId,
 		threadId,

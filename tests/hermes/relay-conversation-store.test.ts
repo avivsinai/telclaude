@@ -55,6 +55,93 @@ describe("Hermes relay conversation store", () => {
 		expect(store.mint(baseInput("second")).token).toBe(secondToken);
 	});
 
+	it("rejects mint for an existing channel+conversationId identity with a clear error", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+
+		store.mint(baseInput("dup"));
+
+		expect(() => store.mint(baseInput("dup"))).toThrow(/use resumeOrMint/);
+	});
+
+	it("resumes the existing conversation for a second turn on the same chat", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+
+		const first = store.resumeOrMint(
+			baseInput("chat", {
+				threadMessageIds: ["msg-1"],
+				inboundCursor: "msg-1",
+				expiresAtMs: NOW + 60_000,
+			}),
+		);
+		expect(first.resumed).toBe(false);
+
+		// Live regression: the second DM in the same chat must not violate
+		// UNIQUE(channel, conversation_id) — it resumes the same conversation.
+		const second = store.resumeOrMint(
+			baseInput("chat", {
+				threadMessageIds: ["msg-2"],
+				inboundCursor: "msg-2",
+				routingSession: { sessionId: "session-rotated", routeKey: "route-chat" },
+				expiresAtMs: NOW + 120_000,
+				nowMs: NOW + 30_000,
+			}),
+		);
+
+		expect(second.resumed).toBe(true);
+		expect(second.token).toBe(first.token);
+		expect(second.conversation.threadMessageIds).toEqual(["msg-1", "msg-2"]);
+		expect(second.conversation.inboundCursor).toBe("msg-2");
+		expect(second.conversation.routingSession.sessionId).toBe("session-rotated");
+		expect(second.conversation.expiresAtMs).toBe(NOW + 120_000);
+	});
+
+	it("replaces expired and revoked conversations instead of resuming them", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+
+		const expired = store.resumeOrMint(baseInput("stale", { expiresAtMs: NOW + 1_000 }));
+		const afterExpiry = store.resumeOrMint(baseInput("stale", { nowMs: NOW + 2_000 }));
+		expect(afterExpiry.resumed).toBe(false);
+		expect(afterExpiry.token).not.toBe(expired.token);
+
+		store.revoke(afterExpiry.token, "operator revocation");
+		const afterRevoke = store.resumeOrMint(baseInput("stale", { nowMs: NOW + 3_000 }));
+		expect(afterRevoke.resumed).toBe(false);
+		expect(afterRevoke.token).not.toBe(afterExpiry.token);
+
+		// Replaced authority is dead: the old tokens must not resolve or authorize turns.
+		expect(store.resolve(expired.token, NOW + 3_000)).toBeNull();
+		expect(store.resolve(afterExpiry.token, NOW + 3_000)).toBeNull();
+		expect(() =>
+			store.mintInboundTurn({
+				conversationToken: afterExpiry.token,
+				inboundMessageId: "msg-dead",
+				senderActorId: "actor:stale:sender",
+				nowMs: NOW + 3_000,
+			}),
+		).toThrow();
+	});
+
+	it("replaces the conversation when authority shape changes instead of resuming", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+
+		const first = store.resumeOrMint(baseInput("shift", { expiresAtMs: NOW + 60_000 }));
+		const switched = store.resumeOrMint(
+			baseInput("shift", {
+				profileId: "profile-other",
+				expiresAtMs: NOW + 60_000,
+				nowMs: NOW + 1_000,
+			}),
+		);
+
+		expect(switched.resumed).toBe(false);
+		expect(switched.token).not.toBe(first.token);
+		expect(switched.conversation.profileId).toBe("profile-other");
+	});
+
 	it("fails closed for expired, revoked, and denied rows while surfacing approval-required state", async () => {
 		const { createRelayConversationStore } = await loadStore();
 		const store = createRelayConversationStore({ nowMs: () => NOW });

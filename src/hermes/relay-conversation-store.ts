@@ -17,6 +17,13 @@ const RELAY_CONVERSATION_TOKEN_RE = /^conv_[0-9a-f]{32}$/;
 const RELAY_CONVERSATION_TURN_REF_RE = /^turn_[0-9a-f]{32}$/;
 const MAX_TOKEN_MINT_ATTEMPTS = 8;
 
+export class ConversationIdentityExistsError extends Error {
+	constructor(channel: string, conversationId: string) {
+		super(`relay conversation already exists for ${channel}:${conversationId} — use resumeOrMint`);
+		this.name = "ConversationIdentityExistsError";
+	}
+}
+
 type EdgeChannel = ConversationRef["channel"];
 type EdgeTrustDomain = ConversationRef["domain"];
 type AuthorizationState = ConversationRef["authorization"]["state"];
@@ -152,6 +159,11 @@ export type RelayConversationInboundTurn = {
 
 export type RelayConversationStore = {
 	mint(input: RelayConversationMintInput): { token: string; conversation: RelayConversation };
+	resumeOrMint(input: RelayConversationMintInput): {
+		token: string;
+		conversation: RelayConversation;
+		resumed: boolean;
+	};
 	resolve(token: string, nowMs?: number): RelayConversation | null;
 	resolveAuthorized(token: string, nowMs?: number): RelayConversation | null;
 	inspect(token: string): RelayConversation | null;
@@ -267,27 +279,64 @@ export function createRelayConversationStore(
 	const nowMs = () => normalizeTimestamp(options.nowMs?.() ?? Date.now(), "nowMs");
 	const tokenGenerator = options.tokenGenerator ?? createRelayConversationToken;
 
+	const mintFresh = (normalized: RelayConversation) => {
+		for (let attempt = 0; attempt < MAX_TOKEN_MINT_ATTEMPTS; attempt += 1) {
+			const token = tokenGenerator();
+			if (!isRelayConversationToken(token)) {
+				throw new Error("conversation token generator produced invalid token");
+			}
+			try {
+				insertConversation({ ...normalized, token });
+				const conversation = selectConversation(token);
+				if (!conversation) throw new Error("minted conversation missing after insert");
+				return { token, conversation };
+			} catch (error) {
+				if (isSqliteIdentityConstraint(error)) {
+					throw new ConversationIdentityExistsError(normalized.channel, normalized.conversationId);
+				}
+				if (isSqliteConstraint(error)) continue;
+				throw error;
+			}
+		}
+		throw new Error("could not mint unique relay conversation token");
+	};
+
 	return {
 		mint(input) {
 			const now = normalizeTimestamp(input.nowMs ?? nowMs(), "nowMs");
-			const normalized = normalizeMintInput(input, now);
+			return mintFresh(normalizeMintInput(input, now));
+		},
 
+		resumeOrMint(input) {
+			const now = normalizeTimestamp(input.nowMs ?? nowMs(), "nowMs");
+			const normalized = normalizeMintInput(input, now);
 			for (let attempt = 0; attempt < MAX_TOKEN_MINT_ATTEMPTS; attempt += 1) {
-				const token = tokenGenerator();
-				if (!isRelayConversationToken(token)) {
-					throw new Error("conversation token generator produced invalid token");
+				const existing = selectConversationByIdentity(
+					normalized.channel,
+					normalized.conversationId,
+				);
+				if (existing) {
+					if (
+						!conversationUnavailable(existing, now) &&
+						conversationAuthorityMatches(existing, normalized)
+					) {
+						resumeConversation(existing, normalized, now);
+						const conversation = selectConversation(existing.token);
+						if (!conversation) throw new Error("resumed conversation missing after update");
+						return { token: existing.token, conversation, resumed: true };
+					}
+					// Expired, revoked, denied, or authority shape changed: never resume — replace.
+					deleteConversation(existing.token);
 				}
 				try {
-					insertConversation({ ...normalized, token });
-					const conversation = selectConversation(token);
-					if (!conversation) throw new Error("minted conversation missing after insert");
-					return { token, conversation };
+					return { ...mintFresh(normalized), resumed: false };
 				} catch (error) {
-					if (isSqliteConstraint(error)) continue;
+					// Lost a mint race for this identity; re-resolve and try to resume instead.
+					if (error instanceof ConversationIdentityExistsError) continue;
 					throw error;
 				}
 			}
-			throw new Error("could not mint unique relay conversation token");
+			throw new Error("could not resume or mint relay conversation");
 		},
 
 		resolve(token, atMs = nowMs()) {
@@ -894,6 +943,78 @@ function selectConversation(token: string): RelayConversation | null {
 	return deserializeConversation(row);
 }
 
+function selectConversationByIdentity(
+	channel: EdgeChannel,
+	conversationId: string,
+): RelayConversation | null {
+	const row = getDb()
+		.prepare("SELECT * FROM hermes_relay_conversations WHERE channel = ? AND conversation_id = ?")
+		.get(channel, conversationId) as RelayConversationRow | undefined;
+	if (!row) return null;
+	return deserializeConversation(row);
+}
+
+function deleteConversation(token: string): void {
+	getDb().prepare("DELETE FROM hermes_relay_conversations WHERE token = ?").run(token);
+}
+
+/**
+ * A conversation may only be resumed when every authority-relevant field matches
+ * the new turn's normalized mint input. Any change in authority shape (profile,
+ * domain, thread, scopes, pairing provenance) replaces the conversation instead.
+ */
+function conversationAuthorityMatches(
+	existing: RelayConversation,
+	normalized: RelayConversation,
+): boolean {
+	return (
+		existing.threadId === normalized.threadId &&
+		existing.profileId === normalized.profileId &&
+		existing.domain === normalized.domain &&
+		existing.mcpDomain === normalized.mcpDomain &&
+		existing.edgeDomain === normalized.edgeDomain &&
+		existing.authorizationState === normalized.authorizationState &&
+		existing.humanPairingProvenance === normalized.humanPairingProvenance &&
+		existing.authorizationScopes.length === normalized.authorizationScopes.length &&
+		existing.authorizationScopes.every((scope) => normalized.authorizationScopes.includes(scope))
+	);
+}
+
+function resumeConversation(
+	existing: RelayConversation,
+	normalized: RelayConversation,
+	nowMs: number,
+): void {
+	let members = existing.members;
+	for (const member of normalized.members) {
+		members = replaceMember(members, member);
+	}
+	getDb()
+		.prepare(
+			`UPDATE hermes_relay_conversations SET
+				routing_session_id = ?,
+				route_key = ?,
+				members_json = ?,
+				thread_message_ids_json = ?,
+				inbound_cursor = ?,
+				audit_ids_json = ?,
+				expires_at_ms = ?,
+				updated_at_ms = ?
+			WHERE token = ?`,
+		)
+		.run(
+			normalized.routingSession.sessionId,
+			normalized.routingSession.routeKey,
+			JSON.stringify(members),
+			JSON.stringify(uniqueStrings([...existing.threadMessageIds, ...normalized.threadMessageIds])),
+			normalized.inboundCursor ?? existing.inboundCursor,
+			JSON.stringify(uniqueStrings([...existing.auditIds, ...normalized.auditIds])),
+			normalized.expiresAtMs,
+			nowMs,
+			existing.token,
+		);
+}
+
 function selectInboundTurn(ref: string): RelayConversationInboundTurn | null {
 	const row = getDb()
 		.prepare("SELECT * FROM hermes_relay_conversation_turns WHERE ref = ?")
@@ -1041,5 +1162,15 @@ function isSqliteConstraint(error: unknown): boolean {
 		error !== null &&
 		"code" in error &&
 		(error as { code?: unknown }).code === "SQLITE_CONSTRAINT_PRIMARYKEY"
+	);
+}
+
+/** UNIQUE(channel, conversation_id) violation — a new token can never resolve this. */
+function isSqliteIdentityConstraint(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		"code" in error &&
+		(error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE" &&
+		error.message.includes("hermes_relay_conversations.channel")
 	);
 }
