@@ -4,7 +4,7 @@ How to run telclaude as an operator-control surface for a personal Claude agent.
 
 ## Framing
 
-Telclaude is the secure Telegram-bridged operator-control surface for a personal Claude agent. The relay holds secrets and enforces tiers; the vault sidecar holds credentials and signs approval tokens; private and social personas are air-gapped at the memory boundary; recurring work is driven by the cron scheduler and signed webhooks. The private agent can run on the default Claude runtime or, once proven, on a contained no-fork Hermes runtime that the relay drives through operator RPC. As an operator you live mostly on Telegram and only drop into the CLI for setup, surgery, and emergency controls.
+Telclaude is the secure Telegram-bridged operator-control surface for a personal Claude agent. The relay holds secrets and enforces tiers; the vault sidecar holds credentials and signs approval tokens; private and social personas are air-gapped at the memory boundary; recurring work is driven by the cron scheduler and signed webhooks. The private agent runs on the Claude SDK runtime or on a contained no-fork Hermes runtime that the relay drives through operator RPC (cutover is proof-gated; legacy mode stays the rollback path). As an operator you live mostly on Telegram and only drop into the CLI for setup, surgery, and emergency controls.
 
 ## Maturity ladder
 

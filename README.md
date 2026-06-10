@@ -14,7 +14,7 @@ Isolation-first Telegram ⇄ agent relay for Claude Code, Codex, and operator wo
 - Credential vault: sidecar daemon stores API keys and injects them into requests — agents never see raw credentials.
 - Relay-authoritative memory: trusted semantic memory + episodic shared history archive + compiled Claude `MEMORY.md` working set. Private recall is aggressive, but source boundaries remain hard.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
-- Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
+- Soft controls: LLM observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Four permission tiers mapped to agent runtime capabilities: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
 - Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
 - External provider sidecars: Google Services (Gmail, Calendar, Drive, Contacts) with approval-gated actions; extensible pattern for adding new providers.
@@ -31,7 +31,11 @@ Isolation-first Telegram ⇄ agent relay for Claude Code, Codex, and operator wo
 | `CLAUDE.md` | Agent playbook (auto-loaded by Claude Code) |
 | `AGENTS.md` | Agents guide pointer |
 | `docs/architecture.md` | Architecture design rationale, security model, invariants |
+| `docs/operator-playbook.md` | Running telclaude day-to-day as an operator |
 | `docs/providers.md` | Provider integration guide (sidecar pattern, adding new providers) |
+| `docs/profiles.md` | Operator profiles (per-chat SOUL/skills/model overlays) |
+| `docs/skills.md` / `docs/plugins.md` | Standalone skills and official Claude plugins |
+| `docs/apparmor-setup.md` | Kernel-level container hardening (AppArmor) |
 | `docker/README.md` | Container deployment, firewall, volumes |
 | `CHANGELOG.md` | Version history |
 | `SECURITY.md` | Vulnerability reporting, threat model |
@@ -62,7 +66,7 @@ Isolation-first Telegram ⇄ agent relay for Claude Code, Codex, and operator wo
 │                        Security Layer                            │
 │  ┌────────────┐   ┌────────────┐   ┌──────────┐   ┌──────────┐  │
 │  │ Fast Path  │──▶│  Observer  │──▶│   Rate   │──▶│ Approval │  │
-│  │  (regex)   │   │  (Haiku)   │   │  Limit   │   │ (human)  │  │
+│  │  (regex)   │   │   (LLM)    │   │  Limit   │   │ (human)  │  │
 │  └────────────┘   └────────────┘   └──────────┘   └──────────┘  │
 └──────────────────────────────────────────────────────────────────┘
                                │
@@ -126,6 +130,8 @@ git clone https://github.com/avivsinai/telclaude.git
 cd telclaude
 pnpm install
 ```
+Prefer a guided setup? `pnpm dev onboard` walks through bot token, config, and admin claim interactively.
+
 2) Create config (JSON5) at `~/.telclaude/telclaude.json` — allowlist is required or the bot will ignore all chats (fail-closed).
 ```json
 {
@@ -209,7 +215,7 @@ pnpm dev memory context --chat-id <telegram-chat-id> --markdown
 - Default path: `~/.telclaude/telclaude.json` (override with `TELCLAUDE_CONFIG` or `--config`).
 - Security profiles:
   - `simple` (default): sandbox + secret filter + rate limits + audit.
-  - `strict`: adds Haiku observer, approval workflow, and tiered tool gates.
+  - `strict`: adds LLM observer, approval workflow, and tiered tool gates.
   - `test`: disables all enforcement; requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`.
 - Operator profiles:
   - Configure top-level `profiles[]` entries with `id`, `label`, optional `description`, `soulPath`, `allowedSkills`, and `defaultModel`.
@@ -343,7 +349,7 @@ Strict cutover is all-or-nothing per approved workflow bundle — there is no gr
 | Command | Description |
 |---------|-------------|
 | `telclaude relay [--profile simple\|strict\|test] [--dry-run]` | Start the relay |
-| `telclaude quickstart` | Interactive first-time setup |
+| `telclaude onboard` | Interactive first-run wizard (relay bootstrap, bot token, admin claim, OAuth) |
 | `telclaude doctor [--network] [--secrets]` | Health check |
 | `telclaude status [--json]` | Show relay status |
 | `telclaude runtimes status [--json]` | Show Claude Code and Codex runtime readiness |
@@ -351,7 +357,7 @@ Strict cutover is all-or-nothing per approved workflow bundle — there is no gr
 ### Authentication & access control
 | Command | Description |
 |---------|-------------|
-| `telclaude link <user-id> \| --list \| --remove <chat-id>` | Manage identity links |
+| `telclaude identity link <user-id>` / `identity list` / `identity remove <chat-id>` | Manage identity links |
 | `telclaude maintenance totp-daemon [--socket-path <path>]` | Start TOTP daemon |
 | `telclaude auth totp-setup <user-id>` | Set up TOTP for a user |
 | `telclaude auth totp-disable <user-id>` | Disable TOTP for a user |
@@ -365,10 +371,10 @@ Strict cutover is all-or-nothing per approved workflow bundle — there is no gr
 | Command | Description |
 |---------|-------------|
 | `telclaude maintenance vault-daemon` | Start vault daemon |
-| `telclaude vault list` | List stored credentials |
-| `telclaude vault add http <host> --type <type> [--label <name>]` | Add credential |
-| `telclaude vault remove http <host>` | Remove credential |
-| `telclaude vault test http <host>` | Test credential injection |
+| `telclaude maintenance vault list` | List stored credentials |
+| `telclaude maintenance vault add http <host> --type <type> [--label <name>]` | Add credential |
+| `telclaude maintenance vault remove http <host>` | Remove credential |
+| `telclaude maintenance vault test http <host>` | Test credential injection |
 
 ### API key & service setup
 | Command | Description |
@@ -448,9 +454,9 @@ All commands live under the `telclaude hermes` group; most accept `--json`. Cuto
 ### Diagnostics
 | Command | Description |
 |---------|-------------|
-| `telclaude diagnose-sandbox-network` | Debug sandbox network issues |
+| `telclaude dev diagnose-sandbox-network` | Debug sandbox network issues |
 | `telclaude integration-test [--all] [--agents]` | Run SDK integration tests (optional direct agent transport check with `--agents`) |
-| `telclaude reset-db [--force]` | Delete SQLite database (requires `TELCLAUDE_ENABLE_RESET_DB=1`) |
+| `telclaude maintenance reset-db [--force]` | Delete SQLite database (requires `TELCLAUDE_ENABLE_RESET_DB=1`) |
 
 ## Usage example
 Run strict profile with approvals and TOTP:
