@@ -326,9 +326,52 @@ describe("auto-reply executeAndReply", () => {
 				threadId: 789,
 				compiledMemoryMd: "# Compiled Memory\n",
 				systemPromptAppend: expect.stringContaining('<chat-context chat-id="123" />'),
+				mcpAuthority: { providerScopes: [] },
 			}),
 		);
 		expect(replies).toEqual(["hermes ok"]);
+	});
+
+	it("passes configured provider scopes and MCP-only provider instructions to Hermes", async () => {
+		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(true);
+		executeHermesPrivateQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "hermes ok",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = {
+			...baseCtx(),
+			config: {
+				...baseCtx().config,
+				hermes: { privateRuntime: { providerScopes: ["google", "bank"] } },
+			},
+		};
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		expect(executeHermesPrivateQueryImpl).toHaveBeenCalledWith(
+			"please respond",
+			expect.objectContaining({
+				mcpAuthority: { providerScopes: ["bank", "google"] },
+				systemPromptAppend: expect.stringContaining("tc_provider_read"),
+			}),
+		);
+		const options = executeHermesPrivateQueryImpl.mock.calls[0]?.[1] as {
+			systemPromptAppend?: string;
+		};
+		expect(options.systemPromptAppend).toContain("Granted provider scopes: bank, google");
+		expect(options.systemPromptAppend).toContain("Do not call provider hostnames");
+		expect(options.systemPromptAppend).toContain("supersedes any legacy external-provider");
 	});
 
 	it("passes relay-minted Telegram turn refs only through Hermes MCP authority", async () => {
@@ -358,11 +401,15 @@ describe("auto-reply executeAndReply", () => {
 
 		const [prompt, options] = executeHermesPrivateQueryImpl.mock.calls[0] as [
 			string,
-			{ mcpAuthority?: { turnConversationRef?: string }; systemPromptAppend?: string },
+			{
+				mcpAuthority?: { turnConversationRef?: string; providerScopes?: readonly string[] };
+				systemPromptAppend?: string;
+			},
 		];
 		const turnConversationRef = options.mcpAuthority?.turnConversationRef;
 
 		expect(turnConversationRef).toBeDefined();
+		expect(options.mcpAuthority?.providerScopes).toEqual([]);
 		if (!turnConversationRef) throw new Error("expected Hermes MCP turnConversationRef");
 		expect(turnConversationRef).toMatch(/^turn_[0-9a-f]{32}$/);
 		const turn = ctx.mcpConversationStore.inspectInboundTurn(turnConversationRef);

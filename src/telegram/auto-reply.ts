@@ -38,6 +38,7 @@ import {
 	executeHermesPrivateQuery,
 	shouldUseHermesPrivateRuntime,
 } from "../hermes/private-execute.js";
+import { buildHermesPrivateRuntimeProviderContext } from "../hermes/private-runtime-provider-context.js";
 import type { RelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { clearHermesSessionMapping } from "../hermes/session-map.js";
 import { getChildLogger } from "../logging.js";
@@ -1528,6 +1529,9 @@ async function executeWithSession(
 			includeProjectSoul: !useRemoteAgent,
 			cwd: process.cwd(),
 		});
+		const hermesProviderContext = useHermesPrivateRuntime
+			? buildHermesPrivateRuntimeProviderContext(ctx.config)
+			: undefined;
 
 		// Build lightweight system info for agent awareness
 		const systemInfoContext = buildSystemInfoContext(msg.chatId);
@@ -1543,6 +1547,7 @@ async function executeWithSession(
 				reactionAppend,
 				memoryAppend,
 				memoryPolicyAppend,
+				hermesProviderContext?.systemPromptAppend,
 				ctx.extraSystemPromptAppend,
 			]
 				.filter(Boolean)
@@ -1584,7 +1589,10 @@ async function executeWithSession(
 					threadId: msg.messageThreadId,
 					systemPromptAppend,
 					compiledMemoryMd: memoryBundle.compiledMemoryMd,
-					...(turnConversationRef ? { mcpAuthority: { turnConversationRef } } : {}),
+					mcpAuthority: {
+						providerScopes: hermesProviderContext?.providerScopes ?? [],
+						...(turnConversationRef ? { turnConversationRef } : {}),
+					},
 				})
 			: useRemoteAgent
 				? executeRemoteQuery(queryPrompt, {
@@ -3099,11 +3107,15 @@ async function executePlanPhase(
 				includeProjectSoul: !useRemoteAgent,
 				cwd: process.cwd(),
 			});
+			const hermesProviderContext = useHermesPrivateRuntime
+				? buildHermesPrivateRuntimeProviderContext(cfg)
+				: undefined;
 			const planningPromptAppend = [
 				PLANNING_SYSTEM_PROMPT,
 				buildProfileContext(activeProfile),
 				soulAppend,
 				memoryBundle.promptContext,
+				hermesProviderContext?.systemPromptAppend,
 			]
 				.filter(Boolean)
 				.join("\n\n");
@@ -3140,9 +3152,10 @@ async function executePlanPhase(
 						threadId: approval.messageThreadId ?? msg.messageThreadId,
 						systemPromptAppend: planningPromptAppend,
 						compiledMemoryMd: memoryBundle.compiledMemoryMd,
-						...(planTurnConversationRef
-							? { mcpAuthority: { turnConversationRef: planTurnConversationRef } }
-							: {}),
+						mcpAuthority: {
+							providerScopes: hermesProviderContext?.providerScopes ?? [],
+							...(planTurnConversationRef ? { turnConversationRef: planTurnConversationRef } : {}),
+						},
 					})
 				: useRemoteAgent
 					? executeRemoteQuery(queryPrompt, {

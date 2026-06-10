@@ -126,6 +126,26 @@ const SdkConfigSchema = z.object({
 	betas: z.array(SdkBetaEnum).default([]),
 });
 
+const ProviderScopeIdSchema = z
+	.string()
+	.min(1)
+	.max(64)
+	.regex(/^[a-zA-Z0-9_-]+$/, "provider scope must be a canonical provider id");
+
+const HERMES_DEFAULTS = {
+	privateRuntime: {
+		providerScopes: [],
+	},
+};
+
+const HermesConfigSchema = z.object({
+	privateRuntime: z
+		.object({
+			providerScopes: z.array(ProviderScopeIdSchema).default([]),
+		})
+		.default(HERMES_DEFAULTS.privateRuntime),
+});
+
 const OperatorProfileIdSchema = z
 	.string()
 	.regex(/^[a-z0-9-]{1,32}$/, "profile id must match ^[a-z0-9-]{1,32}$")
@@ -559,6 +579,7 @@ const TelclaudeConfigSchema = z.object({
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
 	sdk: SdkConfigSchema.default(SDK_DEFAULTS),
+	hermes: HermesConfigSchema.default(HERMES_DEFAULTS),
 	// Multimedia capabilities
 	openai: OpenAIConfigSchema.default({}),
 	transcription: TranscriptionConfigSchema.default(TRANSCRIPTION_DEFAULTS),
@@ -601,6 +622,7 @@ export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type HermesConfig = z.infer<typeof HermesConfigSchema>;
 export type OperatorProfileConfig = z.infer<typeof OperatorProfileConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type CronConfig = z.infer<typeof CronConfigSchema>;
@@ -828,6 +850,11 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			},
 			sdk: {
 				betas: [],
+			},
+			hermes: {
+				privateRuntime: {
+					providerScopes: [],
+				},
 			},
 			inbound: {
 				reply: {

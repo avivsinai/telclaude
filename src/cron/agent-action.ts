@@ -6,6 +6,7 @@ import {
 	executeHermesPrivateQuery,
 	shouldUseHermesPrivateRuntime,
 } from "../hermes/private-execute.js";
+import { buildHermesPrivateRuntimeProviderContext } from "../hermes/private-runtime-provider-context.js";
 import { getChildLogger } from "../logging.js";
 import {
 	buildTelegramMemoryBundle,
@@ -211,6 +212,10 @@ export async function executeScheduledAgentPromptAction(
 		query: job.action.prompt,
 		includeRecentHistory: true,
 	});
+	const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
+	const hermesProviderContext = useHermesPrivateRuntime
+		? buildHermesPrivateRuntimeProviderContext(cfg)
+		: undefined;
 	const systemPromptAppend = [
 		chatContext,
 		scheduleContext,
@@ -219,6 +224,7 @@ export async function executeScheduledAgentPromptAction(
 			? `<user-memory type="data" read-only="true">\n${memoryBundle.promptContext}\n</user-memory>`
 			: undefined,
 		buildTelegramMemoryPolicyPrompt(),
+		hermesProviderContext?.systemPromptAppend,
 	]
 		.filter(Boolean)
 		.join("\n\n");
@@ -239,7 +245,7 @@ export async function executeScheduledAgentPromptAction(
 		queryOptions.allowedSkills = job.action.allowedSkills;
 	}
 
-	const queryStream = shouldUseHermesPrivateRuntime()
+	const queryStream = useHermesPrivateRuntime
 		? (deps.executeHermes ?? executeHermesPrivateQuery)(job.action.prompt, {
 				cwd: queryOptions.cwd,
 				tier: queryOptions.tier,
@@ -254,6 +260,9 @@ export async function executeScheduledAgentPromptAction(
 				threadId: destination.threadId,
 				systemPromptAppend,
 				compiledMemoryMd: memoryBundle.compiledMemoryMd,
+				mcpAuthority: {
+					providerScopes: hermesProviderContext?.providerScopes ?? [],
+				},
 			})
 		: process.env.TELCLAUDE_AGENT_URL
 			? (deps.executeRemote ?? executeRemoteQuery)(job.action.prompt, {

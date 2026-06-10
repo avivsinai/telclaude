@@ -92,6 +92,40 @@ describe("sdk config defaults", () => {
 			allowedHosts: [],
 		});
 		expect(cfg.profiles).toEqual([]);
+		expect(cfg.hermes.privateRuntime.providerScopes).toEqual([]);
+	});
+
+	it("accepts explicit Hermes private-runtime provider scopes", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["google", "bank"],
+					},
+				},
+			}),
+		);
+
+		const cfg = loadConfig();
+		expect(cfg.hermes.privateRuntime.providerScopes).toEqual(["google", "bank"]);
+	});
+
+	it("rejects non-canonical Hermes provider scope ids", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["google.gmail"],
+					},
+				},
+			}),
+		);
+
+		expect(() => loadConfig()).toThrow(/provider scope/);
 	});
 
 	it("accepts valid operator profiles", () => {

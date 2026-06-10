@@ -620,6 +620,7 @@ describe("scheduled agent cron action", () => {
 			},
 			{
 				profiles: [{ id: "engineer", label: "Engineer" }],
+				hermes: { privateRuntime: { providerScopes: ["google"] } },
 				telegram: { botToken: "token" },
 				cron: { timeoutSeconds: 30 },
 				security: {},
@@ -644,6 +645,8 @@ describe("scheduled agent cron action", () => {
 				chatId: 123,
 				threadId: 7,
 				userId: "alice",
+				mcpAuthority: { providerScopes: ["google"] },
+				systemPromptAppend: expect.stringContaining("tc_provider_read"),
 			}),
 		);
 		expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hermes path" }));
