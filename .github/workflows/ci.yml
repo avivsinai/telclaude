@@ -81,16 +81,23 @@ jobs:
 
       - name: Persist William Hermes deploy keys
         run: |
-          env_file="/home/avivsinai/.telclaude-ops/william-release/william-operator.env"
+          shell_env_file="/home/avivsinai/.telclaude-ops/william-release/william-operator.env"
+          compose_env_file="/home/avivsinai/telclaude/docker/.env"
           tmp_file="$(mktemp)"
-          touch "$env_file"
-          chmod 600 "$env_file"
-          grep -Ev '^(export[[:space:]]+)?TELCLAUDE_HERMES(_SOCIAL)?_API_SERVER_KEY=' "$env_file" > "$tmp_file" || true
+          touch "$shell_env_file" "$compose_env_file"
+          chmod 600 "$shell_env_file" "$compose_env_file"
+          grep -Ev '^(export[[:space:]]+)?TELCLAUDE_HERMES(_SOCIAL)?_API_SERVER_KEY=' "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
             printf 'export TELCLAUDE_HERMES_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'export TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
-          } > "$env_file"
+          } > "$shell_env_file"
+          grep -Ev '^(export[[:space:]]+)?TELCLAUDE_HERMES(_SOCIAL)?_API_SERVER_KEY=' "$compose_env_file" > "$tmp_file" || true
+          {
+            cat "$tmp_file"
+            printf 'TELCLAUDE_HERMES_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
+            printf 'TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
+          } > "$compose_env_file"
           rm -f "$tmp_file"
 
       - name: Build and deploy
@@ -103,4 +110,4 @@ jobs:
             ./docker/build.sh
           fi
           cd docker
-          COMPOSE_FILE=docker-compose.yml docker compose up -d --wait --wait-timeout 180
+          docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d --remove-orphans --wait --wait-timeout 480
