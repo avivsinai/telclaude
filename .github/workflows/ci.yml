@@ -79,5 +79,28 @@ jobs:
             echo "TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=${social_key}"
           } >> "$GITHUB_ENV"
 
+      - name: Persist William Hermes deploy keys
+        run: |
+          env_file="/home/avivsinai/.telclaude-ops/william-release/william-operator.env"
+          tmp_file="$(mktemp)"
+          touch "$env_file"
+          chmod 600 "$env_file"
+          grep -Ev '^(export[[:space:]]+)?TELCLAUDE_HERMES(_SOCIAL)?_API_SERVER_KEY=' "$env_file" > "$tmp_file" || true
+          {
+            cat "$tmp_file"
+            printf 'export TELCLAUDE_HERMES_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
+            printf 'export TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
+          } > "$env_file"
+          rm -f "$tmp_file"
+
       - name: Build and deploy
-        run: cd ~/telclaude && ./docker/build.sh && cd docker && COMPOSE_FILE=docker-compose.yml docker compose up -d --wait --wait-timeout 180
+        run: |
+          cd ~/telclaude
+          if ! ./docker/build.sh; then
+            echo "Initial Docker build failed; pruning BuildKit cache and retrying once"
+            docker builder prune -af || true
+            docker buildx prune -af || true
+            ./docker/build.sh
+          fi
+          cd docker
+          COMPOSE_FILE=docker-compose.yml docker compose up -d --wait --wait-timeout 180
