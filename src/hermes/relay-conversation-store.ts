@@ -533,11 +533,21 @@ export function createRelayConversationStore(
 		},
 
 		cleanupExpired(atMs) {
+			const at = normalizeTimestamp(atMs, "nowMs");
+			// Child turn refs first — the FK from turns blocks deleting their conversation.
+			getDb()
+				.prepare(
+					`DELETE FROM hermes_relay_conversation_turns WHERE conversation_token IN (
+						SELECT token FROM hermes_relay_conversations
+						WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?
+					)`,
+				)
+				.run(at);
 			const result = getDb()
 				.prepare(
 					"DELETE FROM hermes_relay_conversations WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?",
 				)
-				.run(normalizeTimestamp(atMs, "nowMs"));
+				.run(at);
 			return result.changes;
 		},
 	};
@@ -955,6 +965,11 @@ function selectConversationByIdentity(
 }
 
 function deleteConversation(token: string): void {
+	// Child turn refs first: the FK from turns would otherwise block the delete,
+	// and replaced authority must not leave resolvable turn refs behind.
+	getDb()
+		.prepare("DELETE FROM hermes_relay_conversation_turns WHERE conversation_token = ?")
+		.run(token);
 	getDb().prepare("DELETE FROM hermes_relay_conversations WHERE token = ?").run(token);
 }
 

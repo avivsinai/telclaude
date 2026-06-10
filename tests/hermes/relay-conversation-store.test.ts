@@ -102,6 +102,14 @@ describe("Hermes relay conversation store", () => {
 		const store = createRelayConversationStore({ nowMs: () => NOW });
 
 		const expired = store.resumeOrMint(baseInput("stale", { expiresAtMs: NOW + 1_000 }));
+		// Live regression #2: a real conversation always has turn refs; replacing it
+		// must not trip the turns→conversation FOREIGN KEY.
+		store.mintInboundTurn({
+			conversationToken: expired.token,
+			inboundMessageId: "msg-stale-1",
+			senderActorId: "actor:stale:sender",
+			nowMs: NOW,
+		});
 		const afterExpiry = store.resumeOrMint(baseInput("stale", { nowMs: NOW + 2_000 }));
 		expect(afterExpiry.resumed).toBe(false);
 		expect(afterExpiry.token).not.toBe(expired.token);
@@ -122,6 +130,22 @@ describe("Hermes relay conversation store", () => {
 				nowMs: NOW + 3_000,
 			}),
 		).toThrow();
+	});
+
+	it("cleans up expired conversations that have turn refs", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+
+		const conv = store.resumeOrMint(baseInput("sweep", { expiresAtMs: NOW + 1_000 }));
+		store.mintInboundTurn({
+			conversationToken: conv.token,
+			inboundMessageId: "msg-sweep-1",
+			senderActorId: "actor:sweep:sender",
+			nowMs: NOW,
+		});
+
+		expect(store.cleanupExpired(NOW + 2_000)).toBe(1);
+		expect(store.inspect(conv.token)).toBeNull();
 	});
 
 	it("replaces the conversation when authority shape changes instead of resuming", async () => {
