@@ -41,6 +41,62 @@ CODEX_BASE_URL=${HERMES_CODEX_BASE_URL:-}
 CODEX_RELAY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:-}
 TELCLAUDE_MCP_URL=${TELCLAUDE_HERMES_MCP_URL:-http://telclaude:8793/mcp}
 TELCLAUDE_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:-}
+SKILL_CATALOG_MOUNT=${TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT:-/opt/data/telclaude-hermes-skill-catalog}
+CATALOG_SKILLS_DIR="${SKILL_CATALOG_MOUNT}/skills"
+
+# Relay-owned skill catalog (read-only mount). When present, every entry must
+# pass the same path-safety discipline as the curated allowlist; any entry with
+# a scripts/ directory, a symlink, or an executable file fails the boot loudly.
+# Validated entries are served to upstream Hermes via skills.external_dirs.
+validate_catalog_skill_entry() {
+	entry_path=$1
+	entry_name=$(basename "$entry_path")
+	case "$entry_name" in
+		*..*|.*|*' '*|*'	'*)
+			die "invalid catalog skill name: $entry_name"
+			;;
+	esac
+	[ ! -L "$entry_path" ] || die "catalog skill is a symlink: $entry_name"
+	[ -d "$entry_path" ] || die "catalog entry is not a directory: $entry_name"
+	[ -f "${entry_path}/SKILL.md" ] || die "catalog skill missing SKILL.md: $entry_name"
+	if [ -n "$(find "$entry_path" -type d -name scripts -print 2>/dev/null | head -n 1)" ]; then
+		die "catalog skill contains a scripts/ directory: $entry_name"
+	fi
+	if [ -n "$(find "$entry_path" -type l -print 2>/dev/null | head -n 1)" ]; then
+		die "catalog skill contains a symlink: $entry_name"
+	fi
+	if [ -n "$(find "$entry_path" -type f \( -perm -0100 -o -perm -0010 -o -perm -0001 \) -print 2>/dev/null | head -n 1)" ]; then
+		die "catalog skill contains an executable file: $entry_name"
+	fi
+}
+
+SKILLS_EXTERNAL_DIRS_BLOCK=""
+if [ -d "$SKILL_CATALOG_MOUNT" ]; then
+	case "$SKILL_CATALOG_MOUNT" in
+		/*) ;;
+		*) die "skill catalog mount must be an absolute path: $SKILL_CATALOG_MOUNT" ;;
+	esac
+	if [ -d "$CATALOG_SKILLS_DIR" ]; then
+		for entry_path in "$CATALOG_SKILLS_DIR"/* "$CATALOG_SKILLS_DIR"/.[!.]* "$CATALOG_SKILLS_DIR"/..?*; do
+			[ -e "$entry_path" ] || [ -L "$entry_path" ] || continue
+			validate_catalog_skill_entry "$entry_path"
+		done
+	fi
+	SKILLS_EXTERNAL_DIRS_BLOCK="
+  external_dirs:
+    - \"${CATALOG_SKILLS_DIR}\""
+fi
+
+# Relay-side preflight: validate the catalog mount and report, without touching
+# HERMES_HOME or launching Hermes.
+if [ "${1:-}" = "validate-catalog-only" ]; then
+	if [ -n "$SKILLS_EXTERNAL_DIRS_BLOCK" ]; then
+		printf 'telclaude hermes contained entrypoint: catalog enabled at %s\n' "$CATALOG_SKILLS_DIR"
+	else
+		printf 'telclaude hermes contained entrypoint: catalog disabled (no mount at %s)\n' "$SKILL_CATALOG_MOUNT"
+	fi
+	exit 0
+fi
 
 [ -d "$SOURCE_SKILLS_DIR" ] || die "source skills directory missing: $SOURCE_SKILLS_DIR"
 [ -f "$ALLOWLIST_PATH" ] || die "skill allowlist missing: $ALLOWLIST_PATH"
@@ -212,7 +268,7 @@ model:
   api_mode: codex_responses
   openai_runtime: auto
 skills:
-  creation_nudge_interval: 0
+  creation_nudge_interval: 0${SKILLS_EXTERNAL_DIRS_BLOCK}
 mcp_servers:
   telclaudeRelay:
     type: http
@@ -234,6 +290,11 @@ mcp_servers:
         - tc_outbound_prepare
         - tc_outbound_execute
         - tc_audit_note
+        - tc_web_fetch
+        - tc_web_search
+        - tc_image_generate
+        - tc_tts
+        - tc_skill_request
       exclude: []
       resources: false
       prompts: false
