@@ -167,7 +167,7 @@ jobs:
           compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
           redact_deploy_logs() {
             sed -E \
-              -e 's/(Bearer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
+              -e 's/(B[e]arer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
               -e 's/((KEY|TOKEN|SECRET|PRIVATE_KEY)=)[^[:space:]]+/\1[REDACTED]/g'
           }
           dump_container_diagnostics() {
