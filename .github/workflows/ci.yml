@@ -153,6 +153,96 @@ jobs:
             printf 'OPERATOR_RPC_RELAY_PRIVATE_KEY=%s\n' "$operator_relay_private_key"
           } > "$compose_env_file"
 
+      - name: Install William post-deploy health gate
+        run: |
+          set -euo pipefail
+          hook_path="/home/avivsinai/.telclaude-ops/william-release/william-actions-post-job-hook.sh"
+          mkdir -p "$(dirname "$hook_path")"
+          cat > "$hook_path" <<'HOOK'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          echo "William post-deploy gate"
+          echo "repo=${GITHUB_REPOSITORY:-} workflow=${GITHUB_WORKFLOW:-} job=${GITHUB_JOB:-} event=${GITHUB_EVENT_NAME:-} ref=${GITHUB_REF:-} sha=${GITHUB_SHA:-}"
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          if [ "${GITHUB_REPOSITORY:-}" != "avivsinai/telclaude" ] ||
+            [ "${GITHUB_WORKFLOW:-}" != "CI" ] ||
+            [ "${GITHUB_JOB:-}" != "deploy" ] ||
+            [ "${GITHUB_EVENT_NAME:-}" != "push" ] ||
+            [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+            echo "not a William production deploy context; skipping"
+            exit 0
+          fi
+
+          repo_dir="${WILLIAM_TELCLAUDE_REPO:-/home/avivsinai/telclaude}"
+          docker_dir="${repo_dir}/docker"
+          if [ ! -d "$docker_dir" ]; then
+            echo "missing docker dir: $docker_dir"
+            exit 1
+          fi
+
+          deployed_sha="$(git -C "$repo_dir" rev-parse HEAD)"
+          origin_sha="$(git -C "$repo_dir" rev-parse origin/main 2>/dev/null || printf '%s' "$deployed_sha")"
+          if [ -n "${GITHUB_SHA:-}" ] && [ "$deployed_sha" != "$GITHUB_SHA" ]; then
+            echo "superseded=1 deployed_sha=$deployed_sha hook_sha=${GITHUB_SHA:-unknown} origin_sha=$origin_sha"
+            exit 0
+          fi
+
+          cd "$docker_dir"
+          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
+          containers=(
+            telclaude
+            telclaude-google-services
+            telclaude-totp
+            telclaude-vault
+            tc-hermes-contained
+            tc-hermes-social
+          )
+
+          container_ready() {
+            local container="$1"
+            local status health
+            status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
+            health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)"
+            [ "$status" = "running" ] && { [ "$health" = "healthy" ] || [ "$health" = "none" ]; }
+          }
+
+          deadline=$((SECONDS + 600))
+          while true; do
+            not_ready=()
+            for container in "${containers[@]}"; do
+              if ! container_ready "$container"; then
+                not_ready+=("$container")
+              fi
+            done
+
+            if [ "${#not_ready[@]}" -eq 0 ]; then
+              echo "healthy=1 containers=${containers[*]} deployed_sha=$deployed_sha origin_sha=$origin_sha"
+              exit 0
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "healthy=0 not_ready=${not_ready[*]} deployed_sha=$deployed_sha origin_sha=$origin_sha"
+              docker compose "${compose_files[@]}" ps || true
+              for container in "${containers[@]}"; do
+                echo "::group::${container} state"
+                docker inspect --format '{{json .State}}' "$container" 2>&1 || true
+                echo "::endgroup::"
+                echo "::group::${container} logs"
+                docker logs --tail=120 "$container" 2>&1 || true
+                echo "::endgroup::"
+              done
+              exit 1
+            fi
+
+            echo "waiting for containers: ${not_ready[*]}"
+            sleep 5
+          done
+          HOOK
+          sed -i 's/^          //' "$hook_path"
+          chmod 700 "$hook_path"
+
       - name: Build and deploy
         run: |
           set -euo pipefail
