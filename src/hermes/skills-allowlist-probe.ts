@@ -1,4 +1,5 @@
-import type { ZodError } from "zod";
+import { spawnSync } from "node:child_process";
+import { type ZodError, z } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
 import {
 	type HermesSignedEvidenceValidationOptions,
@@ -13,21 +14,33 @@ import {
 	skillsAllowlistAttestationFieldsForEvidence,
 	skillsAllowlistAttestationSignatureFailure,
 } from "./skills-allowlist-attestation.js";
+import {
+	catalogManifestDigestSha256,
+	listCatalog,
+	type RelaySkillCatalogState,
+	resolveRelaySkillCatalogState,
+} from "./skills-catalog.js";
 
 export {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
 	SKILLS_ALLOWLIST_SCHEMA_VERSION,
+	SKILLS_CATALOG_REQUIRED_CHECK_NAMES,
 	type SkillsAllowlistCheck,
 	type SkillsAllowlistEvidence,
 	SkillsAllowlistEvidenceSchema,
 	type SkillsAllowlistPropertyName,
+	type SkillsCatalogCheckName,
+	type SkillsCatalogSection,
 } from "./skills-allowlist-schema.js";
 
 import {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
+	SKILLS_CATALOG_REQUIRED_CHECK_NAMES,
 	type SkillsAllowlistEvidence,
 	SkillsAllowlistEvidenceSchema,
 	type SkillsAllowlistPropertyName,
+	type SkillsCatalogCheckName,
+	type SkillsCatalogSection,
 } from "./skills-allowlist-schema.js";
 
 export const DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH =
@@ -135,7 +148,11 @@ function skillsAllowlistRunnerAttestationFailure(
 
 export function evaluateSkillsAllowlistEvidence(
 	evidence: unknown,
-	options: { missingPath?: string } & HermesSignedEvidenceValidationOptions = {},
+	options: {
+		missingPath?: string;
+		/** Injected relay catalog state for tests; defaults to live resolution. */
+		relayCatalog?: RelaySkillCatalogState;
+	} & HermesSignedEvidenceValidationOptions = {},
 ): SkillsAllowlistReport {
 	if (evidence === undefined) {
 		return inputError(
@@ -232,6 +249,66 @@ export function evaluateSkillsAllowlistEvidence(
 		});
 	}
 
+	// Relay-owned catalog containment proof. The deployment fact "does the relay
+	// serve a skill catalog?" is resolved relay-side (the contained runtime cannot
+	// vote), so a catalog-serving cutover cannot pass on catalog-free evidence:
+	// when the relay serves a catalog, the evidence MUST carry a catalog section
+	// whose manifestSha256 matches the live relay manifest. Catalog-free
+	// deployments (no catalog root) keep a byte-identical catalog-free report.
+	const relayCatalog = options.relayCatalog ?? resolveRelaySkillCatalogState();
+	if (relayCatalog.configured) {
+		if ("error" in relayCatalog) {
+			gates.push({
+				name: "skills.catalog.required",
+				status: "fail",
+				detail: `relay skill catalog manifest is unreadable: ${redactSecrets(relayCatalog.error)}`,
+			});
+		} else if (!parsed.data.catalog) {
+			gates.push({
+				name: "skills.catalog.required",
+				status: "fail",
+				detail: `relay serves a skill catalog (${relayCatalog.skillCount} skill(s)) but the evidence carries no catalog section; re-run the skills.allowlist probe with catalog observation wired`,
+			});
+		} else if (parsed.data.catalog.manifestSha256 !== relayCatalog.manifestSha256) {
+			gates.push({
+				name: "skills.catalog.required",
+				status: "fail",
+				detail:
+					"catalog evidence manifestSha256 does not match the live relay catalog manifest; the evidence is stale or was probed against a different manifest",
+			});
+		} else {
+			gates.push({
+				name: "skills.catalog.required",
+				status: "pass",
+				detail: `catalog evidence is bound to the live relay manifest (${relayCatalog.skillCount} skill(s))`,
+			});
+		}
+	}
+
+	// Catalog section gates: every required catalog check must exist and pass;
+	// the schema already pins docker_exec observation.
+	if (parsed.data.catalog) {
+		const catalogPass = new Map<SkillsCatalogCheckName, boolean>();
+		for (const check of parsed.data.catalog.checks) {
+			const prior = catalogPass.get(check.name);
+			const thisPass = check.status === "pass";
+			catalogPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
+		}
+		for (const name of SKILLS_CATALOG_REQUIRED_CHECK_NAMES) {
+			const backed = catalogPass.get(name);
+			gates.push({
+				name: `skills.catalog.${name}`,
+				status: backed === true ? "pass" : "fail",
+				detail:
+					backed === true
+						? `catalog check ${name} is proven against the container-visible mount`
+						: backed === false
+							? `catalog check ${name} failed`
+							: `catalog section is present but check ${name} is missing`,
+			});
+		}
+	}
+
 	const productionEnable = gates.every((gate) => gate.status === "pass");
 	return {
 		schemaVersion: SKILLS_ALLOWLIST_REPORT_SCHEMA_VERSION,
@@ -296,10 +373,39 @@ export type SkillsTopologyObservation = {
 	readonly relayContainerPresent: boolean;
 };
 
+export type SkillsCatalogManifestDigestEntry = {
+	readonly name: string;
+	readonly sha256: string;
+};
+
+export type SkillsCatalogObservedEntry = {
+	readonly name: string;
+	readonly sha256: string;
+	readonly hasScriptsDir: boolean;
+	readonly hasSymlink: boolean;
+	readonly hasExecutable: boolean;
+};
+
+export type SkillsCatalogProbeInput = {
+	readonly mountPath: string;
+	/** Relay-side catalog manifest digests (names + canonical content hashes). */
+	readonly manifest: ReadonlyArray<SkillsCatalogManifestDigestEntry>;
+	/** Observe the container-visible catalog dir via docker exec inside the runtime. */
+	readonly observe: () => Promise<ReadonlyArray<SkillsCatalogObservedEntry>>;
+};
+
 export type RunSkillsAllowlistProbeOptions = {
 	readonly allowRun: boolean;
 	readonly runner?: SkillsAllowlistRunner;
 	readonly observeTopology?: () => Promise<SkillsTopologyObservation>;
+	/**
+	 * Relay-owned catalog proof (see buildRelaySkillsCatalogProbeInput). Omitting
+	 * it while the relay serves a catalog fails the evidence closed: the final
+	 * self-evaluation requires a catalog section bound to the live relay manifest.
+	 */
+	readonly catalog?: SkillsCatalogProbeInput;
+	/** Injected relay catalog state for tests; defaults to live resolution. */
+	readonly relayCatalog?: RelaySkillCatalogState;
 	readonly now?: Date;
 };
 
@@ -467,6 +573,8 @@ export async function runSkillsAllowlistProbe(
 		detail: "producer redacted observed detail; evaluator re-scans the artifact bytes",
 	});
 
+	const catalog = options.catalog ? await observeCatalogSection(options.catalog) : undefined;
+
 	const draft: SkillsAllowlistEvidence = {
 		schemaVersion: "telclaude.hermes.skills-allowlist.v1",
 		probeId: "skills.allowlist",
@@ -477,18 +585,23 @@ export async function runSkillsAllowlistProbe(
 		origin,
 		properties,
 		checks,
+		...(catalog ? { catalog } : {}),
 	};
 	const evaluated = evaluateSkillsAllowlistEvidence(draft, {
 		allowStaleAttestations: true,
 		now: options.now,
+		relayCatalog: options.relayCatalog ?? resolveRelaySkillCatalogState(),
 	});
 	const allPass = evaluated.status === "pass" && evaluated.productionEnable;
+	const failingGates = evaluated.gates
+		.filter((gate) => gate.status === "fail")
+		.map((gate) => gate.name);
 	const finalEvidence: SkillsAllowlistEvidence = {
 		...draft,
 		status: allPass ? "pass" : "fail",
 		summary: allPass
 			? "skills allowlist profile proven in the contained runtime"
-			: "skills-allowlist probe recorded failing checks",
+			: `skills-allowlist probe recorded failing gates: ${failingGates.join(", ") || evaluated.status}`,
 	};
 	// Sign the finalized evidence body with the operator relay key so the written
 	// artifact carries provenance the cutover evaluator can verify. The relay signing
@@ -496,5 +609,258 @@ export async function runSkillsAllowlistProbe(
 	return {
 		...finalEvidence,
 		runnerAttestation: signSkillsAllowlistAttestation(finalEvidence),
+	};
+}
+
+function catalogCheck(
+	name: SkillsCatalogCheckName,
+	violations: readonly string[],
+	passDetail: string,
+): SkillsCatalogSection["checks"][number] {
+	return {
+		name,
+		status: violations.length === 0 ? "pass" : "fail",
+		detail: violations.length === 0 ? passDetail : `${name} violated by: ${violations.join(", ")}`,
+		observationLayer: "docker_exec",
+	};
+}
+
+async function observeCatalogSection(
+	input: SkillsCatalogProbeInput,
+): Promise<SkillsCatalogSection> {
+	const manifestSha256 = catalogManifestDigestSha256(input.manifest);
+	let observed: ReadonlyArray<SkillsCatalogObservedEntry>;
+	try {
+		observed = await input.observe();
+	} catch (error) {
+		// Fail closed: an unobservable catalog proves nothing, so every required
+		// check records a failure instead of the section silently disappearing.
+		const detail = `catalog observation failed: ${redactSecrets(
+			String(error instanceof Error ? error.message : error),
+		)}`;
+		return {
+			mountPath: input.mountPath,
+			manifestSkillCount: input.manifest.length,
+			manifestSha256,
+			checks: SKILLS_CATALOG_REQUIRED_CHECK_NAMES.map((name) => ({
+				name,
+				status: "fail",
+				detail,
+				observationLayer: "docker_exec",
+			})),
+		};
+	}
+	const observedByName = new Map(observed.map((entry) => [entry.name, entry]));
+
+	const manifestMismatches: string[] = [];
+	for (const entry of input.manifest) {
+		const seen = observedByName.get(entry.name);
+		if (!seen) {
+			manifestMismatches.push(`${entry.name} (missing in container)`);
+		} else if (seen.sha256 !== entry.sha256) {
+			manifestMismatches.push(`${entry.name} (content hash mismatch)`);
+		}
+	}
+	const manifestNames = new Set(input.manifest.map((entry) => entry.name));
+	for (const entry of observed) {
+		if (!manifestNames.has(entry.name)) {
+			manifestMismatches.push(`${entry.name} (not in relay manifest)`);
+		}
+	}
+
+	return {
+		mountPath: input.mountPath,
+		manifestSkillCount: input.manifest.length,
+		manifestSha256,
+		checks: [
+			catalogCheck(
+				"catalog_manifest_match",
+				manifestMismatches,
+				"container-visible catalog matches the relay manifest (names + content hashes)",
+			),
+			catalogCheck(
+				"catalog_no_scripts",
+				observed.filter((entry) => entry.hasScriptsDir).map((entry) => entry.name),
+				"no catalog entry contains a scripts/ directory",
+			),
+			catalogCheck(
+				"catalog_no_symlinks",
+				observed.filter((entry) => entry.hasSymlink).map((entry) => entry.name),
+				"no catalog entry contains a symlink",
+			),
+			catalogCheck(
+				"catalog_no_executables",
+				observed.filter((entry) => entry.hasExecutable).map((entry) => entry.name),
+				"no catalog entry contains an executable file",
+			),
+		],
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Live catalog probe input (relay manifest + docker-exec observer)
+// ---------------------------------------------------------------------------
+
+/** In-container catalog mount default; mirrors docker/hermes-contained-entrypoint.sh. */
+export const DEFAULT_HERMES_SKILL_CATALOG_MOUNT = "/opt/data/telclaude-hermes-skill-catalog";
+
+/**
+ * Container-side catalog walk. Mirrors walkSkillDir/computeCatalogSkillSha256 in
+ * skills-catalog.ts: per skill dir, sha256 over the rel-path-sorted listing of
+ * `<rel>\0<sha256(bytes) hex>\n` for regular non-executable files, with
+ * scripts/symlink/executable violations reported as flags instead of throwing.
+ * Exported so tests can prove hash equivalence with the relay-side hasher by
+ * running the script under a local node.
+ */
+export const SKILLS_CATALOG_OBSERVER_SCRIPT = `
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+
+const mount = process.argv[1];
+const skillsDir = path.join(mount, "skills");
+const entries = [];
+let dirents = [];
+try {
+  dirents = fs.readdirSync(skillsDir, { withFileTypes: true });
+} catch {
+  dirents = [];
+}
+for (const dirent of dirents) {
+  if (dirent.name.startsWith(".")) continue;
+  const dir = path.join(skillsDir, dirent.name);
+  const top = fs.lstatSync(dir);
+  if (top.isSymbolicLink() || !top.isDirectory()) {
+    entries.push({
+      name: dirent.name,
+      sha256: "",
+      hasScriptsDir: false,
+      hasSymlink: top.isSymbolicLink(),
+      hasExecutable: false,
+    });
+    continue;
+  }
+  let hasScriptsDir = false;
+  let hasSymlink = false;
+  let hasExecutable = false;
+  const files = [];
+  const visit = (current, relPrefix) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const abs = path.join(current, entry.name);
+      const rel = relPrefix ? relPrefix + "/" + entry.name : entry.name;
+      const stat = fs.lstatSync(abs);
+      if (stat.isSymbolicLink()) { hasSymlink = true; continue; }
+      if (stat.isDirectory()) {
+        if (entry.name === "scripts") { hasScriptsDir = true; continue; }
+        visit(abs, rel);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      if ((stat.mode & 0o111) !== 0) { hasExecutable = true; continue; }
+      files.push({ rel, abs });
+    }
+  };
+  visit(dir, "");
+  files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const hash = crypto.createHash("sha256");
+  for (const file of files) {
+    hash.update(file.rel);
+    hash.update("\\0");
+    hash.update(crypto.createHash("sha256").update(fs.readFileSync(file.abs)).digest("hex"));
+    hash.update("\\n");
+  }
+  entries.push({
+    name: dirent.name,
+    sha256: hash.digest("hex"),
+    hasScriptsDir,
+    hasSymlink,
+    hasExecutable,
+  });
+}
+console.log(JSON.stringify(entries));
+`;
+
+const SkillsCatalogObservedEntrySchema = z
+	.object({
+		name: z.string().min(1),
+		sha256: z.string(),
+		hasScriptsDir: z.boolean(),
+		hasSymlink: z.boolean(),
+		hasExecutable: z.boolean(),
+	})
+	.strict();
+
+export type BuildRelaySkillsCatalogProbeInputOptions = {
+	readonly containerName: string;
+	readonly dockerBin?: string;
+	readonly mountPath?: string;
+	readonly timeoutMs?: number;
+	/** Override the relay catalog root (tests / non-default deployments). */
+	readonly catalogRoot?: string;
+};
+
+/**
+ * Build the catalog probe input for the live skills.allowlist probe: the relay
+ * manifest digests from listCatalog() plus a docker-exec observer of the
+ * container-visible mount. Returns undefined when no relay catalog is
+ * configured (catalog-free deployment); throws on an unreadable manifest so a
+ * broken catalog cannot quietly produce catalog-free evidence.
+ */
+export function buildRelaySkillsCatalogProbeInput(
+	options: BuildRelaySkillsCatalogProbeInputOptions,
+): SkillsCatalogProbeInput | undefined {
+	const catalogOptions = options.catalogRoot ? { catalogRoot: options.catalogRoot } : {};
+	const state = resolveRelaySkillCatalogState(catalogOptions);
+	if (!state.configured) return undefined;
+	if ("error" in state) {
+		throw new Error(`relay skill catalog manifest is unreadable: ${state.error}`);
+	}
+	const manifest = listCatalog(catalogOptions).map(({ name, sha256 }) => ({ name, sha256 }));
+	const mountPath =
+		options.mountPath?.trim() ||
+		process.env.TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT?.trim() ||
+		DEFAULT_HERMES_SKILL_CATALOG_MOUNT;
+	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const containerName = options.containerName.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+	return {
+		mountPath,
+		manifest,
+		observe: async () => {
+			const result = spawnSync(
+				dockerBin,
+				[
+					"exec",
+					containerName,
+					"node",
+					"--input-type=module",
+					"-e",
+					SKILLS_CATALOG_OBSERVER_SCRIPT,
+					mountPath,
+				],
+				{
+					encoding: "utf8",
+					env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+					timeout: options.timeoutMs,
+				},
+			);
+			if (result.status !== 0 || result.error) {
+				throw new Error(
+					redactSecrets(
+						result.stderr?.trim() ||
+							result.error?.message ||
+							"docker exec catalog observation failed",
+					),
+				);
+			}
+			const parsed = z
+				.array(SkillsCatalogObservedEntrySchema)
+				.safeParse(JSON.parse(result.stdout?.trim() || "[]"));
+			if (!parsed.success) {
+				throw new Error(
+					`catalog observer returned malformed entries: ${flattenZodError(parsed.error)}`,
+				);
+			}
+			return parsed.data;
+		},
 	};
 }

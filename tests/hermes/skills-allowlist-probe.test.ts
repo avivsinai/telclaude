@@ -1,10 +1,27 @@
-import { describe, expect, it } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	evaluateSkillsAllowlistEvidence,
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
-	type SkillsAllowlistPropertyName,
 	type SkillsAllowlistEvidence,
+	type SkillsAllowlistPropertyName,
 } from "../../src/hermes/skills-allowlist-probe.js";
+
+// Pin the relay catalog root to a nonexistent path: the evaluator resolves the
+// live relay catalog state by default, and a real catalog on the dev machine
+// must not leak a skills.catalog.required gate into these catalog-free tests.
+const savedCatalogDir = process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR;
+beforeEach(() => {
+	process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = path.join(
+		os.tmpdir(),
+		`telclaude-no-catalog-${process.pid}`,
+	);
+});
+afterEach(() => {
+	if (savedCatalogDir === undefined) delete process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR;
+	else process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = savedCatalogDir;
+});
 
 const PRETOOLUSE_PROPERTIES = new Set<SkillsAllowlistPropertyName>([
 	"pretooluse_hook_registered",

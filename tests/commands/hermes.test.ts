@@ -178,6 +178,7 @@ const HERMES_COMMAND_TEST_ENV_KEYS = [
 	"TELCLAUDE_HERMES_RUNTIME_UID",
 	"TELCLAUDE_HERMES_CWD",
 	"TELCLAUDE_HERMES_SERVED_MCP_AUTH",
+	"TELCLAUDE_HERMES_SKILL_CATALOG_DIR",
 	"TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH",
 	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER",
 	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH",
@@ -188,6 +189,14 @@ const HERMES_COMMAND_TEST_ENV_KEYS = [
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
 ] as const;
+
+// The skills-allowlist evaluator resolves the live relay skill catalog state by
+// default; pin it to a nonexistent root so a real catalog on the dev machine
+// cannot leak a skills.catalog.required gate into seeded cutover evidence.
+process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = path.join(
+	os.tmpdir(),
+	`telclaude-no-catalog-${process.pid}`,
+);
 
 let hermesCommandTestEnvSnapshot: Record<string, string | undefined> = {};
 

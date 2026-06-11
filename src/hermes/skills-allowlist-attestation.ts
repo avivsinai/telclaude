@@ -36,6 +36,7 @@ type SkillsAllowlistEvidenceLike = {
 	readonly origin: unknown;
 	readonly properties: unknown;
 	readonly checks: readonly unknown[];
+	readonly catalog?: unknown;
 };
 
 export type SkillsAllowlistAttestationSignedFields = {
@@ -165,6 +166,9 @@ export function skillsAllowlistEvidenceSha256(evidence: SkillsAllowlistEvidenceL
 		origin: evidence.origin,
 		properties: evidence.properties,
 		checks: evidence.checks,
+		// Bound only when present so catalog-free evidence keeps its digest; when a
+		// catalog section exists, post-hoc edits to it break the attestation.
+		...(evidence.catalog !== undefined ? { catalog: evidence.catalog } : {}),
 	});
 }
 

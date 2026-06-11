@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signSkillsAllowlistAttestation } from "../../src/hermes/skills-allowlist-attestation.js";
 import {
@@ -23,6 +25,7 @@ const PRETOOLUSE_PROPERTIES = new Set<SkillsAllowlistPropertyName>([
 const savedRelay = {
 	private: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
 	public: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+	catalogDir: process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR,
 };
 let relayPublicKey = "";
 
@@ -31,12 +34,20 @@ beforeEach(() => {
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = keys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = keys.publicKey;
 	relayPublicKey = keys.publicKey;
+	// Nonexistent catalog root: a real catalog on the dev machine must not leak a
+	// skills.catalog.required gate into these catalog-free tests.
+	process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = path.join(
+		os.tmpdir(),
+		`telclaude-no-catalog-${process.pid}`,
+	);
 });
 afterEach(() => {
 	if (savedRelay.private === undefined) delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 	else process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = savedRelay.private;
 	if (savedRelay.public === undefined) delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 	else process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = savedRelay.public;
+	if (savedRelay.catalogDir === undefined) delete process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR;
+	else process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = savedRelay.catalogDir;
 });
 
 function unsignedEvidence(): SkillsAllowlistEvidence {
