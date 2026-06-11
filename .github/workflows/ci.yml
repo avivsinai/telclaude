@@ -165,7 +165,21 @@ jobs:
           fi
           cd docker
           compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
-          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" ps || true; docker network ls || true; fi; exit "$status"' EXIT
+          redact_deploy_logs() {
+            sed -E \
+              -e 's/(Bearer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
+              -e 's/((KEY|TOKEN|SECRET|PRIVATE_KEY)=)[^[:space:]]+/\1[REDACTED]/g'
+          }
+          dump_container_diagnostics() {
+            local container="$1"
+            echo "::group::${container} state"
+            docker inspect --format '{{json .State}}' "$container" 2>&1 | redact_deploy_logs || true
+            echo "::endgroup::"
+            echo "::group::${container} logs"
+            docker logs --tail=160 "$container" 2>&1 | redact_deploy_logs || true
+            echo "::endgroup::"
+          }
+          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" ps || true; for container in telclaude tc-hermes-contained tc-hermes-social; do dump_container_diagnostics "$container"; done; docker network ls || true; fi; exit "$status"' EXIT
           docker compose "${compose_files[@]}" down --remove-orphans || true
           docker rm -f tc-hermes-contained tc-hermes-social telclaude-agent telclaude-agent-social >/dev/null 2>&1 || true
           for network in telclaude-hermes-private telclaude-hermes-social docker_hermes-private-net docker_hermes-social-net telclaude-hermes-relay telclaude-agent-relay telclaude-agent-egress telclaude-social-relay telclaude-social-egress; do
