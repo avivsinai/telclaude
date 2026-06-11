@@ -374,33 +374,51 @@ TELCLAUDE_LOG_LEVEL=info
 			"utf8",
 		);
 		const step = workflowStep(workflow, "Persist William Hermes deploy keys");
+		expect(step).toContain("hermes_private_subnet='172.30.92.0/24'");
+		expect(step).toContain("hermes_social_subnet='172.30.93.0/24'");
+		expect(step).toContain('hermes_private_prefix="${hermes_private_subnet%.*}"');
+		expect(step).toContain('hermes_social_prefix="${hermes_social_subnet%.*}"');
+		expect(step).toContain('hermes_relay_ip="${hermes_private_prefix}.10"');
+		expect(step).toContain('hermes_social_relay_ip="${hermes_social_prefix}.10"');
+		expect(step).toContain('hermes_contained_ip="${hermes_private_prefix}.11"');
+		expect(step).toContain('hermes_social_ip="${hermes_social_prefix}.11"');
+		expect(step).toContain(
+			'hermes_live_mcp_additional_binds="${hermes_social_relay_ip}@telclaude-hermes-social"',
+		);
+		expect(step).toContain(
+			'hermes_live_mcp_allowed_peers="${hermes_contained_ip},${hermes_social_ip}"',
+		);
 		const required = [
-			["TELCLAUDE_HERMES_RELAY_SUBNET", "172.30.92.0/24"],
-			["TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET", "172.30.93.0/24"],
-			["TELCLAUDE_HERMES_RELAY_IP", "172.30.92.10"],
-			["TELCLAUDE_HERMES_SOCIAL_RELAY_IP", "172.30.93.10"],
-			["TELCLAUDE_HERMES_CONTAINED_IP", "172.30.92.11"],
-			["TELCLAUDE_HERMES_SOCIAL_IP", "172.30.93.11"],
-			["TELCLAUDE_HERMES_LIVE_MCP_ENABLED", "1"],
-			["TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED", "1"],
-			["TELCLAUDE_HERMES_LIVE_MCP_HOST", "172.30.92.10"],
-			["TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS", "172.30.93.10@telclaude-hermes-social"],
-			["TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS", "172.30.92.11,172.30.93.11"],
-			["TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP", "172.30.93.11"],
+			["TELCLAUDE_HERMES_RELAY_SUBNET", "hermes_private_subnet"],
+			["TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET", "hermes_social_subnet"],
+			["TELCLAUDE_HERMES_RELAY_IP", "hermes_relay_ip"],
+			["TELCLAUDE_HERMES_SOCIAL_RELAY_IP", "hermes_social_relay_ip"],
+			["TELCLAUDE_HERMES_CONTAINED_IP", "hermes_contained_ip"],
+			["TELCLAUDE_HERMES_SOCIAL_IP", "hermes_social_ip"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ENABLED", "hermes_live_mcp_enabled"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED", "hermes_live_mcp_admin_enabled"],
+			["TELCLAUDE_HERMES_LIVE_MCP_HOST", "hermes_relay_ip"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS", "hermes_live_mcp_additional_binds"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS", "hermes_live_mcp_allowed_peers"],
+			["TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP", "hermes_social_ip"],
 		] as const;
 		const shellPattern = step.match(/shell_key_pattern='([^']+)'/)?.[1] ?? "";
 		const composePattern = step.match(/compose_key_pattern='([^']+)'/)?.[1] ?? "";
 
-		for (const [key, value] of required) {
+		for (const [key, variable] of required) {
 			const suffix = key.replace("TELCLAUDE_HERMES_", "");
 			expect(shellPattern).toContain(suffix);
 			expect(composePattern).toContain(suffix);
-			expect(step).toContain(`printf 'export ${key}=${value}\\n'`);
-			expect(step).toContain(`printf '${key}=${value}\\n'`);
+			expect(step).toContain(`printf 'export ${key}=%s\\n' "$${variable}"`);
+			expect(step).toContain(`printf '${key}=%s\\n' "$${variable}"`);
 		}
 		expect(step).not.toContain("LIVE_MCP_ENABLED=0");
 		expect(step).not.toContain("192.0.2.10");
 		expect(step).not.toContain("192.0.3.10");
+		expect(step).not.toContain("172.30.92.10");
+		expect(step).not.toContain("172.30.93.10");
+		expect(step).not.toContain("172.30.92.11");
+		expect(step).not.toContain("172.30.93.11");
 	});
 
 	it("keeps the standalone Hermes CLI proof runner off host-gateway smoke paths", () => {
