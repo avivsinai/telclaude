@@ -225,4 +225,21 @@ describe("docker/install-claude-assets.sh", () => {
 		const dockerignore = fs.readFileSync(path.join(process.cwd(), ".dockerignore"), "utf8");
 		expect(dockerignore).toContain("!.agents/skills/**/*.md");
 	});
+
+	it("only exposes bundled Claude skills with materializable SKILL.md files", () => {
+		const bundledSkillsDir = path.join(process.cwd(), ".claude", "skills");
+		const missing = fs
+			.readdirSync(bundledSkillsDir)
+			.filter((entryName) => {
+				const entryPath = path.join(bundledSkillsDir, entryName);
+				const stats = fs.lstatSync(entryPath);
+				const skillDir = stats.isSymbolicLink()
+					? path.resolve(path.dirname(entryPath), fs.readlinkSync(entryPath))
+					: entryPath;
+
+				return !fs.existsSync(path.join(skillDir, "SKILL.md"));
+			});
+
+		expect(missing).toEqual([]);
+	});
 });
