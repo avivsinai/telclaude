@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const mockUndiciFetch = vi.hoisted(() => vi.fn());
+
+vi.mock("undici", async (importOriginal) => {
+	const actual = (await importOriginal()) as typeof import("undici");
+	return {
+		...actual,
+		fetch: mockUndiciFetch,
+	};
+});
+
 import {
 	FetchGuardError,
 	createPinnedLookup,
@@ -38,6 +48,7 @@ vi.mock("../../src/logging.js", () => ({
 
 afterEach(() => {
 	mockDNSResults.clear();
+	mockUndiciFetch.mockReset();
 	vi.restoreAllMocks();
 });
 
@@ -212,12 +223,12 @@ describe("fetchWithGuard", () => {
 		).rejects.toThrow(FetchGuardError);
 	});
 
-	// ─── Happy path (with mocked global fetch) ───
+	// ─── Happy path (with mocked undici fetch) ───
 
 	it("allows URLs resolving to public IPs", async () => {
 		mockDNSResults.set("safe.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+		const mockFetch = mockUndiciFetch.mockResolvedValueOnce(
 			new Response("hello world", {
 				status: 200,
 				headers: { "Content-Type": "text/plain" },
@@ -243,13 +254,13 @@ describe("fetchWithGuard", () => {
 		expect(callInit.dispatcher).toBeTruthy();
 	});
 
-	// ─── Redirect handling (with mocked global fetch) ───
+	// ─── Redirect handling (with mocked undici fetch) ───
 
 	it("follows redirects and re-validates each hop", async () => {
 		mockDNSResults.set("start.example", ["93.184.216.34"]);
 		mockDNSResults.set("middle.example", ["93.184.216.35"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 
 		// First call: redirect
 		mockFetch.mockResolvedValueOnce(
@@ -283,7 +294,7 @@ describe("fetchWithGuard", () => {
 	it("downgrades POST to GET and drops body on 303 redirect", async () => {
 		mockDNSResults.set("post.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 		mockFetch.mockResolvedValueOnce(
 			new Response(null, {
 				status: 303,
@@ -306,7 +317,7 @@ describe("fetchWithGuard", () => {
 	it("preserves method and body on 307 redirect", async () => {
 		mockDNSResults.set("keep.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 		mockFetch.mockResolvedValueOnce(
 			new Response(null, {
 				status: 307,
@@ -330,7 +341,7 @@ describe("fetchWithGuard", () => {
 		mockDNSResults.set("origin-a.example", ["93.184.216.34"]);
 		mockDNSResults.set("origin-b.example", ["93.184.216.35"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 		mockFetch.mockResolvedValueOnce(
 			new Response(null, {
 				status: 307,
@@ -363,7 +374,7 @@ describe("fetchWithGuard", () => {
 	it("retains credentials on a same-origin redirect", async () => {
 		mockDNSResults.set("same.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 		mockFetch.mockResolvedValueOnce(
 			new Response(null, {
 				status: 307,
@@ -387,7 +398,7 @@ describe("fetchWithGuard", () => {
 		mockDNSResults.set("legit.example", ["93.184.216.34"]);
 		mockDNSResults.set("internal.corp", ["192.168.1.100"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 
 		// First call: redirect to private host
 		mockFetch.mockResolvedValueOnce(
@@ -406,7 +417,7 @@ describe("fetchWithGuard", () => {
 		mockDNSResults.set("legit2.example", ["93.184.216.34"]);
 		mockDNSResults.set("sneaky-meta.example", ["169.254.169.254"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 		mockFetch.mockResolvedValueOnce(
 			new Response(null, {
 				status: 301,
@@ -422,7 +433,7 @@ describe("fetchWithGuard", () => {
 	it("enforces max redirect cap", async () => {
 		mockDNSResults.set("chain.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 
 		// Create 4 redirects (exceeds default cap of 3)
 		for (let i = 0; i < 4; i++) {
@@ -442,7 +453,7 @@ describe("fetchWithGuard", () => {
 	it("detects redirect loops", async () => {
 		mockDNSResults.set("loop.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 
 		// First redirect: /a -> /b
 		mockFetch.mockResolvedValueOnce(
@@ -468,7 +479,7 @@ describe("fetchWithGuard", () => {
 	it("handles redirect with missing Location header", async () => {
 		mockDNSResults.set("bad.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 		mockFetch.mockResolvedValueOnce(new Response(null, { status: 302 }));
 
 		await expect(fetchWithGuard({ url: "http://bad.example/" })).rejects.toThrow(
@@ -479,7 +490,7 @@ describe("fetchWithGuard", () => {
 	it("respects custom maxRedirects option", async () => {
 		mockDNSResults.set("custom.example", ["93.184.216.34"]);
 
-		const mockFetch = vi.spyOn(globalThis, "fetch");
+		const mockFetch = mockUndiciFetch;
 
 		// 2 redirects (exceeds custom cap of 1)
 		mockFetch.mockResolvedValueOnce(
@@ -506,7 +517,7 @@ describe("fetchWithGuard", () => {
 		mockDNSResults.set("slow.example", ["93.184.216.34"]);
 
 		// Mock fetch to hang indefinitely
-		const mockFetch = vi.spyOn(globalThis, "fetch").mockImplementation(
+		mockUndiciFetch.mockImplementation(
 			(_url, init) =>
 				new Promise((_resolve, reject) => {
 					// Listen for abort signal
@@ -525,15 +536,13 @@ describe("fetchWithGuard", () => {
 				timeoutMs: 50,
 			}),
 		).rejects.toThrow();
-
-		mockFetch.mockRestore();
 	});
 
 	it("respects external abort signal", async () => {
 		mockDNSResults.set("abortable.example", ["93.184.216.34"]);
 		const controller = new AbortController();
 
-		const mockFetch = vi.spyOn(globalThis, "fetch").mockImplementation(
+		mockUndiciFetch.mockImplementation(
 			(_url, init) =>
 				new Promise((_resolve, reject) => {
 					const signal = (init as RequestInit)?.signal;
@@ -554,8 +563,6 @@ describe("fetchWithGuard", () => {
 				signal: controller.signal,
 			}),
 		).rejects.toThrow();
-
-		mockFetch.mockRestore();
 	});
 
 	// ─── DNS rebinding simulation ───
@@ -566,9 +573,7 @@ describe("fetchWithGuard", () => {
 		// for the actual TCP connection.
 		mockDNSResults.set("rebind.example", ["93.184.216.34"]);
 
-		const mockFetch = vi
-			.spyOn(globalThis, "fetch")
-			.mockResolvedValueOnce(new Response("safe", { status: 200 }));
+		const mockFetch = mockUndiciFetch.mockResolvedValueOnce(new Response("safe", { status: 200 }));
 
 		const result = await fetchWithGuard({
 			url: "http://rebind.example/",
