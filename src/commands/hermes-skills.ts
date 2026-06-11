@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
+import { z } from "zod";
 import { getCuratorItem } from "../curator/store.js";
 import type { CuratorItem } from "../curator/types.js";
 import {
@@ -17,10 +18,30 @@ import {
 	installSkillFromDir,
 	listCatalog,
 	removeSkill,
+	validateCatalogSkillDir,
 	verifyCatalogAgainstManifest,
 } from "../hermes/skills-catalog.js";
 
 const UPSTREAM_REL_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+const HERMES_SKILL_CATALOG_SEED_MANIFEST_VERSION =
+	"telclaude.hermes.skill-catalog-seed-manifest.v1";
+
+const HermesSkillCatalogSeedEntrySchema = z
+	.object({
+		catalog: z.enum(["private", "social"]).default("private"),
+		sourceDir: z.string().trim().min(1),
+		origin: z.string().trim().min(1),
+	})
+	.strict();
+
+const HermesSkillCatalogSeedManifestSchema = z
+	.object({
+		schemaVersion: z.literal(HERMES_SKILL_CATALOG_SEED_MANIFEST_VERSION),
+		entries: z.array(HermesSkillCatalogSeedEntrySchema),
+	})
+	.strict();
+
+type HermesSkillCatalogSeedManifest = z.infer<typeof HermesSkillCatalogSeedManifestSchema>;
 
 function handleCommandError(err: unknown): void {
 	console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -86,6 +107,18 @@ function withCatalogOption(command: Command): Command {
 	);
 }
 
+type SyncManifestResult = {
+	installed: CatalogInstallResult[];
+	pruned: Array<{ catalog: HermesSkillCatalogKind; name: string }>;
+};
+
+type ResolvedSeedEntry = {
+	catalog: HermesSkillCatalogKind;
+	sourceDir: string;
+	origin: string;
+	name: string;
+};
+
 type CuratorCatalogInstall = { sourceDir: string } | { upstreamRel: string };
 
 function parseCuratorCatalogInstall(item: CuratorItem): CuratorCatalogInstall {
@@ -102,6 +135,103 @@ function parseCuratorCatalogInstall(item: CuratorItem): CuratorCatalogInstall {
 		);
 	}
 	return sourceDir ? { sourceDir } : { upstreamRel };
+}
+
+function readSeedManifest(manifestPath: string): HermesSkillCatalogSeedManifest {
+	const parsed = HermesSkillCatalogSeedManifestSchema.safeParse(
+		JSON.parse(fs.readFileSync(manifestPath, "utf8")),
+	);
+	if (!parsed.success) {
+		throw new Error(`invalid seed manifest at ${manifestPath}: ${parsed.error.message}`);
+	}
+	return parsed.data;
+}
+
+function resolveSeedSourceDir(manifestPath: string, sourceDir: string): string {
+	const resolved = path.isAbsolute(sourceDir)
+		? path.resolve(sourceDir)
+		: path.resolve(path.dirname(manifestPath), sourceDir);
+	if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+		throw new Error(`seed sourceDir is not a directory: ${resolved}`);
+	}
+	return resolved;
+}
+
+function resolveSeedEntries(manifestPath: string): ResolvedSeedEntry[] {
+	const resolvedManifestPath = path.resolve(manifestPath);
+	const manifest = readSeedManifest(resolvedManifestPath);
+	const resolvedEntries: ResolvedSeedEntry[] = [];
+	const duplicateKeys = new Set<string>();
+	const seenKeys = new Set<string>();
+
+	for (const entry of manifest.entries) {
+		const sourceDir = resolveSeedSourceDir(resolvedManifestPath, entry.sourceDir);
+		const validation = validateCatalogSkillDir(sourceDir);
+		if (!validation.ok) {
+			throw new Error(
+				`seed source validation failed for ${sourceDir}: ${validation.errors.join("; ")}`,
+			);
+		}
+		const key = `${entry.catalog}:${validation.name}`;
+		if (seenKeys.has(key)) duplicateKeys.add(key);
+		seenKeys.add(key);
+		resolvedEntries.push({
+			catalog: entry.catalog,
+			sourceDir,
+			origin: entry.origin,
+			name: validation.name,
+		});
+	}
+
+	if (duplicateKeys.size > 0) {
+		throw new Error(
+			`seed manifest contains duplicate catalog/name entries: ${Array.from(duplicateKeys)
+				.sort()
+				.join(", ")}`,
+		);
+	}
+
+	return resolvedEntries;
+}
+
+function syncSeedManifest(
+	manifestPath: string,
+	options: { pruneManaged: boolean },
+): SyncManifestResult {
+	const resolvedEntries = resolveSeedEntries(manifestPath);
+	const installed: CatalogInstallResult[] = [];
+	const expectedSeedNamesByCatalog = new Map<HermesSkillCatalogKind, Set<string>>();
+	const declaredCatalogs = new Set<HermesSkillCatalogKind>();
+
+	for (const entry of resolvedEntries) {
+		const catalog = entry.catalog;
+		declaredCatalogs.add(catalog);
+		const result = installSkillFromDir(entry.sourceDir, {
+			catalogKind: catalog,
+			origin: entry.origin,
+		});
+		installed.push(result);
+		if (entry.origin.startsWith("seed:")) {
+			const expected = expectedSeedNamesByCatalog.get(catalog) ?? new Set<string>();
+			expected.add(entry.name);
+			expectedSeedNamesByCatalog.set(catalog, expected);
+		}
+	}
+
+	const pruned: Array<{ catalog: HermesSkillCatalogKind; name: string }> = [];
+	if (options.pruneManaged) {
+		for (const catalog of declaredCatalogs) {
+			const expected = expectedSeedNamesByCatalog.get(catalog) ?? new Set<string>();
+			for (const existing of listCatalog({ catalogKind: catalog })) {
+				if (!existing.origin.startsWith("seed:") || expected.has(existing.name)) continue;
+				if (removeSkill(existing.name, { catalogKind: catalog })) {
+					pruned.push({ catalog, name: existing.name });
+				}
+			}
+		}
+	}
+
+	return { installed, pruned };
 }
 
 export function registerHermesSkillsCommand(program: Command): void {
@@ -248,4 +378,31 @@ export function registerHermesSkillsCommand(program: Command): void {
 				}
 			},
 		);
+
+	group
+		.command("sync-manifest")
+		.description("Synchronize declared skill sources into the relay-owned Hermes catalog")
+		.argument("<manifest>", "JSON manifest declaring sourceDir/origin/catalog entries")
+		.option(
+			"--prune-managed",
+			"Remove catalog skills with seed: origins that are no longer declared",
+		)
+		.option("--json", "Output as JSON")
+		.action((manifest: string, opts: { pruneManaged?: boolean; json?: boolean }) => {
+			try {
+				const result = syncSeedManifest(manifest, { pruneManaged: opts.pruneManaged === true });
+				if (opts.json) {
+					console.log(JSON.stringify(result, null, 2));
+					return;
+				}
+				for (const installed of result.installed) {
+					console.log(`Installed ${installed.name} into catalog from ${installed.origin}.`);
+				}
+				for (const pruned of result.pruned) {
+					console.log(`Pruned ${pruned.name} from ${pruned.catalog} catalog.`);
+				}
+			} catch (err) {
+				handleCommandError(err);
+			}
+		});
 }

@@ -28,12 +28,13 @@ the bundled skill directory shipped inside the telclaude package. Writers
 never touch that directory.
 
 In Docker, telclaude uses one operator-managed standalone skill catalog for
-both personas, while official Claude plugins stay profile-local. Social-specific
-restrictions are enforced by Hermes authority, runtime policy, and containment,
-not by copying skills into a separate catalog.
+authoring and promotion. Plugin package skills use a separate relay-owned
+Hermes external catalog per persona; see [plugins.md](./plugins.md).
+Social-specific restrictions are enforced by Hermes authority, runtime policy,
+and containment.
 
 The contained Hermes private runtime is a separate, narrower skill surface and
-does not draw from this writable catalog — see
+does not draw from the standalone writable catalog — see
 [The contained Hermes skill allowlist](#the-contained-hermes-skill-allowlist)
 below.
 
@@ -159,9 +160,9 @@ telclaude plugins install <plugin@marketplace> --persona private
 ## The contained Hermes skill allowlist
 
 The no-fork Hermes private runtime runs inside the `tc-hermes-contained`
-container and does **not** share the writable catalog described above. Its skills
-are fixed at the container boundary by a checked-in allowlist rather than the
-scaffold → draft → promote lifecycle.
+container and does **not** share the standalone writable catalog described
+above. Its built-in upstream skills are fixed at the container boundary by a
+checked-in allowlist rather than the scaffold → draft → promote lifecycle.
 
 - The allowlist lives at `docker/hermes-contained-skills.allowlist` (88 curated
   relative paths such as `apple/apple-notes`, `autonomous-ai-agents/codex`,
@@ -179,9 +180,18 @@ scaffold → draft → promote lifecycle.
   rejected, and an empty allowlist fails the container closed.
 
 Because this list is operator-fixed and version-controlled, there is no
-Telegram `/skills promote` path into the contained runtime. To change what the
-private Hermes runtime can load, edit `hermes-contained-skills.allowlist` and
-redeploy.
+Telegram `/skills promote` path into the contained runtime. To change which
+upstream bundled skills load, edit `hermes-contained-skills.allowlist` and
+redeploy. To install operator/plugin skills, use the relay-owned Hermes catalog:
+
+```bash
+telclaude hermes-skills install <skill-dir> --catalog private
+telclaude hermes-skills sync-manifest /path/to/hermes-skill-seeds.json --prune-managed
+```
+
+Those catalog entries are mounted read-only into Hermes and loaded through
+`skills.external_dirs`. Plugin package install/update commands only acquire
+package state; use curated Hermes catalog sources for runtime exposure.
 
 ### Proving allowlist enforcement (`skills.allowlist` probe)
 

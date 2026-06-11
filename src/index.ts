@@ -132,7 +132,7 @@ registerProvidersCommandGroup(providers);
 // --- plugins ---
 const plugins = program
 	.command("plugins")
-	.description("Manage official Claude plugins in persona-scoped profiles");
+	.description("Manage plugin package acquisition in persona-scoped profiles");
 registerPluginsCommandGroup(plugins);
 
 // --- dev ---

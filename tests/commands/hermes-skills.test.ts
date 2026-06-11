@@ -157,6 +157,190 @@ describe("hermes-skills install-upstream", () => {
 	});
 });
 
+describe("hermes-skills sync-manifest", () => {
+	it("syncs declared private and social skill sources through the validated installer", async () => {
+		const privateSkill = writeSkill("shaon");
+		const socialSkill = writeSkill("social-brief");
+		const manifestPath = path.join(tempRoot, "seed-manifest.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify(
+				{
+					schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+					entries: [
+						{
+							catalog: "private",
+							sourceDir: privateSkill,
+							origin: "seed:william:shaon@0.8.3",
+						},
+						{
+							catalog: "social",
+							sourceDir: socialSkill,
+							origin: "seed:william-social:social-brief@1.0.0",
+						},
+					],
+				},
+				null,
+				2,
+			),
+		);
+
+		await runCli(["sync-manifest", manifestPath, "--json"]);
+		expect(process.exitCode).toBeUndefined();
+
+		expect(listCatalog({ catalogRoot })).toEqual([
+			expect.objectContaining({
+				name: "shaon",
+				origin: "seed:william:shaon@0.8.3",
+			}),
+		]);
+		expect(listCatalog({ catalogRoot: socialCatalogRoot })).toEqual([
+			expect.objectContaining({
+				name: "social-brief",
+				origin: "seed:william-social:social-brief@1.0.0",
+			}),
+		]);
+		const out = JSON.parse(logSpy.mock.calls.at(-1)?.[0] as string);
+		expect(out.installed.map((entry: { name: string }) => entry.name).sort()).toEqual([
+			"shaon",
+			"social-brief",
+		]);
+	});
+
+	it("prunes only seed-owned entries in catalogs declared by the manifest", async () => {
+		const stalePrivate = writeSkill("stale-private");
+		const keepPrivate = writeSkill("manual-private");
+		const staleSocial = writeSkill("stale-social");
+		await runCli(["install", stalePrivate, "--origin", "seed:old:stale-private"]);
+		await runCli(["install", keepPrivate, "--origin", "local:manual"]);
+		await runCli([
+			"install",
+			staleSocial,
+			"--origin",
+			"seed:old:stale-social",
+			"--catalog",
+			"social",
+		]);
+		process.exitCode = undefined;
+
+		const manifestPath = path.join(tempRoot, "private-only-seed.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify(
+				{
+					schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+					entries: [
+						{
+							catalog: "private",
+							sourceDir: writeSkill("shaon"),
+							origin: "seed:william:shaon@0.8.3",
+						},
+					],
+				},
+				null,
+				2,
+			),
+		);
+
+		await runCli(["sync-manifest", manifestPath, "--prune-managed", "--json"]);
+		expect(process.exitCode).toBeUndefined();
+
+		expect(
+			listCatalog({ catalogRoot })
+				.map((entry) => entry.name)
+				.sort(),
+		).toEqual(["manual-private", "shaon"]);
+		expect(listCatalog({ catalogRoot: socialCatalogRoot }).map((entry) => entry.name)).toEqual([
+			"stale-social",
+		]);
+		const out = JSON.parse(logSpy.mock.calls.at(-1)?.[0] as string);
+		expect(out.pruned).toEqual([{ catalog: "private", name: "stale-private" }]);
+	});
+
+	it("normalizes relative sources and seed origins before pruning decisions", async () => {
+		await runCli(["install", writeSkill("stale-private"), "--origin", "seed:old:stale-private"]);
+		process.exitCode = undefined;
+
+		const sourceDir = writeSkill("shaon");
+		const manifestPath = path.join(tempRoot, "relative-seed.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify(
+				{
+					schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+					entries: [
+						{
+							sourceDir: ` ${path.relative(tempRoot, sourceDir)} `,
+							origin: " seed:william:shaon@0.8.3 ",
+						},
+					],
+				},
+				null,
+				2,
+			),
+		);
+
+		await runCli(["sync-manifest", manifestPath, "--prune-managed"]);
+		expect(process.exitCode).toBeUndefined();
+
+		expect(listCatalog({ catalogRoot })).toEqual([
+			expect.objectContaining({
+				name: "shaon",
+				origin: "seed:william:shaon@0.8.3",
+			}),
+		]);
+	});
+
+	it("rejects malformed manifests before mutating the catalog", async () => {
+		const manifestPath = path.join(tempRoot, "bad-seed.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify({
+				schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+				entries: [{ sourceDir: writeSkill("shaon"), origin: "" }],
+			}),
+		);
+
+		await runCli(["sync-manifest", manifestPath]);
+		expect(process.exitCode).toBe(1);
+		expect(String(errorSpy.mock.calls.at(-1)?.[0])).toContain("invalid seed manifest");
+		expect(listCatalog({ catalogRoot })).toEqual([]);
+	});
+
+	it("preflights every seed source before installing any declared entry", async () => {
+		const invalidSkill = writeSkill("invalid-seed");
+		fs.mkdirSync(path.join(invalidSkill, "scripts"));
+		const manifestPath = path.join(tempRoot, "partially-bad-seed.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify(
+				{
+					schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+					entries: [
+						{
+							catalog: "private",
+							sourceDir: writeSkill("shaon"),
+							origin: "seed:william:shaon@0.8.3",
+						},
+						{
+							catalog: "private",
+							sourceDir: invalidSkill,
+							origin: "seed:william:invalid@1.0.0",
+						},
+					],
+				},
+				null,
+				2,
+			),
+		);
+
+		await runCli(["sync-manifest", manifestPath]);
+		expect(process.exitCode).toBe(1);
+		expect(String(errorSpy.mock.calls.at(-1)?.[0])).toContain("seed source validation failed");
+		expect(listCatalog({ catalogRoot })).toEqual([]);
+	});
+});
+
 describe("hermes-skills install-from-curator", () => {
 	function createSkillReviewItem(sourceDir: string): string {
 		const item = upsertVerifiedCuratorItem({

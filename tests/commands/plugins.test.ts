@@ -4,11 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+	type ClaudePluginRunner,
 	detectClaudePluginCapabilities,
 	installManagedPlugin,
 	listManagedPlugins,
 	resolvePluginTargets,
-	type ClaudePluginRunner,
 	uninstallManagedPlugin,
 	updateManagedPlugin,
 } from "../../src/commands/plugins.js";
@@ -20,7 +20,10 @@ type RunnerCall = {
 };
 
 function createRunner(
-	outputs: Record<string, { status?: number; stdout?: string; stderr?: string }>,
+	outputs: Record<
+		string,
+		{ status?: number; stdout?: string; stderr?: string; after?: () => void }
+	>,
 ) {
 	const calls: RunnerCall[] = [];
 	const runner: ClaudePluginRunner = {
@@ -31,7 +34,7 @@ function createRunner(
 			if (!next) {
 				throw new Error(`Unexpected runner call: ${key}`);
 			}
-			return {
+			const result: ReturnType<ClaudePluginRunner["run"]> = {
 				status: next.status ?? 0,
 				stdout: next.stdout ?? "",
 				stderr: next.stderr ?? "",
@@ -39,6 +42,8 @@ function createRunner(
 				output: [],
 				signal: null,
 			};
+			next.after?.();
+			return result;
 		},
 	};
 	return { runner, calls };

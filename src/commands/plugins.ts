@@ -63,8 +63,15 @@ type PluginCommandOptions = {
 	marketplaceSource?: string;
 };
 
+type InstalledPluginMetadata = {
+	installPath?: string;
+	version?: string;
+	installedAt?: string;
+	lastUpdated?: string;
+};
+
 type InstalledPluginsFile = {
-	plugins?: Record<string, Array<{ version?: string }>>;
+	plugins?: Record<string, InstalledPluginMetadata[]>;
 };
 
 type KnownMarketplacesFile = Record<string, unknown>;
@@ -214,7 +221,7 @@ function readSettingsEnabledPlugins(claudeHome: string): Record<string, boolean>
 	return {};
 }
 
-function readInstalledPlugins(claudeHome: string): Record<string, Array<{ version?: string }>> {
+function readInstalledPlugins(claudeHome: string): Record<string, InstalledPluginMetadata[]> {
 	const installed = readJsonFile<InstalledPluginsFile>(
 		path.join(claudeHome, "plugins", "installed_plugins.json"),
 		{},
@@ -262,7 +269,7 @@ function runClaudePluginCommand(
 
 function getPluginState(target: PluginTarget): {
 	enabledPlugins: Record<string, boolean>;
-	installedPlugins: Record<string, Array<{ version?: string }>>;
+	installedPlugins: Record<string, InstalledPluginMetadata[]>;
 	knownMarketplaces: KnownMarketplacesFile;
 } {
 	return {
