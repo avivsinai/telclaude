@@ -10,11 +10,14 @@ import type {
 	TelclaudeMcpTtsRequest,
 } from "../../src/hermes/mcp/bridge.js";
 import {
+	createStoredAttachmentOutboundMediaResolver,
 	createTelclaudeLiveMcpRelayClients,
+	OUTBOUND_MEDIA_QUARANTINE_TTL_MS,
 	type TelclaudeLiveMcpAuditEntry,
 } from "../../src/hermes/mcp/live-relay-clients.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
 import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
+import { createAttachmentQuarantineStore } from "../../src/relay/attachment-quarantine-store.js";
 import {
 	listAttachmentRefsByActor,
 	validateAttachmentRef,
@@ -212,37 +215,16 @@ describe("Telclaude live MCP media capability clients", () => {
 		});
 		const ledger = testLedger();
 		const edgeRuntime = new TelclaudeEdgeRuntime();
+		const quarantineStore = createAttachmentQuarantineStore();
 		const clients = createTelclaudeLiveMcpRelayClients({
 			ledger,
 			makeApprovalRequestId: () => "approval-media-outbound",
 			outboundApproverActorId: "operator:outbound-approver",
 			edgeRuntime,
-			// Owner-bound resolver: validates the storage ref against the sending
-			// actor, then quarantines the validated file into the edge runtime so
-			// the real edge attachment checks run during prepareOutbound.
-			resolveOutboundMediaRefs: (refs, { request, conversation }) => {
-				const validated = refs.map((ref) => {
-					const result = validateAttachmentRef(ref, { actorUserId: request.actorId });
-					if (!result.valid) {
-						throw new Error(`outbound media denied: ${result.reason}`);
-					}
-					return result.attachment;
-				});
-				const event = edgeRuntime.ingest({
-					channel: "whatsapp",
-					domain: "private",
-					conversationId: conversation.conversationId,
-					threadId: conversation.threadId,
-					profileId: conversation.profileId,
-					attachments: validated.map((attachment) => ({
-						attachmentId: attachment.ref,
-						mediaType: attachment.mimeType ?? "application/octet-stream",
-						sizeBytes: attachment.size ?? 0,
-						localPath: attachment.filepath,
-					})),
-				});
-				return event.normalized.mediaRefs;
-			},
+			resolveOutboundMediaRefs: createStoredAttachmentOutboundMediaResolver({
+				edgeRuntime,
+				quarantineStore,
+			}),
 		});
 
 		const image = (await clients.imageGenerate(imageGen())) as { attachmentRef: string };
@@ -257,19 +239,40 @@ describe("Telclaude live MCP media capability clients", () => {
 			mediaRefs: [image.attachmentRef],
 			outboundChannels: ["whatsapp"],
 		})) as { outboundRef: string; edgePreparedRef: string };
+		const outboundRecord = ledger.get(prepared.outboundRef);
 
 		expect(prepared.edgePreparedRef).toMatch(/^edge-out:/);
-		expect(ledger.get(prepared.outboundRef)).toMatchObject({
+		expect(outboundRecord).toMatchObject({
 			kind: "outbound",
 			status: "prepared",
 			mediaRefs: [image.attachmentRef],
 			preparedMediaRefs: [
 				expect.objectContaining({
-					quarantineId: expect.stringMatching(/^edge-quarantine:/),
+					quarantineId: expect.stringMatching(/^tc-quarantine:/),
 					contentHash: expect.any(String),
 				}),
 			],
 		});
+		if (!outboundRecord || outboundRecord.kind !== "outbound") {
+			throw new Error("expected outbound side-effect record");
+		}
+		const preparedMediaRef = outboundRecord.preparedMediaRefs[0];
+		if (!preparedMediaRef) {
+			throw new Error("expected prepared media ref");
+		}
+		const released = quarantineStore.resolve(preparedMediaRef.quarantineId, {
+			conversationToken: token,
+		});
+		expect(released).toMatchObject({
+			contentHash: preparedMediaRef.contentHash,
+			mediaType: "image/png",
+		});
+		const inspected = quarantineStore.inspect(preparedMediaRef.quarantineId);
+		expect(inspected).not.toBeNull();
+		if (!inspected) throw new Error("expected quarantined media ref");
+		const remainingTtlMs = Date.parse(inspected.expiresAt) - Date.now();
+		expect(remainingTtlMs).toBeGreaterThan(0);
+		expect(remainingTtlMs).toBeLessThanOrEqual(OUTBOUND_MEDIA_QUARANTINE_TTL_MS + 5000);
 
 		// A ref minted for a different actor fails the same validation closed.
 		imagesGenerate.mockResolvedValueOnce({
@@ -289,6 +292,24 @@ describe("Telclaude live MCP media capability clients", () => {
 				outboundChannels: ["whatsapp"],
 			}),
 		).rejects.toThrow("outbound media denied: Actor mismatch");
+		expect(ledger.list()).toHaveLength(1);
+
+		const { token: socialToken } = mintSocialConversation("media-outbound-cross-domain");
+		const socialTurn = mintSocialTurn(socialToken, "media-outbound-cross-domain");
+		await expect(
+			clients.outboundPrepare({
+				...socialStamp(),
+				actorId: "operator",
+				profileId: "social",
+				conversationToken: socialToken,
+				turnConversationRef: socialTurn,
+				body: "private media must not cross into social",
+				mediaRefs: [image.attachmentRef],
+				outboundChannels: ["social"],
+			}),
+		).rejects.toThrow(
+			"outbound media denied: attachment source domain private cannot be reused for social",
+		);
 		expect(ledger.list()).toHaveLength(1);
 	});
 
@@ -431,6 +452,42 @@ function mintWhatsappTurn(conversationToken: string, suffix: string): string {
 	const { turnRef } = createRelayConversationStore().mintInboundTurn({
 		conversationToken,
 		inboundMessageId: `message-${suffix}`,
+		senderActorId: "operator",
+	});
+	return turnRef;
+}
+
+function mintSocialConversation(suffix: string): { token: string } {
+	return createRelayConversationStore().mint({
+		channel: "social",
+		conversationId: `social-conversation-${suffix}`,
+		threadId: `social-thread-${suffix}`,
+		profileId: "social",
+		domain: "social",
+		routingSession: {
+			sessionId: `social-session-${suffix}`,
+			routeKey: `social-route-${suffix}`,
+		},
+		members: [
+			{
+				actorId: "operator",
+				principalId: "@operator",
+				role: "sender",
+				scopes: ["message:reply"],
+			},
+			{
+				actorId: `actor:${suffix}:recipient`,
+				principalId: "@recipient",
+				role: "recipient",
+			},
+		],
+	});
+}
+
+function mintSocialTurn(conversationToken: string, suffix: string): string {
+	const { turnRef } = createRelayConversationStore().mintInboundTurn({
+		conversationToken,
+		inboundMessageId: `social-message-${suffix}`,
 		senderActorId: "operator",
 	});
 	return turnRef;

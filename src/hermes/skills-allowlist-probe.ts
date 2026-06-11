@@ -16,6 +16,7 @@ import {
 } from "./skills-allowlist-attestation.js";
 import {
 	catalogManifestDigestSha256,
+	type HermesSkillCatalogKind,
 	listCatalog,
 	type RelaySkillCatalogState,
 	resolveRelaySkillCatalogState,
@@ -152,6 +153,8 @@ export function evaluateSkillsAllowlistEvidence(
 		missingPath?: string;
 		/** Injected relay catalog state for tests; defaults to live resolution. */
 		relayCatalog?: RelaySkillCatalogState;
+		/** Injected social relay catalog state for tests; defaults to live resolution. */
+		socialRelayCatalog?: RelaySkillCatalogState;
 	} & HermesSignedEvidenceValidationOptions = {},
 ): SkillsAllowlistReport {
 	if (evidence === undefined) {
@@ -249,65 +252,19 @@ export function evaluateSkillsAllowlistEvidence(
 		});
 	}
 
-	// Relay-owned catalog containment proof. The deployment fact "does the relay
-	// serve a skill catalog?" is resolved relay-side (the contained runtime cannot
-	// vote), so a catalog-serving cutover cannot pass on catalog-free evidence:
-	// when the relay serves a catalog, the evidence MUST carry a catalog section
-	// whose manifestSha256 matches the live relay manifest. Catalog-free
-	// deployments (no catalog root) keep a byte-identical catalog-free report.
-	const relayCatalog = options.relayCatalog ?? resolveRelaySkillCatalogState();
-	if (relayCatalog.configured) {
-		if ("error" in relayCatalog) {
-			gates.push({
-				name: "skills.catalog.required",
-				status: "fail",
-				detail: `relay skill catalog manifest is unreadable: ${redactSecrets(relayCatalog.error)}`,
-			});
-		} else if (!parsed.data.catalog) {
-			gates.push({
-				name: "skills.catalog.required",
-				status: "fail",
-				detail: `relay serves a skill catalog (${relayCatalog.skillCount} skill(s)) but the evidence carries no catalog section; re-run the skills.allowlist probe with catalog observation wired`,
-			});
-		} else if (parsed.data.catalog.manifestSha256 !== relayCatalog.manifestSha256) {
-			gates.push({
-				name: "skills.catalog.required",
-				status: "fail",
-				detail:
-					"catalog evidence manifestSha256 does not match the live relay catalog manifest; the evidence is stale or was probed against a different manifest",
-			});
-		} else {
-			gates.push({
-				name: "skills.catalog.required",
-				status: "pass",
-				detail: `catalog evidence is bound to the live relay manifest (${relayCatalog.skillCount} skill(s))`,
-			});
-		}
-	}
-
-	// Catalog section gates: every required catalog check must exist and pass;
-	// the schema already pins docker_exec observation.
-	if (parsed.data.catalog) {
-		const catalogPass = new Map<SkillsCatalogCheckName, boolean>();
-		for (const check of parsed.data.catalog.checks) {
-			const prior = catalogPass.get(check.name);
-			const thisPass = check.status === "pass";
-			catalogPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
-		}
-		for (const name of SKILLS_CATALOG_REQUIRED_CHECK_NAMES) {
-			const backed = catalogPass.get(name);
-			gates.push({
-				name: `skills.catalog.${name}`,
-				status: backed === true ? "pass" : "fail",
-				detail:
-					backed === true
-						? `catalog check ${name} is proven against the container-visible mount`
-						: backed === false
-							? `catalog check ${name} failed`
-							: `catalog section is present but check ${name} is missing`,
-			});
-		}
-	}
+	appendCatalogGates(gates, {
+		section: parsed.data.catalog,
+		relayCatalog: options.relayCatalog ?? resolveRelaySkillCatalogState({ catalogKind: "private" }),
+		gatePrefix: "skills.catalog",
+		label: "catalog",
+	});
+	appendCatalogGates(gates, {
+		section: parsed.data.socialCatalog,
+		relayCatalog:
+			options.socialRelayCatalog ?? resolveRelaySkillCatalogState({ catalogKind: "social" }),
+		gatePrefix: "skills.socialCatalog",
+		label: "social catalog",
+	});
 
 	const productionEnable = gates.every((gate) => gate.status === "pass");
 	return {
@@ -316,6 +273,70 @@ export function evaluateSkillsAllowlistEvidence(
 		productionEnable,
 		gates,
 	};
+}
+
+function appendCatalogGates(
+	gates: SkillsAllowlistGate[],
+	input: {
+		readonly section: SkillsCatalogSection | undefined;
+		readonly relayCatalog: RelaySkillCatalogState;
+		readonly gatePrefix: "skills.catalog" | "skills.socialCatalog";
+		readonly label: "catalog" | "social catalog";
+	},
+): void {
+	// Relay-owned catalog containment proof. The deployment fact "does the relay
+	// serve a skill catalog?" is resolved relay-side (the contained runtime cannot
+	// vote), so a catalog-serving cutover cannot pass on catalog-free evidence.
+	if (input.relayCatalog.configured) {
+		if ("error" in input.relayCatalog) {
+			gates.push({
+				name: `${input.gatePrefix}.required`,
+				status: "fail",
+				detail: `relay ${input.label} manifest is unreadable: ${redactSecrets(input.relayCatalog.error)}`,
+			});
+		} else if (!input.section) {
+			gates.push({
+				name: `${input.gatePrefix}.required`,
+				status: "fail",
+				detail: `relay serves a ${input.label} (${input.relayCatalog.skillCount} skill(s)) but the evidence carries no ${input.label} section; re-run the skills.allowlist probe with catalog observation wired`,
+			});
+		} else if (input.section.manifestSha256 !== input.relayCatalog.manifestSha256) {
+			gates.push({
+				name: `${input.gatePrefix}.required`,
+				status: "fail",
+				detail: `${input.label} evidence manifestSha256 does not match the live relay ${input.label} manifest; the evidence is stale or was probed against a different manifest`,
+			});
+		} else {
+			gates.push({
+				name: `${input.gatePrefix}.required`,
+				status: "pass",
+				detail: `${input.label} evidence is bound to the live relay manifest (${input.relayCatalog.skillCount} skill(s))`,
+			});
+		}
+	}
+
+	// Catalog section gates: every required catalog check must exist and pass;
+	// the schema already pins docker_exec observation.
+	if (!input.section) return;
+	const catalogPass = new Map<SkillsCatalogCheckName, boolean>();
+	for (const check of input.section.checks) {
+		const prior = catalogPass.get(check.name);
+		const thisPass = check.status === "pass";
+		catalogPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
+	}
+	for (const name of SKILLS_CATALOG_REQUIRED_CHECK_NAMES) {
+		const backed = catalogPass.get(name);
+		gates.push({
+			name: `${input.gatePrefix}.${name}`,
+			status: backed === true ? "pass" : "fail",
+			detail:
+				backed === true
+					? `${input.label} check ${name} is proven against the container-visible mount`
+					: backed === false
+						? `${input.label} check ${name} failed`
+						: `${input.label} section is present but check ${name} is missing`,
+		});
+	}
 }
 
 export function writeSkillsAllowlistEvidence(
@@ -404,8 +425,12 @@ export type RunSkillsAllowlistProbeOptions = {
 	 * self-evaluation requires a catalog section bound to the live relay manifest.
 	 */
 	readonly catalog?: SkillsCatalogProbeInput;
+	/** Social runtime catalog proof; required when the relay serves a social catalog. */
+	readonly socialCatalog?: SkillsCatalogProbeInput;
 	/** Injected relay catalog state for tests; defaults to live resolution. */
 	readonly relayCatalog?: RelaySkillCatalogState;
+	/** Injected social relay catalog state for tests; defaults to live resolution. */
+	readonly socialRelayCatalog?: RelaySkillCatalogState;
 	readonly now?: Date;
 };
 
@@ -574,6 +599,9 @@ export async function runSkillsAllowlistProbe(
 	});
 
 	const catalog = options.catalog ? await observeCatalogSection(options.catalog) : undefined;
+	const socialCatalog = options.socialCatalog
+		? await observeCatalogSection(options.socialCatalog)
+		: undefined;
 
 	const draft: SkillsAllowlistEvidence = {
 		schemaVersion: "telclaude.hermes.skills-allowlist.v1",
@@ -586,11 +614,14 @@ export async function runSkillsAllowlistProbe(
 		properties,
 		checks,
 		...(catalog ? { catalog } : {}),
+		...(socialCatalog ? { socialCatalog } : {}),
 	};
 	const evaluated = evaluateSkillsAllowlistEvidence(draft, {
 		allowStaleAttestations: true,
 		now: options.now,
-		relayCatalog: options.relayCatalog ?? resolveRelaySkillCatalogState(),
+		relayCatalog: options.relayCatalog ?? resolveRelaySkillCatalogState({ catalogKind: "private" }),
+		socialRelayCatalog:
+			options.socialRelayCatalog ?? resolveRelaySkillCatalogState({ catalogKind: "social" }),
 	});
 	const allPass = evaluated.status === "pass" && evaluated.productionEnable;
 	const failingGates = evaluated.gates
@@ -703,6 +734,8 @@ async function observeCatalogSection(
 
 /** In-container catalog mount default; mirrors docker/hermes-contained-entrypoint.sh. */
 export const DEFAULT_HERMES_SKILL_CATALOG_MOUNT = "/opt/data/telclaude-hermes-skill-catalog";
+export const DEFAULT_HERMES_SOCIAL_SKILL_CATALOG_MOUNT =
+	"/opt/data/telclaude-hermes-social-skill-catalog";
 
 /**
  * Container-side catalog walk. Mirrors walkSkillDir/computeCatalogSkillSha256 in
@@ -797,6 +830,7 @@ export type BuildRelaySkillsCatalogProbeInputOptions = {
 	readonly timeoutMs?: number;
 	/** Override the relay catalog root (tests / non-default deployments). */
 	readonly catalogRoot?: string;
+	readonly catalogKind?: HermesSkillCatalogKind;
 };
 
 /**
@@ -809,7 +843,10 @@ export type BuildRelaySkillsCatalogProbeInputOptions = {
 export function buildRelaySkillsCatalogProbeInput(
 	options: BuildRelaySkillsCatalogProbeInputOptions,
 ): SkillsCatalogProbeInput | undefined {
-	const catalogOptions = options.catalogRoot ? { catalogRoot: options.catalogRoot } : {};
+	const catalogKind = options.catalogKind ?? "private";
+	const catalogOptions = options.catalogRoot
+		? { catalogRoot: options.catalogRoot }
+		: { catalogKind };
 	const state = resolveRelaySkillCatalogState(catalogOptions);
 	if (!state.configured) return undefined;
 	if ("error" in state) {
@@ -818,8 +855,12 @@ export function buildRelaySkillsCatalogProbeInput(
 	const manifest = listCatalog(catalogOptions).map(({ name, sha256 }) => ({ name, sha256 }));
 	const mountPath =
 		options.mountPath?.trim() ||
-		process.env.TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT?.trim() ||
-		DEFAULT_HERMES_SKILL_CATALOG_MOUNT;
+		(catalogKind === "social"
+			? process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_MOUNT?.trim()
+			: process.env.TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT?.trim()) ||
+		(catalogKind === "social"
+			? DEFAULT_HERMES_SOCIAL_SKILL_CATALOG_MOUNT
+			: DEFAULT_HERMES_SKILL_CATALOG_MOUNT);
 	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
 	const containerName = options.containerName.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
 	return {

@@ -197,6 +197,12 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.TELCLAUDE_HERMES_MCP_RELAY_TOKEN).toBe(
 			"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}",
 		);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_SKILL_CATALOG_DIR).toBe(
+			"/opt/data/telclaude-hermes-skill-catalog",
+		);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR).toBe(
+			"/opt/data/telclaude-hermes-social-skill-catalog",
+		);
 		expect(hermesEnv).toEqual({
 			API_SERVER_ENABLED: "true",
 			API_SERVER_HOST: "0.0.0.0",
@@ -217,6 +223,7 @@ TELCLAUDE_LOG_LEVEL=info
 			TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS: "1",
 			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-contained-skills.allowlist",
 			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
+			TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT: "/opt/data/telclaude-hermes-skill-catalog",
 			NO_COLOR: "1",
 		});
 		expect(socialHermesEnv).toEqual({
@@ -239,18 +246,29 @@ TELCLAUDE_LOG_LEVEL=info
 			TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS: "1",
 			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-social-skills.allowlist",
 			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
+			TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT: "/opt/data/telclaude-hermes-social-skill-catalog",
 			NO_COLOR: "1",
 		});
 		expect(listValues(hermes, "volumes")).toEqual([
 			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 			"..:/opt/data/telclaude-runner:ro",
+			"telclaude-hermes-skill-catalog:/opt/data/telclaude-hermes-skill-catalog:ro",
 		]);
 		expect(listValues(socialHermes, "volumes")).toEqual([
 			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
 			"./hermes-social-skills.allowlist:/tmp/telclaude-hermes-social-skills.allowlist:ro",
 			"..:/opt/data/telclaude-runner:ro",
+			"telclaude-hermes-social-skill-catalog:/opt/data/telclaude-hermes-social-skill-catalog:ro",
 		]);
+		expect(listValues(telclaude, "volumes")).toEqual([
+			"telclaude-hermes-skill-catalog:/opt/data/telclaude-hermes-skill-catalog:rw",
+			"telclaude-hermes-social-skill-catalog:/opt/data/telclaude-hermes-social-skill-catalog:rw",
+		]);
+		expect(hermes).not.toContain("telclaude-hermes-social-skill-catalog");
+		expect(socialHermes).not.toContain("telclaude-hermes-skill-catalog:");
+		expect(compose).toContain("telclaude-hermes-skill-catalog:");
+		expect(compose).toContain("telclaude-hermes-social-skill-catalog:");
 		expect(
 			fs.readFileSync(path.resolve(process.cwd(), "docker/hermes-social-skills.allowlist"), "utf8"),
 		).toContain("social-media/xurl");

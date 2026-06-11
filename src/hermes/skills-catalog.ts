@@ -70,24 +70,36 @@ export type CatalogVerifyResult = {
 	skills: CatalogVerifyEntry[];
 };
 
+export type HermesSkillCatalogKind = "private" | "social";
+
 export type CatalogOptions = {
 	/** Override the catalog root (tests / non-default deployments). */
 	catalogRoot?: string;
+	/** Select the relay-owned runtime catalog when catalogRoot is not explicit. */
+	catalogKind?: HermesSkillCatalogKind;
 	now?: Date;
 };
 
 /**
- * Catalog root: TELCLAUDE_HERMES_SKILL_CATALOG_DIR if set, else
- * `<telclaude config dir>/hermes-skill-catalog`.
+ * Catalog root: private uses TELCLAUDE_HERMES_SKILL_CATALOG_DIR; social uses
+ * TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR. Both fall back to config-dir paths.
  */
-export function resolveHermesSkillCatalogRoot(): string {
-	const fromEnv = process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR?.trim();
+export function resolveHermesSkillCatalogRoot(kind: HermesSkillCatalogKind = "private"): string {
+	const fromEnv =
+		kind === "social"
+			? process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR?.trim()
+			: process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR?.trim();
 	if (fromEnv) return path.resolve(fromEnv);
-	return path.join(CONFIG_DIR, "hermes-skill-catalog");
+	return path.join(
+		CONFIG_DIR,
+		kind === "social" ? "hermes-social-skill-catalog" : "hermes-skill-catalog",
+	);
 }
 
 function catalogRootFrom(options: CatalogOptions): string {
-	return path.resolve(options.catalogRoot ?? resolveHermesSkillCatalogRoot());
+	return path.resolve(
+		options.catalogRoot ?? resolveHermesSkillCatalogRoot(options.catalogKind ?? "private"),
+	);
 }
 
 function catalogSkillsDir(root: string): string {

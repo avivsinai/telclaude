@@ -117,6 +117,7 @@ import {
 import { SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES } from "../../src/hermes/served-mcp-memory.js";
 import { signServedMcpMemoryAttestation } from "../../src/hermes/served-mcp-memory-attestation.js";
 import { buildServedMcpProviderToolsProbeEvidence } from "../../src/hermes/served-mcp-provider-tools-probe.js";
+import { installSkillFromDir } from "../../src/hermes/skills-catalog.js";
 import { signSkillsAllowlistAttestation } from "../../src/hermes/skills-allowlist-attestation.js";
 import {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
@@ -179,6 +180,9 @@ const HERMES_COMMAND_TEST_ENV_KEYS = [
 	"TELCLAUDE_HERMES_CWD",
 	"TELCLAUDE_HERMES_SERVED_MCP_AUTH",
 	"TELCLAUDE_HERMES_SKILL_CATALOG_DIR",
+	"TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT",
+	"TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR",
+	"TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_MOUNT",
 	"TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH",
 	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER",
 	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH",
@@ -12122,6 +12126,266 @@ exit 99
 		expect(dockerCalls).toContain("allowlisted_skill_invocation_allowed plan godmode allow false");
 		expect(dockerCalls).toContain("social_missing_allowlist_denied plan godmode deny true");
 		expect(dockerCalls).toContain("social_empty_allowlist_denied plan godmode deny false []");
+	});
+
+	it("wires relay catalog evidence into the skills.allowlist CLI live run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-skills-catalog-cli-"));
+		const catalogRoot = path.join(tempDir, "catalog");
+		const skillSource = path.join(tempDir, "catalog-proof");
+		const catalogMount = "/opt/data/telclaude-hermes-skill-catalog";
+		const evidencePath = path.join(tempDir, "skills-allowlist.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		fs.mkdirSync(skillSource, { recursive: true });
+		fs.writeFileSync(
+			path.join(skillSource, "SKILL.md"),
+			`---
+name: catalog-proof
+description: Proves the relay catalog is observed from the contained runtime.
+---
+
+# Catalog Proof
+
+Use this only as a harmless test skill.
+`,
+			"utf8",
+		);
+		const installed = installSkillFromDir(skillSource, {
+			catalogRoot,
+			origin: "test://catalog-proof",
+			now: new Date("2026-01-02T03:04:05.000Z"),
+		});
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
+  printf '%s\\n' '{"Internal":true,"Containers":{"contained":{"Name":"tc-hermes-contained"},"relay":{"Name":"tc-hermes-relay"}}}'
+  exit 0
+fi
+if [ "$1" = "exec" ]; then
+  shift
+  while [ "$1" = "-e" ]; do
+    shift 2
+  done
+  container="$1"
+  shift
+  if [ "$container" = "tc-hermes-contained" ] && [ "$1" = "node" ]; then
+    if [ "$5" = "${catalogMount}" ]; then
+      printf '%s\\n' '[{"name":"${installed.name}","sha256":"${installed.sha256}","hasScriptsDir":false,"hasSymlink":false,"hasExecutable":false}]'
+      exit 0
+    fi
+    prop="$5"
+    case "$prop" in
+      pretooluse_hook_registered|allowlisted_skill_invocation_allowed|nonallowlisted_skill_invocation_denied|social_missing_allowlist_denied|social_empty_allowlist_denied)
+        printf '%s\\n' '{"passed":true,"detail":"docker exec PreToolUse proof","enforcementLayer":"pretooluse"}'
+        exit 0
+        ;;
+    esac
+  fi
+  prop="$4"
+  case "$prop" in
+    allowlist_manifest_present|allowlisted_skill_present|nonallowlisted_skill_absent|runtime_skills_match_allowlist|skill_creation_nudge_disabled)
+      printf '%s\\n' '{"passed":true,"detail":"docker exec profile proof"}'
+      exit 0
+      ;;
+  esac
+fi
+printf '%s\\n' "unexpected docker args: $*" >&2
+exit 99
+`,
+		);
+
+		const result = await withHermesCommandTestEnv(
+			{
+				TELCLAUDE_HERMES_SKILL_CATALOG_DIR: catalogRoot,
+				TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT: catalogMount,
+			},
+			() =>
+				runHermesCommand([
+					"hermes",
+					"probe",
+					"skills.allowlist",
+					"--allow-run",
+					"--json",
+					"--docker-bin",
+					dockerBin,
+					"--container-name",
+					"tc-hermes-contained",
+					"--network",
+					"telclaude-hermes-private",
+					"--relay-container",
+					"tc-hermes-relay",
+					"--out",
+					evidencePath,
+				]),
+		);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			catalog?: {
+				mountPath: string;
+				manifestSkillCount: number;
+				manifestSha256: string;
+				checks: Array<{ name: string; status: string; observationLayer: string }>;
+			};
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("pass");
+		expect(report.catalog).toMatchObject({
+			mountPath: catalogMount,
+			manifestSkillCount: 1,
+		});
+		expect(report.catalog?.manifestSha256).toMatch(/^[a-f0-9]{64}$/);
+		expect(report.catalog?.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "catalog_manifest_match",
+					status: "pass",
+					observationLayer: "docker_exec",
+				}),
+				expect.objectContaining({
+					name: "catalog_no_scripts",
+					status: "pass",
+					observationLayer: "docker_exec",
+				}),
+			]),
+		);
+		expect(readJson(evidencePath)).toMatchObject({
+			status: "pass",
+			catalog: { mountPath: catalogMount, manifestSkillCount: 1 },
+		});
+		const dockerCalls = fs.readFileSync(callsPath, "utf8");
+		expect(dockerCalls).toContain(`exec tc-hermes-contained node --input-type=module -e`);
+		expect(dockerCalls).toContain(catalogMount);
+	});
+
+	it("wires social relay catalog evidence from the social runtime container", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-skills-social-catalog-cli-"));
+		const catalogRoot = path.join(tempDir, "catalog");
+		const socialCatalogRoot = path.join(tempDir, "social-catalog");
+		const privateSkillSource = path.join(tempDir, "private-proof");
+		const socialSkillSource = path.join(tempDir, "social-proof");
+		const privateMount = "/opt/data/telclaude-hermes-skill-catalog";
+		const socialMount = "/opt/data/telclaude-hermes-social-skill-catalog";
+		const evidencePath = path.join(tempDir, "skills-allowlist.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		for (const [dir, name] of [
+			[privateSkillSource, "private-proof"],
+			[socialSkillSource, "social-proof"],
+		] as const) {
+			fs.mkdirSync(dir, { recursive: true });
+			fs.writeFileSync(
+				path.join(dir, "SKILL.md"),
+				`---\nname: ${name}\ndescription: Catalog proof fixture.\n---\n\n# ${name}\n`,
+				"utf8",
+			);
+		}
+		const privateInstalled = installSkillFromDir(privateSkillSource, {
+			catalogRoot,
+			origin: "test://private-proof",
+			now: new Date("2026-01-02T03:04:05.000Z"),
+		});
+		const socialInstalled = installSkillFromDir(socialSkillSource, {
+			catalogRoot: socialCatalogRoot,
+			origin: "test://social-proof",
+			now: new Date("2026-01-02T03:04:05.000Z"),
+		});
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
+  printf '%s\\n' '{"Internal":true,"Containers":{"contained":{"Name":"tc-hermes-contained"},"relay":{"Name":"tc-hermes-relay"}}}'
+  exit 0
+fi
+if [ "$1" = "exec" ]; then
+  shift
+  while [ "$1" = "-e" ]; do
+    shift 2
+  done
+  container="$1"
+  shift
+  if [ "$1" = "node" ]; then
+    if [ "$container" = "tc-hermes-contained" ] && [ "$5" = "${privateMount}" ]; then
+      printf '%s\\n' '[{"name":"${privateInstalled.name}","sha256":"${privateInstalled.sha256}","hasScriptsDir":false,"hasSymlink":false,"hasExecutable":false}]'
+      exit 0
+    fi
+    if [ "$container" = "tc-hermes-social" ] && [ "$5" = "${socialMount}" ]; then
+      printf '%s\\n' '[{"name":"${socialInstalled.name}","sha256":"${socialInstalled.sha256}","hasScriptsDir":false,"hasSymlink":false,"hasExecutable":false}]'
+      exit 0
+    fi
+    prop="$5"
+    case "$prop" in
+      pretooluse_hook_registered|allowlisted_skill_invocation_allowed|nonallowlisted_skill_invocation_denied|social_missing_allowlist_denied|social_empty_allowlist_denied)
+        printf '%s\\n' '{"passed":true,"detail":"docker exec PreToolUse proof","enforcementLayer":"pretooluse"}'
+        exit 0
+        ;;
+    esac
+  fi
+  prop="$4"
+  case "$prop" in
+    allowlist_manifest_present|allowlisted_skill_present|nonallowlisted_skill_absent|runtime_skills_match_allowlist|skill_creation_nudge_disabled)
+      printf '%s\\n' '{"passed":true,"detail":"docker exec profile proof"}'
+      exit 0
+      ;;
+  esac
+fi
+printf '%s\\n' "unexpected docker args: $*" >&2
+exit 99
+`,
+		);
+
+		const result = await withHermesCommandTestEnv(
+			{
+				TELCLAUDE_HERMES_SKILL_CATALOG_DIR: catalogRoot,
+				TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT: privateMount,
+				TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR: socialCatalogRoot,
+				TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_MOUNT: socialMount,
+			},
+			() =>
+				runHermesCommand([
+					"hermes",
+					"probe",
+					"skills.allowlist",
+					"--allow-run",
+					"--json",
+					"--docker-bin",
+					dockerBin,
+					"--container-name",
+					"tc-hermes-contained",
+					"--social-container-name",
+					"tc-hermes-social",
+					"--network",
+					"telclaude-hermes-private",
+					"--relay-container",
+					"tc-hermes-relay",
+					"--out",
+					evidencePath,
+				]),
+		);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			catalog?: { mountPath: string; manifestSkillCount: number };
+			socialCatalog?: { mountPath: string; manifestSkillCount: number };
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("pass");
+		expect(report.catalog).toMatchObject({ mountPath: privateMount, manifestSkillCount: 1 });
+		expect(report.socialCatalog).toMatchObject({
+			mountPath: socialMount,
+			manifestSkillCount: 1,
+		});
+		expect(readJson(evidencePath)).toMatchObject({
+			status: "pass",
+			catalog: { mountPath: privateMount, manifestSkillCount: 1 },
+			socialCatalog: { mountPath: socialMount, manifestSkillCount: 1 },
+		});
+		const dockerCalls = fs.readFileSync(callsPath, "utf8");
+		expect(dockerCalls).toContain(`exec tc-hermes-contained node --input-type=module -e`);
+		expect(dockerCalls).toContain(`exec tc-hermes-social node --input-type=module -e`);
+		expect(dockerCalls).toContain(privateMount);
+		expect(dockerCalls).toContain(socialMount);
 	});
 
 	it("fails skills.allowlist when the contained module lacks probeSkillAllowlistPreToolUse", async () => {

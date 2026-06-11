@@ -143,6 +143,10 @@ export const SkillsAllowlistEvidenceSchema = z
 		// The evaluator resolves the relay catalog state itself and fails closed
 		// when a served catalog has no catalog section here.
 		catalog: SkillsCatalogSectionSchema.optional(),
+		// Relay-owned social catalog proof. The social runtime is a separate trust
+		// domain and mount, so its catalog is attested separately from the private
+		// contained catalog.
+		socialCatalog: SkillsCatalogSectionSchema.optional(),
 		// Signed runner attestation binding this evidence body to the operator relay
 		// key. Optional in the schema (pending/non-live evidence has none); the
 		// evaluator REQUIRES a valid one before productionEnable under a live cutover.

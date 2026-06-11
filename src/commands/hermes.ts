@@ -216,6 +216,7 @@ import {
 	readServedMcpProviderToolsSourceEvidence,
 } from "../hermes/served-mcp-provider-tools-probe.js";
 import {
+	buildRelaySkillsCatalogProbeInput,
 	DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH,
 	evaluateSkillsAllowlistEvidence,
 	runSkillsAllowlistProbe,
@@ -278,6 +279,7 @@ const DEFAULT_HERMES_HEADLESS_ENTRYPOINT_EVIDENCE_PATH =
 	"artifacts/hermes/probes/execution-headless-entrypoint.json";
 const DEFAULT_HERMES_HEADLESS_ENTRYPOINT_TEST_REPORT_PATH =
 	"artifacts/hermes/probes/execution-headless-entrypoint.vitest.json";
+const DEFAULT_HERMES_SOCIAL_CONTAINER_NAME = "tc-hermes-social";
 const HERMES_HEADLESS_ENTRYPOINT_TEST_FILES = [
 	"tests/hermes/api-adapter.test.ts",
 	"tests/hermes/private-runtime.test.ts",
@@ -617,6 +619,7 @@ type ProbeOption = JsonOption & {
 	relayPeerAddress?: string;
 	relayHost?: string;
 	relayUrl?: string;
+	socialContainerName?: string;
 	timeoutMs?: string;
 	vaultSocket?: string;
 	pin?: string;
@@ -4158,6 +4161,22 @@ export function registerHermesCommand(program: Command): void {
 					};
 				}
 
+				const adminSocketPath = resolveLiveMcpAdminSocket(options.socket);
+				const canaryWindow: HermesVerifyLiveCanaryWindowClient = {
+					open: (input) =>
+						requestTelclaudeLiveMcpCanaryWindowOpen({
+							socketPath: adminSocketPath,
+							input,
+							timeoutMs,
+						}),
+					close: (input) =>
+						requestTelclaudeLiveMcpCanaryWindowClose({
+							socketPath: adminSocketPath,
+							input,
+							timeoutMs,
+						}),
+				};
+
 				if (!options.skipMcp) {
 					const mcpUrl = options.mcpUrl ?? defaultLiveMcpEndpointUrl();
 					if (!mcpUrl) {
@@ -4186,7 +4205,7 @@ export function registerHermesCommand(program: Command): void {
 					} else {
 						try {
 							const bundle = await requestTelclaudeLiveMcpProbeTokens({
-								socketPath: resolveLiveMcpAdminSocket(options.socket),
+								socketPath: adminSocketPath,
 								input: buildLiveMcpProbeTokenRequest({}),
 								timeoutMs,
 							});
@@ -4214,27 +4233,13 @@ export function registerHermesCommand(program: Command): void {
 								transport,
 								authorizationHeader,
 								timeoutMs,
+								canaryWindow,
 							})),
 						);
 					}
 				}
 
 				if (!options.skipTurn) {
-					const adminSocketPath = resolveLiveMcpAdminSocket(options.socket);
-					const canaryWindow: HermesVerifyLiveCanaryWindowClient = {
-						open: (input) =>
-							requestTelclaudeLiveMcpCanaryWindowOpen({
-								socketPath: adminSocketPath,
-								input,
-								timeoutMs,
-							}),
-						close: (input) =>
-							requestTelclaudeLiveMcpCanaryWindowClose({
-								socketPath: adminSocketPath,
-								input,
-								timeoutMs,
-							}),
-					};
 					try {
 						checks.push(
 							...(await runHermesVerifyLiveTurnChecks({
@@ -4313,6 +4318,7 @@ export function registerHermesCommand(program: Command): void {
 			"Wrong-connection served MCP context header as 'Name: value'",
 		)
 		.option("--container-name <name>", "Hermes contained runtime container name")
+		.option("--social-container-name <name>", "Hermes social runtime container name")
 		.option("--network <name>", "Relay-only Docker network for the contained Hermes server")
 		.option("--api-port <port>", "Hermes API-server container port")
 		.option("--relay-host <host>", "Relay host allowed by the contained runtime topology")
@@ -4792,6 +4798,8 @@ export function registerHermesCommand(program: Command): void {
 				const timeoutMs = parseTimeoutMs(options.timeoutMs);
 				const containerName =
 					options.containerName?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+				const socialContainerName =
+					options.socialContainerName?.trim() || DEFAULT_HERMES_SOCIAL_CONTAINER_NAME;
 				const report = await runSkillsAllowlistProbe({
 					allowRun: options.allowRun === true,
 					runner:
@@ -4813,6 +4821,21 @@ export function registerHermesCommand(program: Command): void {
 									timeoutMs,
 								})
 							: undefined,
+					...(options.allowRun === true
+						? {
+								catalog: buildRelaySkillsCatalogProbeInput({
+									dockerBin: options.dockerBin,
+									containerName,
+									timeoutMs,
+								}),
+								socialCatalog: buildRelaySkillsCatalogProbeInput({
+									catalogKind: "social",
+									dockerBin: options.dockerBin,
+									containerName: socialContainerName,
+									timeoutMs,
+								}),
+							}
+						: {}),
 				});
 				let outPath: string | undefined;
 				if (options.allowRun === true && report.status !== "pending") {

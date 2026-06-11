@@ -146,6 +146,25 @@ export class TelclaudeEdgeRuntime {
 		this.deliver = input.deliver;
 	}
 
+	registerAuthorizedAttachmentRef(input: {
+		readonly ref: AttachmentRef;
+		readonly domain: TrustDomain;
+	}): AttachmentRef {
+		const ref = AttachmentRefSchema.parse(input.ref);
+		if (
+			ref.scanState !== "clean" ||
+			ref.trustLabel === "blocked" ||
+			ref.lifecycle.state !== "authorized"
+		) {
+			this.deny("attachment.unscanned-denied", "Attachment has not passed edge quarantine");
+		}
+		this.attachments.set(ref.quarantineId, {
+			ref,
+			domain: input.domain,
+		});
+		return structuredClone(ref);
+	}
+
 	operationTrace(): readonly EdgeAdapterOperationName[] {
 		return [...this.operations];
 	}

@@ -39,6 +39,11 @@ services:
       - OPERATOR_RPC_RELAY_PRIVATE_KEY=${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-hermes-contained,tc-hermes-social}
+      - TELCLAUDE_HERMES_SKILL_CATALOG_DIR=/opt/data/telclaude-hermes-skill-catalog
+      - TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR=/opt/data/telclaude-hermes-social-skill-catalog
+    volumes:
+      - telclaude-hermes-skill-catalog:/opt/data/telclaude-hermes-skill-catalog:rw
+      - telclaude-hermes-social-skill-catalog:/opt/data/telclaude-hermes-social-skill-catalog:rw
     networks:
       hermes-private-net:
         ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
@@ -82,11 +87,13 @@ services:
       - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
       - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-contained-skills.allowlist
       - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills
+      - TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT=/opt/data/telclaude-hermes-skill-catalog
       - NO_COLOR=1
     volumes:
       - ./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro
       - ./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro
       - ..:/opt/data/telclaude-runner:ro
+      - telclaude-hermes-skill-catalog:/opt/data/telclaude-hermes-skill-catalog:ro
     user: "10000:10000"
     cap_drop:
       - ALL
@@ -148,11 +155,13 @@ services:
       - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
       - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-social-skills.allowlist
       - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills
+      - TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT=/opt/data/telclaude-hermes-social-skill-catalog
       - NO_COLOR=1
     volumes:
       - ./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro
       - ./hermes-social-skills.allowlist:/tmp/telclaude-hermes-social-skills.allowlist:ro
       - ..:/opt/data/telclaude-runner:ro
+      - telclaude-hermes-social-skill-catalog:/opt/data/telclaude-hermes-social-skill-catalog:ro
     user: "10000:10000"
     cap_drop:
       - ALL
@@ -198,3 +207,11 @@ networks:
     ipam:
       config:
         - subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-192.0.3.0/24}
+
+volumes:
+  # Private Hermes catalog: relay writes, tc-hermes-contained consumes read-only.
+  telclaude-hermes-skill-catalog:
+    name: telclaude-hermes-skill-catalog
+  # Social Hermes catalog: separate volume so private/operator skills cannot bleed into social.
+  telclaude-hermes-social-skill-catalog:
+    name: telclaude-hermes-social-skill-catalog

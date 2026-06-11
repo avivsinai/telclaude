@@ -7,6 +7,7 @@ import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
+import { TelclaudeEdgeRuntime } from "../hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -18,7 +19,10 @@ import {
 	createTelclaudeLiveMcpProbeAdminStarter,
 	readTelclaudeLiveMcpAdminConfig,
 } from "../hermes/mcp/live-admin.js";
-import { createTelclaudeLiveMcpRelayClients } from "../hermes/mcp/live-relay-clients.js";
+import {
+	createStoredAttachmentOutboundMediaResolver,
+	createTelclaudeLiveMcpRelayClients,
+} from "../hermes/mcp/live-relay-clients.js";
 import {
 	readTelclaudeLiveMcpRuntimeConfig,
 	startTelclaudeLiveMcpRuntime,
@@ -73,6 +77,7 @@ import { startWebhookServer } from "../webhooks/server.js";
 import { findInstalledSkills } from "./doctor-helpers.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
+const LIVE_MCP_ATTACHMENT_QUARANTINE_CLEANUP_INTERVAL_MS = 60 * 1000;
 
 export type RelayOptions = {
 	verbose?: boolean;
@@ -267,13 +272,27 @@ export function registerRelayCommand(program: Command): void {
 				const liveMcpLedger = createTelclaudeMcpSideEffectLedger({
 					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval ?? denyRelayLiveMcpApproval,
 				});
+				const liveMcpEdgeRuntime = new TelclaudeEdgeRuntime();
+				const liveMcpAttachmentQuarantineStore = createAttachmentQuarantineStore();
+				const liveMcpAttachmentQuarantineCleanup = setInterval(() => {
+					const removed = liveMcpAttachmentQuarantineStore.cleanupExpired();
+					if (removed > 0) {
+						logger.debug(
+							{ removed },
+							"expired Hermes live-MCP attachment quarantine entries cleaned",
+						);
+					}
+				}, LIVE_MCP_ATTACHMENT_QUARANTINE_CLEANUP_INTERVAL_MS);
+				liveMcpAttachmentQuarantineCleanup.unref();
+				schedulerHandles.push({
+					stop: () => clearInterval(liveMcpAttachmentQuarantineCleanup),
+				});
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
 					registry: createDefaultEdgeOutboundExecutorRegistry(),
 					resolveConversation: async (prepared) => {
 						const record = liveMcpLedger.get(prepared.sideEffectLedgerRef);
 						if (
-							!record ||
-							record.kind !== "outbound" ||
+							record?.kind !== "outbound" ||
 							record.edgePreparedRef !== prepared.outboundRef ||
 							record.channel !== prepared.channel
 						) {
@@ -287,7 +306,7 @@ export function registerRelayCommand(program: Command): void {
 								}
 							: null;
 					},
-					quarantineStore: createAttachmentQuarantineStore(),
+					quarantineStore: liveMcpAttachmentQuarantineStore,
 					onDelivered: async (_prepared, context, outcome) => {
 						const threadMessageId = outcome.observedThreadMessageId ?? outcome.platformMessageId;
 						if (threadMessageId) {
@@ -366,6 +385,11 @@ export function registerRelayCommand(program: Command): void {
 						return createTelclaudeLiveMcpRelayClients({
 							ledger,
 							conversationStore: liveMcpConversationStore,
+							edgeRuntime: liveMcpEdgeRuntime,
+							resolveOutboundMediaRefs: createStoredAttachmentOutboundMediaResolver({
+								edgeRuntime: liveMcpEdgeRuntime,
+								quarantineStore: liveMcpAttachmentQuarantineStore,
+							}),
 							providerWriteApproverActorId: liveMcpProviderWriteApproverActorId,
 							outboundApproverActorId: liveMcpOutboundApproverActorId,
 							requestSideEffectApproval: liveMcpSideEffectApprovals

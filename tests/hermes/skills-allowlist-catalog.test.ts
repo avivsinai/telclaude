@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildRelaySkillsCatalogProbeInput,
 	DEFAULT_HERMES_SKILL_CATALOG_MOUNT,
+	DEFAULT_HERMES_SOCIAL_SKILL_CATALOG_MOUNT,
 	evaluateSkillsAllowlistEvidence,
 	runSkillsAllowlistProbe,
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
@@ -42,19 +43,32 @@ const configuredRelayCatalog: RelaySkillCatalogState = {
 	skillCount: manifest.length,
 	manifestSha256: manifestDigest,
 };
+const configuredSocialRelayCatalog: RelaySkillCatalogState = {
+	configured: true,
+	skillCount: manifest.length,
+	manifestSha256: manifestDigest,
+};
 
 // Pin the relay catalog root to a nonexistent path so the default (live)
 // resolution is hermetic: a real catalog on the dev machine must not leak
 // catalog gates into catalog-free expectations.
 const savedCatalogDir = process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR;
+const savedSocialCatalogDir = process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR;
 let tempRoot = "";
 beforeEach(() => {
 	tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-skills-catalog-"));
 	process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = path.join(tempRoot, "absent-catalog");
+	process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR = path.join(
+		tempRoot,
+		"absent-social-catalog",
+	);
 });
 afterEach(() => {
 	if (savedCatalogDir === undefined) delete process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR;
 	else process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = savedCatalogDir;
+	if (savedSocialCatalogDir === undefined)
+		delete process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR;
+	else process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR = savedSocialCatalogDir;
 	fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
@@ -74,6 +88,24 @@ function configureLiveRelayCatalog(): string {
 		})}\n`,
 	);
 	process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = root;
+	return root;
+}
+
+function configureLiveSocialRelayCatalog(): string {
+	const root = path.join(tempRoot, "live-social-catalog");
+	fs.mkdirSync(root, { recursive: true });
+	fs.writeFileSync(
+		path.join(root, HERMES_SKILL_CATALOG_MANIFEST_FILENAME),
+		`${JSON.stringify({
+			schemaVersion: HERMES_SKILL_CATALOG_MANIFEST_VERSION,
+			skills: manifest.map((entry) => ({
+				...entry,
+				origin: "test-social",
+				installedAt: "2026-06-10T00:00:00.000Z",
+			})),
+		})}\n`,
+	);
+	process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR = root;
 	return root;
 }
 
@@ -119,6 +151,13 @@ function passingCatalogSection(): SkillsCatalogSection {
 			detail: `${name} proven against the container-visible mount`,
 			observationLayer: "docker_exec" as const,
 		})),
+	};
+}
+
+function passingSocialCatalogSection(): SkillsCatalogSection {
+	return {
+		...passingCatalogSection(),
+		mountPath: DEFAULT_HERMES_SOCIAL_SKILL_CATALOG_MOUNT,
 	};
 }
 
@@ -241,6 +280,49 @@ describe("evaluateSkillsAllowlistEvidence catalog requirement (fail-closed)", ()
 		);
 		expect(report.status).toBe("pass");
 		expect(report.gates.find((g) => g.name === "skills.catalog.required")?.status).toBe("pass");
+	});
+
+	it("fails closed when the relay serves a social catalog and evidence carries no social section", () => {
+		const report = evaluateSkillsAllowlistEvidence(
+			{ ...validEvidence(), catalog: passingCatalogSection() },
+			{
+				relayCatalog: configuredRelayCatalog,
+				socialRelayCatalog: configuredSocialRelayCatalog,
+			},
+		);
+		expect(report.status).toBe("fail");
+		expect(report.productionEnable).toBe(false);
+		const gate = report.gates.find((g) => g.name === "skills.socialCatalog.required");
+		expect(gate?.status).toBe("fail");
+		expect(gate?.detail).toContain("no social catalog section");
+	});
+
+	it("passes when both private and social catalog evidence are bound to live manifests", () => {
+		const report = evaluateSkillsAllowlistEvidence(
+			{
+				...validEvidence(),
+				catalog: passingCatalogSection(),
+				socialCatalog: passingSocialCatalogSection(),
+			},
+			{
+				relayCatalog: configuredRelayCatalog,
+				socialRelayCatalog: configuredSocialRelayCatalog,
+			},
+		);
+		expect(report.status).toBe("pass");
+		expect(report.gates.find((g) => g.name === "skills.catalog.required")?.status).toBe("pass");
+		expect(report.gates.find((g) => g.name === "skills.socialCatalog.required")?.status).toBe(
+			"pass",
+		);
+	});
+
+	it("requires social catalog evidence under live social relay-state resolution", () => {
+		configureLiveSocialRelayCatalog();
+		const report = evaluateSkillsAllowlistEvidence(validEvidence());
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((g) => g.name === "skills.socialCatalog.required")?.status).toBe(
+			"fail",
+		);
 	});
 });
 
@@ -428,6 +510,43 @@ describe("runSkillsAllowlistProbe catalog producer", () => {
 		);
 	});
 
+	it("binds the social catalog section into the attestation digest", async () => {
+		const evidence = await runSkillsAllowlistProbe({
+			allowRun: true,
+			runner: dockerRunner,
+			observeTopology: containedTopology,
+			relayCatalog: configuredRelayCatalog,
+			socialRelayCatalog: configuredSocialRelayCatalog,
+			catalog: {
+				mountPath: "/opt/data/telclaude-hermes-skill-catalog",
+				manifest,
+				observe: async () => [observedEntry()],
+			},
+			socialCatalog: {
+				mountPath: DEFAULT_HERMES_SOCIAL_SKILL_CATALOG_MOUNT,
+				manifest,
+				observe: async () => [observedEntry()],
+			},
+		});
+
+		const tampered: SkillsAllowlistEvidence = {
+			...evidence,
+			socialCatalog: {
+				...(evidence.socialCatalog as SkillsCatalogSection),
+				mountPath: "/evil/social-mount",
+			},
+		};
+		const report = evaluateSkillsAllowlistEvidence(tampered, {
+			allowStaleAttestations: true,
+			relayCatalog: configuredRelayCatalog,
+			socialRelayCatalog: configuredSocialRelayCatalog,
+		});
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "skills.attestation")?.detail).toContain(
+			"evidenceSha256 mismatch",
+		);
+	});
+
 	it("emits no catalog section when no catalog is configured", async () => {
 		const evidence = await runSkillsAllowlistProbe({
 			allowRun: true,
@@ -453,6 +572,17 @@ describe("buildRelaySkillsCatalogProbeInput", () => {
 			catalogRoot: root,
 		});
 		expect(input?.mountPath).toBe(DEFAULT_HERMES_SKILL_CATALOG_MOUNT);
+		expect(input?.manifest).toEqual(manifest);
+	});
+
+	it("builds social manifest and mount path from the live social relay catalog", () => {
+		const root = configureLiveSocialRelayCatalog();
+		const input = buildRelaySkillsCatalogProbeInput({
+			containerName: "tc-hermes-social",
+			catalogKind: "social",
+			catalogRoot: root,
+		});
+		expect(input?.mountPath).toBe(DEFAULT_HERMES_SOCIAL_SKILL_CATALOG_MOUNT);
 		expect(input?.manifest).toEqual(manifest);
 	});
 

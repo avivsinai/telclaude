@@ -13,6 +13,7 @@ import { getCuratorItem } from "../curator/store.js";
 import type { CuratorItem } from "../curator/types.js";
 import {
 	type CatalogInstallResult,
+	type HermesSkillCatalogKind,
 	installSkillFromDir,
 	listCatalog,
 	removeSkill,
@@ -63,6 +64,28 @@ function printInstallResult(result: CatalogInstallResult, json: boolean | undefi
 	console.log(`Installed ${result.name} (sha256 ${result.sha256}) from ${result.origin}.`);
 }
 
+type CatalogCliOptions = {
+	readonly catalog?: string;
+};
+
+function parseCatalogKind(value: string | undefined): HermesSkillCatalogKind {
+	const kind = value?.trim() || "private";
+	if (kind === "private" || kind === "social") return kind;
+	throw new Error(`invalid catalog "${kind}"; expected private or social`);
+}
+
+function catalogOptions(options: CatalogCliOptions): { catalogKind: HermesSkillCatalogKind } {
+	return { catalogKind: parseCatalogKind(options.catalog) };
+}
+
+function withCatalogOption(command: Command): Command {
+	return command.option(
+		"--catalog <private|social>",
+		"Target Hermes skill catalog (private or social)",
+		"private",
+	);
+}
+
 type CuratorCatalogInstall = { sourceDir: string } | { upstreamRel: string };
 
 function parseCuratorCatalogInstall(item: CuratorItem): CuratorCatalogInstall {
@@ -86,16 +109,16 @@ export function registerHermesSkillsCommand(program: Command): void {
 		.command("hermes-skills")
 		.description("Manage the relay-owned Hermes external skill catalog");
 
-	group
-		.command("install")
+	withCatalogOption(group.command("install"))
 		.description("Validate and install a skill directory into the catalog")
 		.argument("<dir>", "Skill directory (basename is the skill name)")
 		.option("--origin <s>", "Origin recorded in the catalog manifest")
 		.option("--json", "Output as JSON")
-		.action((dir: string, opts: { origin?: string; json?: boolean }) => {
+		.action((dir: string, opts: { origin?: string; json?: boolean } & CatalogCliOptions) => {
 			try {
 				const result = installSkillFromDir(dir, {
 					origin: opts.origin?.trim() || `local:${path.resolve(dir)}`,
+					...catalogOptions(opts),
 				});
 				printInstallResult(result, opts.json);
 			} catch (err) {
@@ -103,30 +126,31 @@ export function registerHermesSkillsCommand(program: Command): void {
 			}
 		});
 
-	group
-		.command("install-upstream")
+	withCatalogOption(group.command("install-upstream"))
 		.description("Install a skill from a pinned upstream Hermes skills tree")
 		.argument("<rel>", "Skill path relative to the upstream skills root")
 		.option("--upstream-root <dir>", "Upstream Hermes skills tree root")
 		.option("--json", "Output as JSON")
-		.action((rel: string, opts: { upstreamRoot?: string; json?: boolean }) => {
+		.action((rel: string, opts: { upstreamRoot?: string; json?: boolean } & CatalogCliOptions) => {
 			try {
 				const upstreamRoot = resolveUpstreamSkillsRoot(opts.upstreamRoot);
 				const srcDir = resolveUpstreamSkillDir(upstreamRoot, rel);
-				const result = installSkillFromDir(srcDir, { origin: `upstream:${rel}` });
+				const result = installSkillFromDir(srcDir, {
+					origin: `upstream:${rel}`,
+					...catalogOptions(opts),
+				});
 				printInstallResult(result, opts.json);
 			} catch (err) {
 				handleCommandError(err);
 			}
 		});
 
-	group
-		.command("list")
+	withCatalogOption(group.command("list"))
 		.description("List catalog manifest entries")
 		.option("--json", "Output as JSON")
-		.action((opts: { json?: boolean }) => {
+		.action((opts: { json?: boolean } & CatalogCliOptions) => {
 			try {
-				const skills = listCatalog();
+				const skills = listCatalog(catalogOptions(opts));
 				if (opts.json) {
 					console.log(JSON.stringify({ skills }, null, 2));
 					return;
@@ -145,13 +169,12 @@ export function registerHermesSkillsCommand(program: Command): void {
 			}
 		});
 
-	group
-		.command("remove")
+	withCatalogOption(group.command("remove"))
 		.description("Remove a skill from the catalog tree and manifest")
 		.argument("<name>", "Catalog skill name")
-		.action((name: string) => {
+		.action((name: string, opts: CatalogCliOptions) => {
 			try {
-				if (!removeSkill(name)) {
+				if (!removeSkill(name, catalogOptions(opts))) {
 					console.error(`Error: skill "${name}" is not in the catalog`);
 					process.exitCode = 1;
 					return;
@@ -162,13 +185,12 @@ export function registerHermesSkillsCommand(program: Command): void {
 			}
 		});
 
-	group
-		.command("verify")
+	withCatalogOption(group.command("verify"))
 		.description("Verify the catalog tree against the manifest")
 		.option("--json", "Output as JSON")
-		.action((opts: { json?: boolean }) => {
+		.action((opts: { json?: boolean } & CatalogCliOptions) => {
 			try {
-				const result = verifyCatalogAgainstManifest();
+				const result = verifyCatalogAgainstManifest(catalogOptions(opts));
 				if (opts.json) {
 					console.log(JSON.stringify(result, null, 2));
 				} else if (result.skills.length === 0) {
@@ -188,38 +210,42 @@ export function registerHermesSkillsCommand(program: Command): void {
 			}
 		});
 
-	group
-		.command("install-from-curator")
+	withCatalogOption(group.command("install-from-curator"))
 		.description("Install a catalog skill proposed by an accepted skill_review curator item")
 		.argument("<itemId>", "Curator item id or short id")
 		.option("--upstream-root <dir>", "Upstream Hermes skills tree root (for upstreamRel items)")
 		.option("--json", "Output as JSON")
-		.action((itemId: string, opts: { upstreamRoot?: string; json?: boolean }) => {
-			try {
-				const item = getCuratorItem(itemId);
-				if (!item) {
-					throw new Error(`unknown curator item '${itemId}'`);
+		.action(
+			(itemId: string, opts: { upstreamRoot?: string; json?: boolean } & CatalogCliOptions) => {
+				try {
+					const item = getCuratorItem(itemId);
+					if (!item) {
+						throw new Error(`unknown curator item '${itemId}'`);
+					}
+					if (item.kind !== "skill_review") {
+						throw new Error(`curator item ${item.shortId} is ${item.kind}, not skill_review`);
+					}
+					if (item.status !== "accepted") {
+						throw new Error(
+							`curator item ${item.shortId} is ${item.status}; only accepted items can be installed`,
+						);
+					}
+					const install = parseCuratorCatalogInstall(item);
+					const srcDir =
+						"sourceDir" in install
+							? path.resolve(install.sourceDir)
+							: resolveUpstreamSkillDir(
+									resolveUpstreamSkillsRoot(opts.upstreamRoot),
+									install.upstreamRel,
+								);
+					const result = installSkillFromDir(srcDir, {
+						origin: `curator:${item.id}`,
+						...catalogOptions(opts),
+					});
+					printInstallResult(result, opts.json);
+				} catch (err) {
+					handleCommandError(err);
 				}
-				if (item.kind !== "skill_review") {
-					throw new Error(`curator item ${item.shortId} is ${item.kind}, not skill_review`);
-				}
-				if (item.status !== "accepted") {
-					throw new Error(
-						`curator item ${item.shortId} is ${item.status}; only accepted items can be installed`,
-					);
-				}
-				const install = parseCuratorCatalogInstall(item);
-				const srcDir =
-					"sourceDir" in install
-						? path.resolve(install.sourceDir)
-						: resolveUpstreamSkillDir(
-								resolveUpstreamSkillsRoot(opts.upstreamRoot),
-								install.upstreamRel,
-							);
-				const result = installSkillFromDir(srcDir, { origin: `curator:${item.id}` });
-				printInstallResult(result, opts.json);
-			} catch (err) {
-				handleCommandError(err);
-			}
-		});
+			},
+		);
 }

@@ -11,11 +11,13 @@ import { resetDatabase } from "../../src/storage/db.js";
 const ORIGINAL_ENV = {
 	dataDir: process.env.TELCLAUDE_DATA_DIR,
 	catalogDir: process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR,
+	socialCatalogDir: process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR,
 	upstreamDir: process.env.TELCLAUDE_HERMES_UPSTREAM_SKILLS_DIR,
 };
 
 let tempRoot = "";
 let catalogRoot = "";
+let socialCatalogRoot = "";
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -39,8 +41,10 @@ function writeSkill(name: string, body?: string): string {
 beforeEach(() => {
 	tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-hermes-skills-cli-"));
 	catalogRoot = path.join(tempRoot, "catalog");
+	socialCatalogRoot = path.join(tempRoot, "social-catalog");
 	process.env.TELCLAUDE_DATA_DIR = path.join(tempRoot, "data");
 	process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR = catalogRoot;
+	process.env.TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR = socialCatalogRoot;
 	delete process.env.TELCLAUDE_HERMES_UPSTREAM_SKILLS_DIR;
 	resetDatabase();
 	logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -53,6 +57,7 @@ afterEach(() => {
 	for (const [key, value] of [
 		["TELCLAUDE_DATA_DIR", ORIGINAL_ENV.dataDir],
 		["TELCLAUDE_HERMES_SKILL_CATALOG_DIR", ORIGINAL_ENV.catalogDir],
+		["TELCLAUDE_HERMES_SOCIAL_SKILL_CATALOG_DIR", ORIGINAL_ENV.socialCatalogDir],
 		["TELCLAUDE_HERMES_UPSTREAM_SKILLS_DIR", ORIGINAL_ENV.upstreamDir],
 	] as const) {
 		if (value === undefined) delete process.env[key];
@@ -73,6 +78,20 @@ describe("hermes-skills install/list/remove/verify", () => {
 		await runCli(["list", "--json"]);
 		const jsonOut = logSpy.mock.calls.at(-1)?.[0] as string;
 		expect(JSON.parse(jsonOut).skills[0].name).toBe("daily-brief");
+	});
+
+	it("targets the social Hermes catalog when requested", async () => {
+		await runCli(["install", writeSkill("social-brief"), "--catalog", "social"]);
+		expect(process.exitCode).toBeUndefined();
+
+		expect(listCatalog({ catalogRoot })).toEqual([]);
+		expect(listCatalog({ catalogRoot: socialCatalogRoot })[0]).toMatchObject({
+			name: "social-brief",
+		});
+
+		await runCli(["list", "--catalog", "social", "--json"]);
+		const jsonOut = logSpy.mock.calls.at(-1)?.[0] as string;
+		expect(JSON.parse(jsonOut).skills[0].name).toBe("social-brief");
 	});
 
 	it("fails closed on an invalid skill", async () => {

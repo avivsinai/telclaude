@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "../../config/config.js";
 import { upsertCuratorItem } from "../../curator/store.js";
@@ -12,6 +13,7 @@ import {
 } from "../../memory/source.js";
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
+import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
@@ -32,6 +34,7 @@ import {
 import {
 	EdgeAdapterSchemaVersions,
 	type AttachmentRef as EdgeAttachmentRef,
+	AttachmentRefSchema as EdgeAttachmentRefSchema,
 	type PreparedOutbound,
 } from "../edge-adapter-contract.js";
 import { TelclaudeEdgeRuntime } from "../edge-adapter-runtime.js";
@@ -51,6 +54,7 @@ import type {
 	TelclaudeMcpAuditNoteRequest,
 	TelclaudeMcpAuthorityStamp,
 	TelclaudeMcpBridgeDependencies,
+	TelclaudeMcpDomain,
 	TelclaudeMcpImageGenerateRequest,
 	TelclaudeMcpMemorySearchRequest,
 	TelclaudeMcpOutboundPrepareRequest,
@@ -124,6 +128,7 @@ const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
 const PROVIDER_PATH = "/v1/fetch";
 const DEFAULT_WEB_FETCH_TIMEOUT_MS = 30_000;
 const WEB_FETCH_BYTES_PER_CHAR = 4;
+export const OUTBOUND_MEDIA_QUARANTINE_TTL_MS = 15 * 60 * 1000;
 /** Filing a Curator item is cheap but operator attention is not: keep it tight. */
 const SKILL_REQUEST_RATE_LIMIT: FeatureRateLimitConfig = {
 	maxPerHourPerUser: 5,
@@ -224,6 +229,82 @@ export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcp
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_skill_request");
 		},
 	};
+}
+
+export function createStoredAttachmentOutboundMediaResolver(options: {
+	readonly edgeRuntime: TelclaudeEdgeRuntime;
+	readonly quarantineStore: AttachmentQuarantineStore;
+	readonly validateAttachment?: AttachmentValidator;
+}): OutboundMediaResolver {
+	const attachmentValidator = options.validateAttachment ?? validateAttachmentRef;
+	return async (refs, { request, conversation }) => {
+		if (refs.length === 0) return [];
+		if (conversation.edgeDomain === null) {
+			throw new Error("outbound media denied: conversation domain is not edge-projectable");
+		}
+		const mediaRefs: EdgeAttachmentRef[] = [];
+		for (const ref of refs) {
+			const validated = attachmentValidator(ref, { actorUserId: request.actorId });
+			if (!validated.valid) {
+				throw new Error(`outbound media denied: ${validated.reason}`);
+			}
+			const sourceDomain = generatedMediaAttachmentDomain(validated.attachment.providerId);
+			if (sourceDomain && sourceDomain !== conversation.mcpDomain) {
+				throw new Error(
+					`outbound media denied: attachment source domain ${sourceDomain} cannot be reused for ${conversation.mcpDomain}`,
+				);
+			}
+			const bytes = await readFile(validated.attachment.filepath).catch((error: unknown) => {
+				throw new Error(
+					`outbound media denied: attachment bytes unavailable: ${sanitizedErrorMessage(error)}`,
+				);
+			});
+			const quarantined = options.quarantineStore.store({
+				bytes,
+				mediaType: validated.attachment.mimeType ?? "application/octet-stream",
+				conversationToken: conversation.token,
+				scanState: "clean",
+				trustLabel: "trusted",
+				ttlMs: OUTBOUND_MEDIA_QUARANTINE_TTL_MS,
+			});
+			const edgeRef = EdgeAttachmentRefSchema.parse({
+				...quarantined,
+				lifecycle: {
+					...quarantined.lifecycle,
+					authorizedFor: [
+						...new Set([
+							...quarantined.lifecycle.authorizedFor,
+							conversation.profileId,
+							`tc-${conversation.edgeDomain}`,
+						]),
+					],
+				},
+			});
+			mediaRefs.push(
+				options.edgeRuntime.registerAuthorizedAttachmentRef({
+					ref: edgeRef,
+					domain: conversation.edgeDomain,
+				}),
+			);
+		}
+		return mediaRefs;
+	};
+}
+
+function generatedMediaAttachmentDomain(providerId: string): TelclaudeMcpDomain | null {
+	const [toolName, domain, extra] = providerId.split(":");
+	if (extra !== undefined) return null;
+	if (toolName !== "tc_image_generate" && toolName !== "tc_tts") return null;
+	if (
+		domain === "private" ||
+		domain === "social" ||
+		domain === "household" ||
+		domain === "public" ||
+		domain === "specialist"
+	) {
+		return domain;
+	}
+	return null;
 }
 
 export function createTelclaudeLiveMcpRelayClients(

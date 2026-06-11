@@ -163,6 +163,8 @@ These are marked `external: true` in docker-compose.yml, so `docker compose down
 
 **Profile volume note:** persona-scoped Claude plugin/profile volumes are relay-managed state. Standalone telclaude skills live in the shared `telclaude-skill-catalog`; the contained Hermes runtime receives only the curated Hermes allowlist.
 
+**Hermes skill catalog.** The Hermes overlay adds relay-owned external skill catalogs for the contained runtimes. The relay mounts `telclaude-hermes-skill-catalog` and `telclaude-hermes-social-skill-catalog` read-write; `tc-hermes-contained` mounts only the private catalog read-only, and `tc-hermes-social` mounts only the social catalog read-only. Operators install private/runtime skills relay-side with `telclaude hermes-skills install <dir>` (or `install-upstream <rel>` / `install-from-curator <itemId>`); target the social catalog with `--catalog social`. Every install is validated (no scripts, symlinks, or executables; size caps; secret + injection scan) and recorded in `catalog-manifest.json`. The contained entrypoint re-validates the mounted tree at boot and serves it to upstream Hermes via `skills.external_dirs`; use upstream `/reload-skills` to pick up changes without a restart, and `telclaude hermes-skills verify` to detect manifest/tree drift.
+
 ### Safe Operations
 
 ```bash
@@ -207,6 +209,10 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `telclaude` | `/data` | SQLite DB, config, sessions | Named volume |
 | `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | External volume |
 | `telclaude` | `/home/telclaude-skill-catalog` | Shared active + draft standalone skill catalog | External volume |
+| `telclaude` | `/opt/data/telclaude-hermes-skill-catalog` | Relay-owned private Hermes skill catalog | Hermes overlay named volume |
+| `telclaude` | `/opt/data/telclaude-hermes-social-skill-catalog` | Relay-owned social Hermes skill catalog | Hermes overlay named volume |
+| `tc-hermes-contained` | `/opt/data/telclaude-hermes-skill-catalog` | Private Hermes catalog, read-only inside runtime | Hermes overlay named volume |
+| `tc-hermes-social` | `/opt/data/telclaude-hermes-social-skill-catalog` | Social Hermes catalog, read-only inside runtime | Hermes overlay named volume |
 | `telclaude` | `/home/telclaude-private-profile` / `/home/telclaude-social-profile` | Persona-scoped official Claude plugin/profile state | Named volume |
 | `telclaude` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 | `telclaude` | `/social/sandbox` | Social working area controlled by relay/Hermes authority | Named volume |
