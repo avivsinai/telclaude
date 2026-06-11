@@ -216,6 +216,34 @@ Operator-supplied inputs to the overlay (`docker/.env` or shell):
 - `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=<relay-scoped>` — the relay-owned OpenAI Codex subscription token.
 - `OPERATOR_RPC_AGENT_PUBLIC_KEY` / `OPERATOR_RPC_RELAY_PRIVATE_KEY` — operator RPC keypair from `pnpm dev keygen operator`, used to sign the proof attestations below.
 
+### Management plane
+
+Hermes production management deliberately stays on three supported layers:
+
+1. **Docker Compose** owns the live resource graph: the relay, vault, TOTP,
+   provider sidecars, and the private/social Hermes runtime overlay. Runtime
+   changes should be service-scoped (`up --no-deps --wait`, `restart` for the
+   affected Hermes runtimes) rather than full-stack `down`/`up` operations.
+2. **Private release automation** owns host-specific overlays, secrets, seed
+   manifests, and acceptance checks outside the OSS repository. A production
+   host may attach this automation to a self-hosted CI runner post-job hook, but
+   the hook must call the same fail-closed gate an operator can run manually.
+3. **`telclaude hermes` evidence commands** own parity and cutover proof:
+   inventory, no-fork proof, network probes, fixture evidence, rollback
+   rehearsal, proof bundles, and strict cutover evaluation.
+
+Do not introduce a second runtime orchestrator for Hermes unless the deployment
+has actually outgrown a single Compose host. Kubernetes, Nomad, UI auto-updaters,
+and broad "restart everything" release tools add failure modes without improving
+the core invariant: the relay remains the security boundary and Hermes remains
+contained, no-fork runtime compute.
+
+Generic MCP catalog or gateway tools can be useful for non-privileged MCP server
+inventory, but they are not a substitute for Telclaude's relay-owned live MCP
+bridge. The live bridge resolves opaque authority handles server-side, strips
+client-supplied scope/provenance, binds provider and memory access to the relay's
+policy, and is covered by the Hermes proof spine.
+
 ### Proving parity before cutover
 
 Cutover is all-or-nothing: operators only enter `hermes` mode once a strict evidence chain proves the contained runtime is at parity with the Claude path. The artifacts are produced by the `hermes` subcommands and then byte-bound into a single bundle:

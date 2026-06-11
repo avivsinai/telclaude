@@ -471,6 +471,12 @@ This bypass is logged to the audit log.
 
 LLM/persona execution requires `tc-hermes-contained`, `tc-hermes-social`, and relay live MCP/model proxy configuration. Confirm `TELCLAUDE_HERMES_API_BASE_URL`, `TELCLAUDE_HERMES_API_KEY`, `TELCLAUDE_HERMES_SOCIAL_API_BASE_URL`, `TELCLAUDE_HERMES_SOCIAL_API_KEY`, `TELCLAUDE_HERMES_MCP_RELAY_TOKEN`, `TELCLAUDE_HERMES_LIVE_MCP_ENABLED`, and the Hermes overlay are set and running.
 
+For production repairs, use the deployment's Hermes release gate or private
+overlay replay procedure instead of a full-stack `docker compose down` / `up`.
+Skill seeds, live MCP wiring, and contained-runtime reloads should be restored
+with service-scoped Compose operations so vault, TOTP, and provider sidecars are
+not cold-recreated just to fix Hermes runtime state.
+
 ### "Permission denied" on workspace
 
 Ensure `WORKSPACE_PATH` in `.env` points to a readable directory on the host:
