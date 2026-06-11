@@ -54,9 +54,13 @@ function fullTool(name: string): Record<string, unknown> {
 function mcpTransport(handlers: {
 	initialize?: () => { status: number; body: unknown };
 	toolsList?: () => { status: number; body: unknown };
+	toolsCall?: (params: { name: string; arguments: Record<string, unknown> }) => {
+		status: number;
+		body: unknown;
+	};
 }): HermesVerifyLiveRpcTransport {
 	return async (request) => {
-		const payload = request.payload as { method: string; id: string };
+		const payload = request.payload as { method: string; id: string; params: unknown };
 		if (payload.method === "initialize") {
 			return (
 				handlers.initialize?.() ?? {
@@ -73,6 +77,15 @@ function mcpTransport(handlers: {
 				}
 			);
 		}
+		if (payload.method === "tools/call") {
+			const params = payload.params as { name: string; arguments: Record<string, unknown> };
+			return (
+				handlers.toolsCall?.(params) ?? {
+					status: 200,
+					body: { error: { code: -32001, message: "capability scope denied: web.fetch" } },
+				}
+			);
+		}
 		return { status: 404, body: { error: { message: "unexpected method" } } };
 	};
 }
@@ -82,16 +95,95 @@ function statuses(checks: readonly { id: string; status: string }[]): Record<str
 }
 
 describe("runHermesVerifyLiveMcpChecks", () => {
-	it("passes when the full schema-bearing tool surface is advertised", async () => {
+	it("passes when the full surface is advertised and the scope-less canary is denied", async () => {
+		const toolCalls: { name: string; arguments: Record<string, unknown> }[] = [];
 		const checks = await runHermesVerifyLiveMcpChecks({
 			endpointUrl: ENDPOINT,
-			transport: mcpTransport({}),
+			transport: mcpTransport({
+				toolsCall: (params) => {
+					toolCalls.push(params);
+					return {
+						status: 200,
+						body: { error: { code: -32001, message: "capability scope denied: web.fetch" } },
+					};
+				},
+			}),
 		});
 		expect(statuses(checks)).toEqual({
 			"mcp.initialize": "pass",
 			"mcp.tools_list_exact": "pass",
 			"mcp.tool_schemas": "pass",
+			"mcp.capability_scope_fail_closed": "pass",
 		});
+		// The canary fetch target can never resolve, so even a broken gate
+		// cannot produce real egress.
+		expect(toolCalls).toEqual([
+			{
+				name: "tc_web_fetch",
+				arguments: { url: "https://capability-scope-canary.invalid/", maxChars: 64 },
+			},
+		]);
+	});
+
+	it("opens and closes the canary window around the capability scope check", async () => {
+		const { client, calls } = fakeCanaryWindow();
+		const checks = await runHermesVerifyLiveMcpChecks({
+			endpointUrl: ENDPOINT,
+			transport: mcpTransport({}),
+			canaryWindow: client,
+		});
+		expect(statuses(checks)["mcp.capability_scope_fail_closed"]).toBe("pass");
+		expect(calls).toEqual({ opened: 1, closed: 1 });
+	});
+
+	it("fails the capability check when tc_web_fetch returns a result (gating regression)", async () => {
+		const { client, calls } = fakeCanaryWindow();
+		const checks = await runHermesVerifyLiveMcpChecks({
+			endpointUrl: ENDPOINT,
+			transport: mcpTransport({
+				toolsCall: () => ({
+					status: 200,
+					body: { result: { content: [{ type: "text", text: "fetched" }] } },
+				}),
+			}),
+			canaryWindow: client,
+		});
+		const check = checks.find((entry) => entry.id === "mcp.capability_scope_fail_closed");
+		expect(check?.status).toBe("fail");
+		expect(check?.detail).toContain("capability gating is broken");
+		expect(calls.closed).toBe(1);
+	});
+
+	it("fails the capability check on a non-scope denial with actionable detail", async () => {
+		const checks = await runHermesVerifyLiveMcpChecks({
+			endpointUrl: ENDPOINT,
+			transport: mcpTransport({
+				toolsCall: () => ({
+					status: 200,
+					body: { error: { code: -32001, message: "MCP runtime authority is not active" } },
+				}),
+			}),
+		});
+		const check = checks.find((entry) => entry.id === "mcp.capability_scope_fail_closed");
+		expect(check?.status).toBe("fail");
+		expect(check?.detail).toContain("MCP runtime authority is not active");
+		expect(check?.detail).toContain("canary activation window");
+	});
+
+	it("fails the capability check closed when the canary window open is refused", async () => {
+		const { client } = fakeCanaryWindow({
+			open: async () => {
+				throw new Error("Hermes live MCP admin request failed (409): Busy.");
+			},
+		});
+		const checks = await runHermesVerifyLiveMcpChecks({
+			endpointUrl: ENDPOINT,
+			transport: mcpTransport({}),
+			canaryWindow: client,
+		});
+		const check = checks.find((entry) => entry.id === "mcp.capability_scope_fail_closed");
+		expect(check?.status).toBe("fail");
+		expect(check?.detail).toContain("409");
 	});
 
 	it("fails closed on a names-only tools/list (the live regression shape)", async () => {

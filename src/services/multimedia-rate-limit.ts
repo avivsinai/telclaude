@@ -19,6 +19,9 @@ export type MultimediaFeature =
 	| "social_post"
 	| "summarize"
 	| "token_refresh"
+	| "web_fetch"
+	| "web_search"
+	| "skill_request"
 	| `${string}_post`
 	| `${string}_reply`
 	| `${string}_reply_target`

@@ -3,6 +3,7 @@ import {
 	createTelclaudeMcpBridge,
 	TELCLAUDE_MCP_SERVER_POLICY,
 	type TelclaudeMcpAuthority,
+	type TelclaudeMcpBridge,
 	type TelclaudeMcpBridgeDependencies,
 } from "../../src/hermes/mcp/bridge.js";
 
@@ -19,6 +20,11 @@ describe("Telclaude MCP bridge foundation", () => {
 				"tc_outbound_prepare",
 				"tc_outbound_execute",
 				"tc_audit_note",
+				"tc_web_fetch",
+				"tc_web_search",
+				"tc_image_generate",
+				"tc_tts",
+				"tc_skill_request",
 			],
 			resources: [],
 			prompts: [],
@@ -387,6 +393,143 @@ describe("Telclaude MCP bridge foundation", () => {
 		expect(calls[1]).not.toHaveProperty("approvalToken");
 	});
 
+	it("denies every capability tool when the authority carries no capabilityScopes", async () => {
+		const calls: unknown[] = [];
+		const capture = async (request: unknown) => {
+			calls.push(request);
+			return { ok: true };
+		};
+		const denials: Array<[keyof TelclaudeMcpBridge & `tc_${string}`, unknown, string]> = [
+			["tc_web_fetch", { url: "https://example.com" }, "web.fetch"],
+			["tc_web_search", { query: "telclaude" }, "web.search"],
+			["tc_image_generate", { prompt: "an owl on a wire" }, "media.image"],
+			["tc_tts", { text: "hello" }, "media.tts"],
+			["tc_skill_request", { skillName: "weather", rationale: "forecast" }, "skills.request"],
+		];
+
+		for (const capabilityScopes of [undefined, [] as string[]]) {
+			const bridge = createTelclaudeMcpBridge(
+				baseAuthority(capabilityScopes ? { capabilityScopes } : {}),
+				{
+					...baseDependencies(),
+					webFetch: capture,
+					webSearch: capture,
+					imageGenerate: capture,
+					tts: capture,
+					skillRequest: capture,
+				},
+			);
+			for (const [tool, input, scope] of denials) {
+				await expect(bridge[tool](input)).rejects.toThrow(`capability scope denied: ${scope}`);
+			}
+		}
+		expect(calls).toEqual([]);
+	});
+
+	it("dispatches scoped capability tools with the relay-stamped authority and input defaults", async () => {
+		const calls: Record<string, unknown[]> = {
+			webFetch: [],
+			webSearch: [],
+			imageGenerate: [],
+			tts: [],
+			skillRequest: [],
+		};
+		const bridge = createTelclaudeMcpBridge(
+			baseAuthority({
+				capabilityScopes: ["web.fetch", "web.search", "media.image", "media.tts", "skills.request"],
+			}),
+			{
+				...baseDependencies(),
+				webFetch: async (request) => {
+					calls.webFetch.push(request);
+					return { text: "fetched" };
+				},
+				webSearch: async (request) => {
+					calls.webSearch.push(request);
+					return { results: [] };
+				},
+				imageGenerate: async (request) => {
+					calls.imageGenerate.push(request);
+					return { attachmentRef: "att_img" };
+				},
+				tts: async (request) => {
+					calls.tts.push(request);
+					return { attachmentRef: "att_audio" };
+				},
+				skillRequest: async (request) => {
+					calls.skillRequest.push(request);
+					return { requestId: "skill_req_1" };
+				},
+			},
+		);
+
+		await expect(bridge.tc_web_fetch({ url: "https://example.com/page" })).resolves.toEqual({
+			text: "fetched",
+		});
+		await expect(bridge.tc_web_search({ query: "telclaude" })).resolves.toEqual({ results: [] });
+		await expect(
+			bridge.tc_image_generate({ prompt: "an owl on a wire", size: "1024x1024" }),
+		).resolves.toEqual({ attachmentRef: "att_img" });
+		await expect(bridge.tc_tts({ text: "hello", speed: 1.25 })).resolves.toEqual({
+			attachmentRef: "att_audio",
+		});
+		await expect(
+			bridge.tc_skill_request({ skillName: "weather", rationale: "forecast briefs" }),
+		).resolves.toEqual({ requestId: "skill_req_1" });
+
+		const stamp = {
+			actorId: "operator",
+			profileId: "ops",
+			domain: "private",
+			memorySource: "telegram:ops",
+			writableNamespace: "private:ops",
+			endpointId: "endpoint-private",
+			networkNamespace: "netns-private",
+		};
+		expect(calls.webFetch).toEqual([
+			{ ...stamp, url: "https://example.com/page", maxChars: 50_000 },
+		]);
+		expect(calls.webSearch).toEqual([{ ...stamp, query: "telclaude", count: 5 }]);
+		expect(calls.imageGenerate).toEqual([
+			{ ...stamp, prompt: "an owl on a wire", size: "1024x1024" },
+		]);
+		expect(calls.tts).toEqual([{ ...stamp, text: "hello", speed: 1.25 }]);
+		expect(calls.skillRequest).toEqual([
+			{ ...stamp, skillName: "weather", rationale: "forecast briefs" },
+		]);
+	});
+
+	it("rejects client-supplied capabilityScopes and unsafe capability inputs", async () => {
+		const calls: unknown[] = [];
+		const bridge = createTelclaudeMcpBridge(
+			baseAuthority({ capabilityScopes: ["web.fetch", "skills.request"] }),
+			{
+				...baseDependencies(),
+				webFetch: async (request) => {
+					calls.push(request);
+					return { text: "fetched" };
+				},
+				skillRequest: async (request) => {
+					calls.push(request);
+					return { requestId: "skill_req_1" };
+				},
+			},
+		);
+
+		await expect(
+			bridge.tc_web_fetch({
+				url: "https://example.com",
+				capabilityScopes: ["web.fetch", "media.image"],
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field: capabilityScopes");
+		await expect(bridge.tc_web_fetch({ url: "file:///etc/passwd" })).rejects.toThrow();
+		await expect(bridge.tc_web_fetch({ url: "not-a-url" })).rejects.toThrow();
+		await expect(
+			bridge.tc_skill_request({ skillName: "../escape", rationale: "nope" }),
+		).rejects.toThrow();
+		expect(calls).toEqual([]);
+	});
+
 	it("rejects old or caller-shaped outbound prepare authority", async () => {
 		const bridge = createTelclaudeMcpBridge(baseAuthority({ outboundChannels: ["whatsapp"] }), {
 			...baseDependencies(),
@@ -457,5 +600,10 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		outboundPrepare: async () => ({ outboundRef: "out_123" }),
 		outboundExecute: async () => ({ ok: true }),
 		auditNote: async () => ({ stored: true }),
+		webFetch: async () => ({ text: "" }),
+		webSearch: async () => ({ results: [] }),
+		imageGenerate: async () => ({ attachmentRef: "att_img" }),
+		tts: async () => ({ attachmentRef: "att_audio" }),
+		skillRequest: async () => ({ requestId: "skill_req_1" }),
 	};
 }

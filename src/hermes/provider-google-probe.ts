@@ -11,7 +11,10 @@ import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../security/approval-domains.js"
 import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import { createTelclaudeMcpBridge, type TelclaudeMcpAuthority } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
-import { createTelclaudeLiveMcpRelayClients } from "./mcp/live-relay-clients.js";
+import {
+	createNotConfiguredTelclaudeMcpCapabilityClients,
+	createTelclaudeLiveMcpRelayClients,
+} from "./mcp/live-relay-clients.js";
 import {
 	createGoogleProviderSidecarApprovalTokenIssuer,
 	type GoogleProviderSidecarApprovalTokenSigner,
@@ -955,6 +958,7 @@ function createExecuteBridge(
 		attachmentGet: async () => ({ bytes: 0 }),
 		outboundPrepare: async () => ({ outboundRef: "not-used" }),
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: harness.ledger,
 			providerProxy,

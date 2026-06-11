@@ -8,6 +8,7 @@ import type {
 	TelclaudeMcpAuthority,
 	TelclaudeMcpBridgeDependencies,
 } from "../../src/hermes/mcp/bridge.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "../../src/hermes/mcp/live-relay-clients.js";
 import { telegramMemorySource } from "../../src/memory/source.js";
 
 describe("Telclaude MCP authority registry", () => {
@@ -37,6 +38,39 @@ describe("Telclaude MCP authority registry", () => {
 			ok: true,
 			authority,
 		});
+	});
+
+	it("round-trips capabilityScopes and preserves their absence", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const connection = baseConnection();
+
+		const scoped = registry.register({
+			connection,
+			authority: baseAuthority({ capabilityScopes: ["web.fetch", " web.fetch ", "media.tts"] }),
+			nowMs: 1_000,
+			ttlMs: 10_000,
+		});
+		const resolvedScoped = registry.resolve({ handle: scoped.handle, connection, nowMs: 2_000 });
+		if (!resolvedScoped.ok) throw new Error("expected scoped authority resolution");
+		expect(resolvedScoped.authority.capabilityScopes).toEqual(["web.fetch", "media.tts"]);
+		(resolvedScoped.authority.capabilityScopes as string[]).push("mutated");
+		const resolvedAgain = registry.resolve({ handle: scoped.handle, connection, nowMs: 2_001 });
+		if (!resolvedAgain.ok) throw new Error("expected scoped authority resolution");
+		expect(resolvedAgain.authority.capabilityScopes).toEqual(["web.fetch", "media.tts"]);
+
+		const unscoped = registry.register({
+			connection: baseConnection({ sessionKey: "tg:unscoped" }),
+			authority: baseAuthority(),
+			nowMs: 1_000,
+			ttlMs: 10_000,
+		});
+		const resolvedUnscoped = registry.resolve({
+			handle: unscoped.handle,
+			connection: baseConnection({ sessionKey: "tg:unscoped" }),
+			nowMs: 2_000,
+		});
+		if (!resolvedUnscoped.ok) throw new Error("expected unscoped authority resolution");
+		expect(resolvedUnscoped.authority).not.toHaveProperty("capabilityScopes");
 	});
 
 	it("rejects non relay-minted turn authority refs", () => {
@@ -304,5 +338,6 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		outboundPrepare: async () => ({ outboundRef: "out_123" }),
 		outboundExecute: async () => ({ ok: true }),
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 }

@@ -119,6 +119,7 @@ export type ContentSource =
 	| "social-timeline"
 	| "social-context"
 	| "web-fetch"
+	| "web-search"
 	| "user-forwarded"
 	| "unknown";
 
@@ -140,6 +141,7 @@ const SOURCE_LABELS: Record<ContentSource, string> = {
 	"social-timeline": "SOCIAL TIMELINE",
 	"social-context": "SOCIAL CONTEXT",
 	"web-fetch": "WEB CONTENT",
+	"web-search": "WEB SEARCH RESULTS",
 	"user-forwarded": "FORWARDED CONTENT",
 	unknown: "EXTERNAL CONTENT",
 };

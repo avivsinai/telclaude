@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import path from "node:path";
+import { loadConfig } from "../../config/config.js";
+import { upsertCuratorItem } from "../../curator/store.js";
 import { getChildLogger } from "../../logging.js";
 import type { MemorySnapshotRequest } from "../../memory/rpc.js";
 import { handleMemoryPropose, handleMemorySnapshot } from "../../memory/rpc.js";
@@ -10,8 +13,19 @@ import {
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
+import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
+import { wrapExternalContent } from "../../security/external-content.js";
 import { redactSecrets } from "../../security/output-filter.js";
+import { generateImage } from "../../services/image-generation.js";
 import {
+	consumeRateLimit,
+	enforceRateLimit,
+	type FeatureRateLimitConfig,
+} from "../../services/multimedia-rate-limit.js";
+import { textToSpeech } from "../../services/tts.js";
+import { searchWeb } from "../../services/web-search.js";
+import {
+	createAttachmentRef,
 	type AttachmentRef as StoredAttachmentRef,
 	validateAttachmentRef,
 } from "../../storage/attachment-refs.js";
@@ -35,10 +49,18 @@ import {
 import type {
 	TelclaudeMcpAttachmentGetRequest,
 	TelclaudeMcpAuditNoteRequest,
+	TelclaudeMcpAuthorityStamp,
+	TelclaudeMcpBridgeDependencies,
+	TelclaudeMcpImageGenerateRequest,
 	TelclaudeMcpMemorySearchRequest,
 	TelclaudeMcpOutboundPrepareRequest,
 	TelclaudeMcpProviderPrepareWriteRequest,
 	TelclaudeMcpProviderReadRequest,
+	TelclaudeMcpSkillRequestRequest,
+	TelclaudeMcpToolName,
+	TelclaudeMcpTtsRequest,
+	TelclaudeMcpWebFetchRequest,
+	TelclaudeMcpWebSearchRequest,
 } from "./bridge.js";
 import type { TelclaudeLiveMcpRelayClients } from "./live-server.js";
 import {
@@ -92,10 +114,89 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly requestSideEffectApproval?: (
 		record: TelclaudeMcpSideEffectRecord,
 	) => void | Promise<void>;
+	/** Rate limit for tc_web_fetch / tc_web_search; defaults to config `web`. */
+	readonly webRateLimit?: FeatureRateLimitConfig;
+	/** Injectable HTTP boundary for the web-search provider (tests only). */
+	readonly webSearchFetch?: typeof fetch;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
 const PROVIDER_PATH = "/v1/fetch";
+const DEFAULT_WEB_FETCH_TIMEOUT_MS = 30_000;
+const WEB_FETCH_BYTES_PER_CHAR = 4;
+/** Filing a Curator item is cheap but operator attention is not: keep it tight. */
+const SKILL_REQUEST_RATE_LIMIT: FeatureRateLimitConfig = {
+	maxPerHourPerUser: 5,
+	maxPerDayPerUser: 20,
+};
+
+export class TelclaudeLiveMcpToolNotConfiguredError extends Error {
+	readonly code = "mcp_tool_not_configured";
+
+	constructor(toolName: TelclaudeMcpToolName) {
+		super(`live MCP tool not configured: ${toolName}`);
+		this.name = "TelclaudeLiveMcpToolNotConfiguredError";
+	}
+}
+
+export class TelclaudeLiveMcpUnsupportedContentError extends Error {
+	readonly code = "mcp_web_fetch_unsupported_content";
+
+	constructor(contentType: string) {
+		super(`web fetch unsupported content type: ${contentType || "(none)"}`);
+		this.name = "TelclaudeLiveMcpUnsupportedContentError";
+	}
+}
+
+/**
+ * Typed wrapper for media-service failures (tc_image_generate / tc_tts). The
+ * cause message is secret-redacted and truncated so an upstream provider error
+ * can never echo key material or a stack trace back to the contained runtime.
+ */
+export class TelclaudeLiveMcpMediaGenerationError extends Error {
+	readonly code = "mcp_media_generation_failed";
+
+	constructor(toolName: TelclaudeMcpToolName, cause: unknown) {
+		super(`${toolName} failed: ${sanitizedErrorMessage(cause)}`);
+		this.name = "TelclaudeLiveMcpMediaGenerationError";
+	}
+}
+
+function sanitizedErrorMessage(cause: unknown): string {
+	const message = cause instanceof Error ? cause.message : String(cause);
+	return redactSecrets(message).slice(0, 300);
+}
+
+export type TelclaudeMcpCapabilityClients = Pick<
+	TelclaudeMcpBridgeDependencies,
+	"webFetch" | "webSearch" | "imageGenerate" | "tts" | "skillRequest"
+>;
+
+/**
+ * Fail-closed capability-tool clients for contexts that need a full bridge
+ * dependency surface but never serve capability tools (probe runners,
+ * approval continuation). Even a fully scoped call fails with a typed
+ * not-configured error.
+ */
+export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcpCapabilityClients {
+	return {
+		async webFetch() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_web_fetch");
+		},
+		async webSearch() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_web_search");
+		},
+		async imageGenerate() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_image_generate");
+		},
+		async tts() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_tts");
+		},
+		async skillRequest() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_skill_request");
+		},
+	};
+}
 
 export function createTelclaudeLiveMcpRelayClients(
 	options: CreateTelclaudeLiveMcpRelayClientsOptions,
@@ -111,6 +212,23 @@ export function createTelclaudeLiveMcpRelayClients(
 	const edgeRuntime = options.edgeRuntime ?? new TelclaudeEdgeRuntime();
 	const resolveOutboundMediaRefs =
 		options.resolveOutboundMediaRefs ?? defaultResolveOutboundMediaRefs;
+	const webRateLimit = () => options.webRateLimit ?? loadConfig().web;
+
+	// Audit a tool call, taking the authority-stamp fields off the request and
+	// secret-redacting/truncating the payload. The kind labels the tool's effect.
+	const auditFromRequest = (
+		request: TelclaudeMcpAuthorityStamp,
+		kind: string,
+		payload: Record<string, unknown>,
+	): void | Promise<void> =>
+		auditNote({
+			actorId: request.actorId,
+			profileId: request.profileId,
+			domain: request.domain,
+			endpointId: request.endpointId,
+			kind,
+			payload: sanitizePayload(payload),
+		});
 
 	return {
 		async providerRead(request) {
@@ -266,18 +384,324 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async auditNote(request: TelclaudeMcpAuditNoteRequest) {
 			assertAuthorityMemoryBoundary(request);
-			const entry = {
-				actorId: request.actorId,
-				profileId: request.profileId,
-				domain: request.domain,
-				endpointId: request.endpointId,
-				kind: request.kind,
-				payload: sanitizePayload(request.payload),
-			};
-			await auditNote(entry);
+			await auditFromRequest(request, request.kind, request.payload);
 			return { stored: true };
 		},
+
+		async webFetch(request: TelclaudeMcpWebFetchRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("web_fetch", request.actorId, webRateLimit());
+			const fetched = await fetchWebContent(request);
+			consumeRateLimit("web_fetch", request.actorId);
+			await auditFromRequest(request, "web.fetch", {
+				url: request.url,
+				finalUrl: fetched.finalUrl,
+				httpStatus: fetched.httpStatus,
+				contentType: fetched.contentType,
+				truncated: fetched.truncated,
+			});
+			return fetched;
+		},
+
+		async webSearch(request: TelclaudeMcpWebSearchRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("web_search", request.actorId, webRateLimit());
+			const found = await searchWeb(request.query, {
+				count: request.count,
+				...(options.webSearchFetch ? { fetchImpl: options.webSearchFetch } : {}),
+			});
+			const results = found.results.map((result) => ({
+				title: redactSecrets(result.title),
+				url: result.url,
+				snippet: redactSecrets(result.snippet),
+			}));
+			consumeRateLimit("web_search", request.actorId);
+			await auditFromRequest(request, "web.search", {
+				query: request.query,
+				count: request.count,
+				provider: found.provider,
+				resultCount: results.length,
+			});
+			return {
+				query: request.query,
+				provider: found.provider,
+				results: wrapExternalContent(JSON.stringify(results, null, 2), {
+					source: "web-search",
+					serviceId: "tc_web_search",
+					includeRiskAssessment: true,
+				}),
+			};
+		},
+
+		async imageGenerate(request: TelclaudeMcpImageGenerateRequest) {
+			assertAuthorityMemoryBoundary(request);
+			// The image service enforces and consumes the existing image_generation
+			// rate limit for this actor. Quality "auto" defers to the relay's
+			// configured default (the service config only models explicit tiers).
+			const generated = await runMediaGeneration("tc_image_generate", () =>
+				generateImage(request.prompt, {
+					userId: request.actorId,
+					...(request.size ? { size: request.size } : {}),
+					...(request.quality && request.quality !== "auto" ? { quality: request.quality } : {}),
+				}),
+			);
+			const attachment = mintMediaAttachmentRef("tc_image_generate", request, {
+				filepath: generated.path,
+				mimeType: "image/png",
+				sizeBytes: generated.sizeBytes,
+			});
+			await auditFromRequest(request, "media.image", {
+				attachmentRef: attachment.ref,
+				model: generated.model,
+				sizeBytes: generated.sizeBytes,
+				promptChars: request.prompt.length,
+			});
+			return {
+				attachmentRef: attachment.ref,
+				sizeBytes: generated.sizeBytes,
+				model: generated.model,
+				...(generated.revisedPrompt ? { revisedPrompt: generated.revisedPrompt } : {}),
+				expiresAt: attachment.expiresAt,
+			};
+		},
+
+		async tts(request: TelclaudeMcpTtsRequest) {
+			assertAuthorityMemoryBoundary(request);
+			const voice = resolveTtsVoice(request.voice);
+			// voiceMessage: true converts to OGG/Opus so the attachment delivers as
+			// a Telegram voice message. The TTS service enforces and consumes the
+			// existing tts rate limit for this actor.
+			const generated = await runMediaGeneration("tc_tts", () =>
+				textToSpeech(request.text, {
+					userId: request.actorId,
+					voiceMessage: true,
+					...(voice ? { voice } : {}),
+					...(request.speed !== undefined ? { speed: request.speed } : {}),
+				}),
+			);
+			const attachment = mintMediaAttachmentRef("tc_tts", request, {
+				filepath: generated.path,
+				mimeType: generated.format === "mp3" ? "audio/mpeg" : `audio/${generated.format}`,
+				sizeBytes: generated.sizeBytes,
+			});
+			await auditFromRequest(request, "media.tts", {
+				attachmentRef: attachment.ref,
+				format: generated.format,
+				voice: generated.voice,
+				sizeBytes: generated.sizeBytes,
+				textChars: request.text.length,
+			});
+			return {
+				attachmentRef: attachment.ref,
+				sizeBytes: generated.sizeBytes,
+				format: generated.format,
+				voice: generated.voice,
+				estimatedDurationSeconds: generated.estimatedDurationSeconds,
+				expiresAt: attachment.expiresAt,
+			};
+		},
+
+		async skillRequest(request: TelclaudeMcpSkillRequestRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("skill_request", request.actorId, SKILL_REQUEST_RATE_LIMIT);
+			// System-on-behalf-of-hermes producer: the standard non-signed upsert
+			// path local scans use, with producerId recording the authority actor.
+			// The fingerprint dedupes repeated requests for the same skill into one
+			// open Curator item. Filing never installs anything — the operator
+			// decides via /curator, and the proposed catalogInstall deliberately
+			// carries no sourceDir/upstreamRel, so the model cannot name an install
+			// source.
+			const item = upsertCuratorItem({
+				fingerprint: `skill_request:${request.skillName}:v1`,
+				kind: "skill_review",
+				severity: "info",
+				source: "hermes-live-mcp",
+				title: `Hermes skill request: ${request.skillName}`,
+				summary: `The ${request.domain} Hermes runtime (profile ${request.profileId}) requested skill "${request.skillName}" for the relay catalog.`,
+				rationale: request.rationale,
+				entityRef: `skill-catalog:${request.skillName}`,
+				proposedAction: {
+					catalogInstall: {
+						skillName: request.skillName,
+						...(request.sourceHint ? { sourceHint: request.sourceHint } : {}),
+						requestedBy: request.actorId,
+					},
+				},
+				evidence: {
+					rationale: request.rationale,
+					...(request.sourceHint ? { sourceHint: request.sourceHint } : {}),
+					domain: request.domain,
+					profileId: request.profileId,
+					endpointId: request.endpointId,
+				},
+				producerKind: "system",
+				producerId: request.actorId,
+			});
+			consumeRateLimit("skill_request", request.actorId);
+			await auditFromRequest(request, "skill.request", {
+				curatorItemId: item.id,
+				shortId: item.shortId,
+				skillName: request.skillName,
+				itemStatus: item.status,
+			});
+			return {
+				curatorItemId: item.id,
+				shortId: item.shortId,
+				status: "filed",
+				note: "Filed as a Curator review item. The operator reviews skill requests via /curator (or `telclaude curator list`); nothing is installed or changed automatically.",
+			};
+		},
 	};
+}
+
+const TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"] as const;
+type TtsVoice = (typeof TTS_VOICES)[number];
+
+function resolveTtsVoice(voice: string | undefined): TtsVoice | undefined {
+	if (voice === undefined) return undefined;
+	if (!(TTS_VOICES as readonly string[]).includes(voice)) {
+		throw new Error(
+			`tts voice not supported: ${voice}. Supported voices: ${TTS_VOICES.join(", ")}`,
+		);
+	}
+	return voice as TtsVoice;
+}
+
+async function runMediaGeneration<T>(
+	toolName: TelclaudeMcpToolName,
+	run: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await run();
+	} catch (error) {
+		throw new TelclaudeLiveMcpMediaGenerationError(toolName, error);
+	}
+}
+
+/**
+ * Mint a relay-owned attachment ref for generated media. The providerId binds
+ * the ref to the producing tool AND the authority's conversation domain; the
+ * ref HMAC covers both alongside the actor, so a ref minted for one actor or
+ * domain cannot be re-presented for another. The runtime only ever sees the
+ * ref token — never the filepath or raw bytes.
+ */
+function mintMediaAttachmentRef(
+	toolName: "tc_image_generate" | "tc_tts",
+	request: Pick<TelclaudeMcpAuthorityStamp, "actorId" | "domain">,
+	media: { filepath: string; mimeType: string; sizeBytes: number },
+): StoredAttachmentRef {
+	return createAttachmentRef({
+		actorUserId: request.actorId,
+		providerId: `${toolName}:${request.domain}`,
+		filepath: media.filepath,
+		filename: path.basename(media.filepath),
+		mimeType: media.mimeType,
+		size: media.sizeBytes,
+	});
+}
+
+/**
+ * SSRF-guarded web fetch for tc_web_fetch: DNS-pinned fetch with redirect
+ * re-validation, a content-type allowlist, byte/char truncation, secret
+ * redaction, and an untrusted-content risk wrap.
+ */
+async function fetchWebContent(request: TelclaudeMcpWebFetchRequest): Promise<{
+	url: string;
+	finalUrl: string;
+	httpStatus: number;
+	contentType: string;
+	content: string;
+	truncated: boolean;
+}> {
+	const result = await fetchWithGuard({
+		url: request.url,
+		timeoutMs: request.timeoutMs ?? DEFAULT_WEB_FETCH_TIMEOUT_MS,
+		auditContext: "hermes-mcp-web-fetch",
+	});
+	try {
+		const contentType = result.response.headers.get("content-type") ?? "";
+		if (!isAllowedWebContentType(contentType)) {
+			try {
+				await result.response.body?.cancel();
+			} catch {
+				// The body is being discarded; cancellation failures are irrelevant.
+			}
+			throw new TelclaudeLiveMcpUnsupportedContentError(contentType);
+		}
+		const { text, bytesTruncated } = await readBodyUtf8(
+			result.response,
+			request.maxChars * WEB_FETCH_BYTES_PER_CHAR,
+		);
+		const truncated = bytesTruncated || text.length > request.maxChars;
+		const content = wrapExternalContent(redactSecrets(text.slice(0, request.maxChars)), {
+			source: "web-fetch",
+			serviceId: "tc_web_fetch",
+			includeRiskAssessment: true,
+			maxLength: request.maxChars,
+		});
+		return {
+			url: request.url,
+			finalUrl: result.finalUrl,
+			httpStatus: result.response.status,
+			contentType,
+			content,
+			truncated,
+		};
+	} finally {
+		await result.release();
+	}
+}
+
+function isAllowedWebContentType(contentType: string): boolean {
+	const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+	if (!mime) return false;
+	if (mime.startsWith("text/")) return true;
+	return mime === "application/json" || mime === "application/xhtml+xml";
+}
+
+async function readBodyUtf8(
+	response: Response,
+	maxBytes: number,
+): Promise<{ text: string; bytesTruncated: boolean }> {
+	const body = response.body;
+	if (!body) return { text: "", bytesTruncated: false };
+
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let bytesTruncated = false;
+	try {
+		while (total < maxBytes) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value || value.byteLength === 0) continue;
+			const remaining = maxBytes - total;
+			if (value.byteLength >= remaining) {
+				chunks.push(value.subarray(0, remaining));
+				total += remaining;
+				bytesTruncated = true;
+				break;
+			}
+			chunks.push(value);
+			total += value.byteLength;
+		}
+	} finally {
+		if (bytesTruncated) {
+			try {
+				await reader.cancel();
+			} catch {
+				// Body already capped; cancellation failures are irrelevant.
+			}
+		}
+	}
+
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return { text: new TextDecoder("utf-8").decode(bytes), bytesTruncated };
 }
 
 async function requestHumanApproval(

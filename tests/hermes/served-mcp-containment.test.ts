@@ -10,6 +10,7 @@ import {
 import type { TelclaudeMcpAuthority } from "../../src/hermes/mcp/bridge.js";
 import { createTelclaudeLiveMcpConnectionResolver } from "../../src/hermes/mcp/live-connection-resolver.js";
 import { createTelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "../../src/hermes/mcp/live-relay-clients.js";
 import {
 	createTelclaudeLiveMcpNodeHttpServer,
 	createTelclaudeLiveMcpRelayHttpServer,
@@ -331,6 +332,7 @@ async function startHarness(
 			throw new Error("outbound conversation unavailable or unauthorized");
 		},
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 	const server = createTelclaudeLiveMcpRelayHttpServer({
 		registry,
@@ -417,6 +419,7 @@ async function startBearerHarness(cleanup: Array<() => void | Promise<void>>) {
 			throw new Error("outbound conversation unavailable or unauthorized");
 		},
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 	const server = createTelclaudeLiveMcpRelayHttpServer({
 		registry,

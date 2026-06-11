@@ -8,9 +8,33 @@ export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_outbound_prepare",
 	"tc_outbound_execute",
 	"tc_audit_note",
+	"tc_web_fetch",
+	"tc_web_search",
+	"tc_image_generate",
+	"tc_tts",
+	"tc_skill_request",
 ] as const;
 
 export type TelclaudeMcpToolName = (typeof TELCLAUDE_MCP_TOOL_NAMES)[number];
+
+/**
+ * Capability-scoped tools require their scope on the resolved authority's
+ * `capabilityScopes`. An authority without the scope (or without any
+ * capabilityScopes at all, e.g. the verify-live canary) is denied — fail-closed.
+ */
+export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
+	tc_web_fetch: "web.fetch",
+	tc_web_search: "web.search",
+	tc_image_generate: "media.image",
+	tc_tts: "media.tts",
+	tc_skill_request: "skills.request",
+} as const satisfies Partial<Record<TelclaudeMcpToolName, string>>;
+
+export type TelclaudeMcpCapabilityScope =
+	(typeof TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES)[keyof typeof TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES];
+
+export const TELCLAUDE_MCP_ALL_CAPABILITY_SCOPES: readonly TelclaudeMcpCapabilityScope[] =
+	Object.values(TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES);
 
 export const TELCLAUDE_MCP_SERVER_POLICY = {
 	tools: TELCLAUDE_MCP_TOOL_NAMES,

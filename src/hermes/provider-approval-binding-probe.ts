@@ -29,6 +29,7 @@ import {
 	type TelclaudeMcpBridgeDependencies,
 } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "./mcp/live-relay-clients.js";
 import {
 	createGoogleProviderSidecarApprovalTokenIssuer,
 	type GoogleProviderSidecarApprovalTokenSigner,
@@ -1009,6 +1010,7 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		outboundPrepare: async () => ({ outboundRef: "prepared-outbound-ref" }),
 		outboundExecute: async () => ({ ok: true }),
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 }
 

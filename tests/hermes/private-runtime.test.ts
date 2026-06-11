@@ -199,6 +199,13 @@ describe("Hermes private runtime seam", () => {
 						writableNamespace: "private:ops",
 						providerScopes: ["calendar"],
 						outboundChannels: ["whatsapp"],
+						capabilityScopes: [
+							"web.fetch",
+							"web.search",
+							"media.image",
+							"media.tts",
+							"skills.request",
+						],
 						turnConversationRef,
 						endpointId: "endpoint-private",
 						networkNamespace: "netns-private",

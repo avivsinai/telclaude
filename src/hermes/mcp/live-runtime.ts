@@ -300,6 +300,8 @@ export async function startTelclaudeLiveMcpRuntime(
 			endpointId: "tc-hermes-private",
 			networkNamespace: options.config.networkName,
 		};
+		// Deliberately no capabilityScopes: the canary must be denied on every
+		// capability tool, and that denial is itself proof of fail-closed gating.
 		const authority: TelclaudeMcpAuthority = {
 			actorId: "verify-live-canary",
 			profileId,
@@ -410,6 +412,11 @@ export function createFailClosedTelclaudeLiveMcpRelayClients(
 		attachmentGet: fail,
 		outboundPrepare: fail,
 		auditNote: fail,
+		webFetch: fail,
+		webSearch: fail,
+		imageGenerate: fail,
+		tts: fail,
+		skillRequest: fail,
 	};
 }
 

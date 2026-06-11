@@ -21,6 +21,7 @@ import {
 	TELCLAUDE_MCP_TOOL_NAMES,
 	type TelclaudeMcpAuthority,
 } from "../../src/hermes/mcp/bridge.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "../../src/hermes/mcp/live-relay-clients.js";
 import {
 	createTelclaudeLiveMcpNodeHttpServer,
 	createTelclaudeLiveMcpRelayHttpServer,
@@ -333,6 +334,80 @@ describe("Telclaude live MCP relay-side server", () => {
 		expect(harness.calls.memorySearch).toEqual([]);
 		expect(harness.calls.providerRead).toEqual([]);
 		expect(harness.calls.outboundPrepare).toEqual([]);
+	});
+
+	it("denies capability tools without a granted scope and strips client-supplied capabilityScopes", async () => {
+		const harness = createHarness(cleanup);
+
+		// The default private authority carries no capabilityScopes: fail-closed.
+		expect(
+			await harness.server.handleJsonRpc(
+				toolCall("tc_web_fetch", { url: "https://example.com" }),
+				harness.privateContext,
+			),
+		).toMatchObject({
+			error: { code: -32001, message: "capability scope denied: web.fetch" },
+		});
+
+		// Client-supplied capabilityScopes cannot grant a scope the authority lacks.
+		expect(
+			await harness.server.handleJsonRpc(
+				toolCall("tc_web_search", {
+					query: "telclaude",
+					capabilityScopes: ["web.search"],
+				}),
+				harness.privateContext,
+			),
+		).toMatchObject({
+			error: { code: -32001, message: "capability scope denied: web.search" },
+		});
+		expect(harness.calls.webFetch).toEqual([]);
+
+		// A scoped authority succeeds; the envelope strips capabilityScopes so the
+		// claimed broader scope never reaches the bridge or the relay client.
+		const allowed = resultOf(
+			await harness.server.handleJsonRpc(
+				toolCall("tc_web_fetch", {
+					url: "https://example.com/page",
+					capabilityScopes: ["web.fetch", "media.image", "skills.request"],
+				}),
+				harness.capabilityContext,
+			),
+		);
+		expect(allowed).toEqual({ text: "fetched" });
+		expect(harness.calls.webFetch).toEqual([
+			expect.objectContaining({
+				actorId: "operator",
+				profileId: "ops-cap",
+				domain: "private",
+				url: "https://example.com/page",
+				maxChars: 50_000,
+			}),
+		]);
+		expect(harness.calls.webFetch[0]).not.toHaveProperty("capabilityScopes");
+
+		// The same scoped authority lacks media.image: still denied per scope.
+		expect(
+			await harness.server.handleJsonRpc(
+				toolCall("tc_image_generate", { prompt: "an owl" }),
+				harness.capabilityContext,
+			),
+		).toMatchObject({
+			error: { code: -32001, message: "capability scope denied: media.image" },
+		});
+	});
+
+	it("fails scoped capability calls closed while their relay clients are not configured", async () => {
+		const harness = createHarness(cleanup);
+
+		expect(
+			await harness.server.handleJsonRpc(
+				toolCall("tc_web_search", { query: "telclaude" }),
+				harness.webSearchScopedContext,
+			),
+		).toMatchObject({
+			error: { code: -32001, message: "live MCP tool not configured: tc_web_search" },
+		});
 	});
 
 	it("rejects prototype-pollution keys in tool arguments before bridge dispatch", async () => {
@@ -676,6 +751,26 @@ function createHarness(
 		authority: authority(),
 		nowMs: 100_000,
 	});
+	const capabilityConnection = connection("ops-cap", "endpoint-private", "netns-private");
+	const capabilityGrant = registry.register({
+		connection: capabilityConnection,
+		authority: authority({
+			profileId: "ops-cap",
+			memorySource: "telegram:ops-cap",
+			capabilityScopes: ["web.fetch"],
+		}),
+		nowMs: 100_000,
+	});
+	const webSearchConnection = connection("ops-search", "endpoint-private", "netns-private");
+	const webSearchGrant = registry.register({
+		connection: webSearchConnection,
+		authority: authority({
+			profileId: "ops-search",
+			memorySource: "telegram:ops-search",
+			capabilityScopes: ["web.search"],
+		}),
+		nowMs: 100_000,
+	});
 	const socialGrant = registry.register({
 		connection: socialConnection,
 		authority: authority({
@@ -708,6 +803,7 @@ function createHarness(
 		memorySearch: [] as unknown[],
 		outboundPrepare: [] as unknown[],
 		outboundDelivery: [] as PreparedOutbound[],
+		webFetch: [] as unknown[],
 	};
 	const hasOutboundDispatcher = Object.hasOwn(options, "outboundDeliveryDispatcher");
 	const outboundDeliveryDispatcher = hasOutboundDispatcher
@@ -730,6 +826,11 @@ function createHarness(
 			return { outboundRef: "prepared-outbound" };
 		},
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
+		webFetch: async (request) => {
+			calls.webFetch.push(request);
+			return { text: "fetched" };
+		},
 	};
 
 	return {
@@ -743,6 +844,14 @@ function createHarness(
 		socialContext: {
 			authorityHandle: socialGrant.handle,
 			connection: socialConnection,
+		},
+		capabilityContext: {
+			authorityHandle: capabilityGrant.handle,
+			connection: capabilityConnection,
+		},
+		webSearchScopedContext: {
+			authorityHandle: webSearchGrant.handle,
+			connection: webSearchConnection,
 		},
 		server: createTelclaudeLiveMcpRelayHttpServer({
 			registry,

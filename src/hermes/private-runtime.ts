@@ -28,7 +28,11 @@ import {
 	type TelclaudeMcpAuthorityConnection,
 	type TelclaudeMcpAuthorityRegistry,
 } from "./mcp/authority-registry.js";
-import type { TelclaudeMcpAuthority, TelclaudeMcpDomain } from "./mcp/bridge.js";
+import {
+	TELCLAUDE_MCP_ALL_CAPABILITY_SCOPES,
+	type TelclaudeMcpAuthority,
+	type TelclaudeMcpDomain,
+} from "./mcp/bridge.js";
 import { DEFAULT_HERMES_CONTAINED_IP, DEFAULT_HERMES_RELAY_IP } from "./runtime-network.js";
 import type { HermesSessionMap } from "./session-map.js";
 
@@ -455,6 +459,9 @@ function buildPrivateMcpAuthority(
 		writableNamespace: options?.writableNamespace ?? `${domain}:${request.profileId}`,
 		providerScopes: options?.providerScopes ?? [],
 		outboundChannels: options?.outboundChannels ?? [],
+		// Capability tools (web/media/skill-request) are part of the private
+		// persona's turn surface; non-private domains stay fail-closed.
+		...(domain === "private" ? { capabilityScopes: TELCLAUDE_MCP_ALL_CAPABILITY_SCOPES } : {}),
 		...(options?.turnConversationRef ? { turnConversationRef: options.turnConversationRef } : {}),
 		endpointId: options?.endpointId ?? DEFAULT_PRIVATE_MCP_ENDPOINT_ID,
 		networkNamespace: options?.networkNamespace ?? DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE,

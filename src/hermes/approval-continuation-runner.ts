@@ -38,6 +38,7 @@ import type {
 	TelclaudeMcpProviderPrepareWriteRequest,
 } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "./mcp/live-relay-clients.js";
 import {
 	providerAccountRefFor,
 	providerApprovalRenderFor,
@@ -400,6 +401,7 @@ function createProbeDependencies(
 		outboundPrepare: async (request) => prepareOutboundSideEffect(ledger, request),
 		outboundExecute: executeDependencies.outboundExecute,
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 }
 

@@ -25,6 +25,7 @@ import {
 	type TelclaudeMcpBridgeDependencies,
 } from "./bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "./live-relay-clients.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
@@ -820,6 +821,7 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		outboundPrepare: async () => ({ outboundRef: "prepared-outbound-ref" }),
 		outboundExecute: async () => ({ ok: true }),
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 }
 

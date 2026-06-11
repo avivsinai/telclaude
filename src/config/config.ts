@@ -56,6 +56,11 @@ const SUMMARIZE_DEFAULTS = {
 	timeoutMs: 30_000,
 } as const;
 
+const WEB_DEFAULTS = {
+	maxPerHourPerUser: 20,
+	maxPerDayPerUser: 100,
+} as const;
+
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
 const TELEGRAM_NUDGES_DEFAULTS = {
@@ -235,6 +240,12 @@ const SummarizeConfigSchema = z.object({
 	maxPerDayPerUser: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxPerDayPerUser),
 	maxCharacters: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxCharacters),
 	timeoutMs: z.number().int().positive().default(SUMMARIZE_DEFAULTS.timeoutMs),
+});
+
+// Relay-served web capability tools (Hermes MCP tc_web_fetch / tc_web_search)
+const WebConfigSchema = z.object({
+	maxPerHourPerUser: z.number().int().positive().default(WEB_DEFAULTS.maxPerHourPerUser),
+	maxPerDayPerUser: z.number().int().positive().default(WEB_DEFAULTS.maxPerDayPerUser),
 });
 
 // Security profile - determines which security layers are active
@@ -577,6 +588,8 @@ const TelclaudeConfigSchema = z.object({
 	tts: TTSConfigSchema.default(TTS_DEFAULTS),
 	// URL content extraction / summarization
 	summarize: SummarizeConfigSchema.default(SUMMARIZE_DEFAULTS),
+	// Relay-served web fetch/search rate limits
+	web: WebConfigSchema.default(WEB_DEFAULTS),
 	// External providers (sidecars) - optional
 	providers: z.array(ExternalProviderSchema).default([]),
 	// Generic social services (replaces per-service top-level keys)
@@ -622,6 +635,7 @@ export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
 export type VideoProcessingConfig = z.infer<typeof VideoProcessingConfigSchema>;
 export type TTSConfig = z.infer<typeof TTSConfigSchema>;
 export type SummarizeConfig = z.infer<typeof SummarizeConfigSchema>;
+export type WebConfig = z.infer<typeof WebConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;

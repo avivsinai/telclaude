@@ -71,6 +71,20 @@ describe("live MCP canary window", () => {
 			expect(duringBody.error?.message).not.toBe("MCP runtime authority is not active");
 			expect(duringBody.error?.message).not.toBe("MCP connection is not authorized");
 
+			// The canary authority deliberately carries no capabilityScopes, so a
+			// capability tool is denied at the scope gate (not at the relay-client
+			// layer) — that denial is the fail-closed proof.
+			const capabilityDenied = await postRpc(url, {
+				jsonrpc: "2.0",
+				id: "in-window-web-fetch",
+				method: "tools/call",
+				params: { name: "tc_web_fetch", arguments: { url: "https://example.com" } },
+			});
+			expect(capabilityDenied.httpStatus).toBe(200);
+			expect(capabilityDenied.body).toMatchObject({
+				error: { message: "capability scope denied: web.fetch" },
+			});
+
 			const closed = runtime.closeCanaryWindow({
 				activationId: window.activationId,
 				authorityHandle: window.authorityHandle,

@@ -335,6 +335,7 @@ export const SECRET_KEYS = {
 	GIT_CREDENTIALS: "git-credentials",
 	GITHUB_APP: "github-app",
 	MOLTBOOK_API_KEY: "moltbook-api-key",
+	BRAVE_SEARCH_API_KEY: "brave-search-api-key",
 } as const;
 
 /** Git credentials structure stored in secrets */

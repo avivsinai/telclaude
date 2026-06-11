@@ -7,12 +7,19 @@ import {
 	isRelayConversationTurnRef,
 	type RelayConversationReplyIntent,
 } from "../relay-conversation-store.js";
-import { TELCLAUDE_MCP_SERVER_POLICY } from "./policy.js";
+import {
+	TELCLAUDE_MCP_SERVER_POLICY,
+	TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES,
+	type TelclaudeMcpCapabilityScope,
+} from "./policy.js";
 import { resolveTelclaudeProviderOperation } from "./provider-routing.js";
 
 export {
+	TELCLAUDE_MCP_ALL_CAPABILITY_SCOPES,
 	TELCLAUDE_MCP_SERVER_POLICY,
+	TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES,
 	TELCLAUDE_MCP_TOOL_NAMES,
+	type TelclaudeMcpCapabilityScope,
 	type TelclaudeMcpToolName,
 } from "./policy.js";
 
@@ -26,6 +33,11 @@ export type TelclaudeMcpAuthority = {
 	writableNamespace: string;
 	providerScopes: readonly string[];
 	outboundChannels: readonly string[];
+	/**
+	 * Capability scopes for the capability-gated tools (web/media/skill-request).
+	 * Absent or empty denies all capability tools — fail-closed.
+	 */
+	capabilityScopes?: readonly string[];
 	endpointId: string;
 	networkNamespace: string;
 	turnConversationRef?: string;
@@ -98,6 +110,35 @@ export type TelclaudeMcpAuditNoteRequest = TelclaudeMcpAuthorityStamp & {
 	payload: Record<string, unknown>;
 };
 
+export type TelclaudeMcpWebFetchRequest = TelclaudeMcpAuthorityStamp & {
+	url: string;
+	maxChars: number;
+	timeoutMs?: number;
+};
+
+export type TelclaudeMcpWebSearchRequest = TelclaudeMcpAuthorityStamp & {
+	query: string;
+	count: number;
+};
+
+export type TelclaudeMcpImageGenerateRequest = TelclaudeMcpAuthorityStamp & {
+	prompt: string;
+	size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto";
+	quality?: "low" | "medium" | "high" | "auto";
+};
+
+export type TelclaudeMcpTtsRequest = TelclaudeMcpAuthorityStamp & {
+	text: string;
+	voice?: string;
+	speed?: number;
+};
+
+export type TelclaudeMcpSkillRequestRequest = TelclaudeMcpAuthorityStamp & {
+	skillName: string;
+	rationale: string;
+	sourceHint?: string;
+};
+
 export type TelclaudeMcpBridgeDependencies = {
 	providerRead(request: TelclaudeMcpProviderReadRequest): Promise<unknown>;
 	providerPrepareWrite(request: TelclaudeMcpProviderPrepareWriteRequest): Promise<unknown>;
@@ -108,6 +149,11 @@ export type TelclaudeMcpBridgeDependencies = {
 	outboundPrepare(request: TelclaudeMcpOutboundPrepareRequest): Promise<unknown>;
 	outboundExecute(request: TelclaudeMcpOutboundExecuteRequest): Promise<unknown>;
 	auditNote(request: TelclaudeMcpAuditNoteRequest): Promise<unknown>;
+	webFetch(request: TelclaudeMcpWebFetchRequest): Promise<unknown>;
+	webSearch(request: TelclaudeMcpWebSearchRequest): Promise<unknown>;
+	imageGenerate(request: TelclaudeMcpImageGenerateRequest): Promise<unknown>;
+	tts(request: TelclaudeMcpTtsRequest): Promise<unknown>;
+	skillRequest(request: TelclaudeMcpSkillRequestRequest): Promise<unknown>;
 };
 
 export type TelclaudeMcpBridge = {
@@ -121,6 +167,11 @@ export type TelclaudeMcpBridge = {
 	tc_outbound_prepare(input: unknown): Promise<unknown>;
 	tc_outbound_execute(input: unknown): Promise<unknown>;
 	tc_audit_note(input: unknown): Promise<unknown>;
+	tc_web_fetch(input: unknown): Promise<unknown>;
+	tc_web_search(input: unknown): Promise<unknown>;
+	tc_image_generate(input: unknown): Promise<unknown>;
+	tc_tts(input: unknown): Promise<unknown>;
+	tc_skill_request(input: unknown): Promise<unknown>;
 };
 
 const NonEmptyString = z.string().trim().min(1);
@@ -221,6 +272,45 @@ const AuditNoteInputSchema = z
 	})
 	.strip();
 
+const WebFetchInputSchema = z
+	.object({
+		url: z.url({ protocol: /^https?$/ }).max(2048),
+		maxChars: z.number().int().min(1).max(200_000).default(50_000),
+		timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
+	})
+	.strip();
+
+const WebSearchInputSchema = z
+	.object({
+		query: NonEmptyString.max(512),
+		count: z.number().int().min(1).max(10).default(5),
+	})
+	.strip();
+
+const ImageGenerateInputSchema = z
+	.object({
+		prompt: NonEmptyString.max(4_000),
+		size: z.enum(["1024x1024", "1536x1024", "1024x1536", "auto"]).optional(),
+		quality: z.enum(["low", "medium", "high", "auto"]).optional(),
+	})
+	.strip();
+
+const TtsInputSchema = z
+	.object({
+		text: NonEmptyString.max(4_000),
+		voice: NonEmptyString.max(64).optional(),
+		speed: z.number().min(0.5).max(2).optional(),
+	})
+	.strip();
+
+const SkillRequestInputSchema = z
+	.object({
+		skillName: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+		rationale: NonEmptyString.max(2_000),
+		sourceHint: NonEmptyString.max(500).optional(),
+	})
+	.strip();
+
 const AUTHORITY_PROVENANCE_KEYS = new Set([
 	"actorId",
 	"profileId",
@@ -233,6 +323,7 @@ const AUTHORITY_PROVENANCE_KEYS = new Set([
 	"namespace",
 	"writableNamespace",
 	"providerAuthority",
+	"capabilityScopes",
 	"endpointId",
 	"networkNamespace",
 	"peerAddress",
@@ -385,6 +476,74 @@ export function createTelclaudeMcpBridge(
 				payload: parsed.payload ?? {},
 			});
 		},
+
+		async tc_web_fetch(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(normalizedAuthority, TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_web_fetch);
+			const parsed = WebFetchInputSchema.parse(input);
+			return dependencies.webFetch({
+				...stamp,
+				url: parsed.url,
+				maxChars: parsed.maxChars,
+				...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+			});
+		},
+
+		async tc_web_search(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_web_search,
+			);
+			const parsed = WebSearchInputSchema.parse(input);
+			return dependencies.webSearch({
+				...stamp,
+				query: parsed.query,
+				count: parsed.count,
+			});
+		},
+
+		async tc_image_generate(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_image_generate,
+			);
+			const parsed = ImageGenerateInputSchema.parse(input);
+			return dependencies.imageGenerate({
+				...stamp,
+				prompt: parsed.prompt,
+				...(parsed.size ? { size: parsed.size } : {}),
+				...(parsed.quality ? { quality: parsed.quality } : {}),
+			});
+		},
+
+		async tc_tts(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(normalizedAuthority, TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_tts);
+			const parsed = TtsInputSchema.parse(input);
+			return dependencies.tts({
+				...stamp,
+				text: parsed.text,
+				...(parsed.voice ? { voice: parsed.voice } : {}),
+				...(parsed.speed !== undefined ? { speed: parsed.speed } : {}),
+			});
+		},
+
+		async tc_skill_request(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_skill_request,
+			);
+			const parsed = SkillRequestInputSchema.parse(input);
+			return dependencies.skillRequest({
+				...stamp,
+				skillName: parsed.skillName,
+				rationale: parsed.rationale,
+				...(parsed.sourceHint ? { sourceHint: parsed.sourceHint } : {}),
+			});
+		},
 	};
 }
 
@@ -401,6 +560,9 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 		writableNamespace: requiredTrimmed(authority.writableNamespace, "writableNamespace"),
 		providerScopes: uniqueTrimmed(authority.providerScopes),
 		outboundChannels: uniqueTrimmed(authority.outboundChannels),
+		...(authority.capabilityScopes
+			? { capabilityScopes: uniqueTrimmed(authority.capabilityScopes) }
+			: {}),
 		endpointId: requiredTrimmed(authority.endpointId, "endpointId"),
 		networkNamespace: requiredTrimmed(authority.networkNamespace, "networkNamespace"),
 		...(authority.turnConversationRef
@@ -478,6 +640,15 @@ function uniqueTrimmed(values: readonly string[]): string[] {
 function assertProviderScope(authority: TelclaudeMcpAuthority, service: string): void {
 	if (!authority.providerScopes.includes(service)) {
 		throw new Error(`provider scope denied: ${service}`);
+	}
+}
+
+function assertCapabilityScope(
+	authority: TelclaudeMcpAuthority,
+	scope: TelclaudeMcpCapabilityScope,
+): void {
+	if (!authority.capabilityScopes?.includes(scope)) {
+		throw new Error(`capability scope denied: ${scope}`);
 	}
 }
 

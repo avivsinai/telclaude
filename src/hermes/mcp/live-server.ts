@@ -35,6 +35,11 @@ export const TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE = [
 	"attachmentGet",
 	"outboundPrepare",
 	"auditNote",
+	"webFetch",
+	"webSearch",
+	"imageGenerate",
+	"tts",
+	"skillRequest",
 	"sideEffectLedger",
 ] as const;
 
@@ -138,6 +143,7 @@ const CLIENT_AUTHORITY_KEYS = new Set([
 	"namespace",
 	"writableNamespace",
 	"providerAuthority",
+	"capabilityScopes",
 	"endpointId",
 	"networkNamespace",
 	"peerAddress",

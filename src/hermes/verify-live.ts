@@ -15,9 +15,10 @@ import { HermesSessionMap } from "./session-map.js";
  * Unlike the cutover feature probes (which prove the relay's side of every
  * contract), these checks prove the operator-visible capability path:
  * the live MCP server advertises the exact tc_ tool surface WITH usable
- * schemas, and a real turn through the contained Hermes API server actually
- * invokes a relay-served MCP tool. Every check fails closed: a reachable but
- * tool-less runtime is a FAIL, not a warning.
+ * schemas, a scope-less authority is denied on the capability-gated tools,
+ * and a real turn through the contained Hermes API server actually invokes a
+ * relay-served MCP tool. Every check fails closed: a reachable but tool-less
+ * runtime is a FAIL, not a warning.
  */
 
 export const HERMES_VERIFY_LIVE_SCHEMA_VERSION = "telclaude.hermes.verify-live.v1";
@@ -72,17 +73,27 @@ export type RunHermesVerifyLiveMcpChecksOptions = {
 	readonly transport: HermesVerifyLiveRpcTransport;
 	readonly authorizationHeader?: string;
 	readonly timeoutMs?: number;
+	/**
+	 * Relay canary activation window client for the capability fail-closed
+	 * check. The static MCP transport token resolves no authority outside an
+	 * active window, so without this client the check can only pass on a
+	 * probe-token connection (whose authority also carries no capabilityScopes).
+	 */
+	readonly canaryWindow?: HermesVerifyLiveCanaryWindowClient;
 };
 
 export async function runHermesVerifyLiveMcpChecks(
 	options: RunHermesVerifyLiveMcpChecksOptions,
 ): Promise<HermesVerifyLiveCheck[]> {
 	const timeoutMs = options.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
-	const post = async (method: string): Promise<HermesVerifyLiveRpcResponse> =>
+	const post = async (
+		method: string,
+		params: Record<string, unknown> = {},
+	): Promise<HermesVerifyLiveRpcResponse> =>
 		options.transport({
 			url: options.endpointUrl,
 			authorizationHeader: options.authorizationHeader,
-			payload: { jsonrpc: "2.0", id: `verify-live-${method}`, method, params: {} },
+			payload: { jsonrpc: "2.0", id: `verify-live-${method}`, method, params },
 			timeoutMs,
 		});
 
@@ -95,6 +106,7 @@ export async function runHermesVerifyLiveMcpChecks(
 			failCheck("mcp.initialize", detail),
 			failCheck("mcp.tools_list_exact", detail),
 			failCheck("mcp.tool_schemas", detail),
+			failCheck("mcp.capability_scope_fail_closed", detail),
 		];
 	}
 
@@ -121,6 +133,7 @@ export async function runHermesVerifyLiveMcpChecks(
 			...checks,
 			failCheck("mcp.tools_list_exact", detail),
 			failCheck("mcp.tool_schemas", detail),
+			failCheck("mcp.capability_scope_fail_closed", detail),
 		];
 	}
 
@@ -131,6 +144,7 @@ export async function runHermesVerifyLiveMcpChecks(
 			...checks,
 			failCheck("mcp.tools_list_exact", detail),
 			failCheck("mcp.tool_schemas", detail),
+			failCheck("mcp.capability_scope_fail_closed", detail),
 		];
 	}
 
@@ -177,7 +191,99 @@ export async function runHermesVerifyLiveMcpChecks(
 		);
 	}
 
+	checks.push(
+		await runCapabilityScopeFailClosedCheck({
+			callTool: (name, args) => post("tools/call", { name, arguments: args }),
+			canaryWindow: options.canaryWindow,
+			timeoutMs,
+		}),
+	);
+
 	return checks;
+}
+
+/**
+ * Reserved RFC 2606 hostname: can never resolve, so even a broken capability
+ * gate cannot turn this canary call into real network egress.
+ */
+const CAPABILITY_SCOPE_CANARY_URL = "https://capability-scope-canary.invalid/";
+const CAPABILITY_SCOPE_DENIAL = "capability scope denied: web.fetch";
+
+/**
+ * Proves the capability-scope gate fails closed from the live endpoint: a
+ * scope-less authority (the verify-live canary deliberately carries no
+ * capabilityScopes) calling tc_web_fetch must get a scope denial — never a
+ * fetch result, and never any other error standing in for the gate.
+ */
+async function runCapabilityScopeFailClosedCheck(options: {
+	readonly callTool: (
+		name: string,
+		args: Record<string, unknown>,
+	) => Promise<HermesVerifyLiveRpcResponse>;
+	readonly canaryWindow?: HermesVerifyLiveCanaryWindowClient;
+	readonly timeoutMs: number;
+}): Promise<HermesVerifyLiveCheck> {
+	const id = "mcp.capability_scope_fail_closed";
+
+	let window: { activationId: string; authorityHandle: string } | null = null;
+	if (options.canaryWindow) {
+		try {
+			window = await options.canaryWindow.open({
+				profileId: "verify-live",
+				providerScopes: [],
+				ttlMs: options.timeoutMs + 30_000,
+			});
+		} catch (error) {
+			return failCheck(id, `canary activation window open failed: ${errorMessage(error)}`);
+		}
+	}
+
+	try {
+		let response: HermesVerifyLiveRpcResponse;
+		try {
+			response = await options.callTool("tc_web_fetch", {
+				url: CAPABILITY_SCOPE_CANARY_URL,
+				maxChars: 64,
+			});
+		} catch (error) {
+			return failCheck(id, `tc_web_fetch tools/call transport error: ${errorMessage(error)}`);
+		}
+
+		const message = readPath(response.body, ["error", "message"]);
+		if (typeof message === "string" && message.includes(CAPABILITY_SCOPE_DENIAL)) {
+			return passCheck(
+				id,
+				"tc_web_fetch was denied for the scope-less canary authority before any fetch attempt",
+			);
+		}
+		if (isRecord(response.body) && "result" in response.body) {
+			return failCheck(
+				id,
+				"tc_web_fetch returned a result for an authority without capabilityScopes — capability gating is broken",
+				response.body,
+			);
+		}
+		return failCheck(
+			id,
+			`expected "${CAPABILITY_SCOPE_DENIAL}" but got (http ${response.status}): ${rpcFailureDetail(
+				response.body,
+			)}${window ? "" : " — without a canary activation window the static transport token resolves no authority; provide the relay admin-socket window client"}`,
+			response.body,
+		);
+	} finally {
+		if (window && options.canaryWindow) {
+			try {
+				await options.canaryWindow.close({
+					activationId: window.activationId,
+					authorityHandle: window.authorityHandle,
+					reason: "verify-live capability scope check finished",
+				});
+			} catch {
+				// Best-effort: the window TTL is the fail-safe; a close failure
+				// must not mask the captured check result.
+			}
+		}
+	}
 }
 
 function hasUsableToolSchema(tool: unknown): boolean {

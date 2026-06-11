@@ -17,6 +17,7 @@ import {
 	type TelclaudeMcpBridgeDependencies,
 } from "../../src/hermes/mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "../../src/hermes/mcp/ledger-execute.js";
+import { createNotConfiguredTelclaudeMcpCapabilityClients } from "../../src/hermes/mcp/live-relay-clients.js";
 import { createGoogleProviderSidecarApprovalTokenIssuer } from "../../src/hermes/mcp/provider-sidecar-token.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
@@ -1006,6 +1007,7 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		outboundPrepare: async () => ({ outboundRef: "out_123" }),
 		outboundExecute: async () => ({ ok: true }),
 		auditNote: async () => ({ stored: true }),
+		...createNotConfiguredTelclaudeMcpCapabilityClients(),
 	};
 }
 

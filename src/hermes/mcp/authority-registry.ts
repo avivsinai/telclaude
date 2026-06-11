@@ -213,6 +213,9 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 		writableNamespace: requiredTrimmed(authority.writableNamespace, "writableNamespace"),
 		providerScopes: uniqueTrimmed(authority.providerScopes),
 		outboundChannels: uniqueTrimmed(authority.outboundChannels),
+		...(authority.capabilityScopes
+			? { capabilityScopes: uniqueTrimmed(authority.capabilityScopes) }
+			: {}),
 		endpointId: requiredTrimmed(authority.endpointId, "endpointId"),
 		networkNamespace: requiredTrimmed(authority.networkNamespace, "networkNamespace"),
 		...(authority.turnConversationRef
@@ -286,6 +289,7 @@ function cloneAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAuthority
 		memorySource: authority.memorySource as MemorySource,
 		providerScopes: [...authority.providerScopes],
 		outboundChannels: [...authority.outboundChannels],
+		...(authority.capabilityScopes ? { capabilityScopes: [...authority.capabilityScopes] } : {}),
 	};
 }
 
