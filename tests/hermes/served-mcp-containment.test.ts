@@ -164,7 +164,7 @@ describe("Hermes served-MCP containment probe", () => {
 			unauthenticatedEndpoint: { url: harness.url },
 			origin: {
 				containerName: "telclaude",
-				expectedPeerAddress: "192.0.2.11",
+				expectedPeerAddress: "172.30.92.11",
 				relayPeerAddress: "127.0.0.1",
 			},
 		});

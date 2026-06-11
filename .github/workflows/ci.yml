@@ -133,14 +133,26 @@ jobs:
           for secret in "$TELCLAUDE_HERMES_API_SERVER_KEY" "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY" "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN" "$operator_agent_private_key" "$operator_agent_public_key" "$operator_relay_private_key" "$operator_relay_public_key"; do
             [ -n "$secret" ] && echo "::add-mask::${secret}"
           done
-          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
-          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
+          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
+          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
           grep -Ev "$shell_key_pattern" "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
             printf 'export TELCLAUDE_HERMES_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'export TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
             printf 'export TELCLAUDE_HERMES_MCP_RELAY_TOKEN=%q\n' "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN"
+            printf 'export TELCLAUDE_HERMES_RELAY_SUBNET=172.30.92.0/24\n'
+            printf 'export TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET=172.30.93.0/24\n'
+            printf 'export TELCLAUDE_HERMES_RELAY_IP=172.30.92.10\n'
+            printf 'export TELCLAUDE_HERMES_SOCIAL_RELAY_IP=172.30.93.10\n'
+            printf 'export TELCLAUDE_HERMES_CONTAINED_IP=172.30.92.11\n'
+            printf 'export TELCLAUDE_HERMES_SOCIAL_IP=172.30.93.11\n'
+            printf 'export TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1\n'
+            printf 'export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1\n'
+            printf 'export TELCLAUDE_HERMES_LIVE_MCP_HOST=172.30.92.10\n'
+            printf 'export TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=172.30.93.10@telclaude-hermes-social\n'
+            printf 'export TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=172.30.92.11,172.30.93.11\n'
+            printf 'export TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP=172.30.93.11\n'
             printf 'export OPERATOR_RPC_AGENT_PRIVATE_KEY=%q\n' "$operator_agent_private_key"
             printf 'export OPERATOR_RPC_AGENT_PUBLIC_KEY=%q\n' "$operator_agent_public_key"
             printf 'export OPERATOR_RPC_RELAY_PRIVATE_KEY=%q\n' "$operator_relay_private_key"
@@ -152,6 +164,18 @@ jobs:
             printf 'TELCLAUDE_HERMES_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
             printf 'TELCLAUDE_HERMES_MCP_RELAY_TOKEN=%s\n' "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN"
+            printf 'TELCLAUDE_HERMES_RELAY_SUBNET=172.30.92.0/24\n'
+            printf 'TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET=172.30.93.0/24\n'
+            printf 'TELCLAUDE_HERMES_RELAY_IP=172.30.92.10\n'
+            printf 'TELCLAUDE_HERMES_SOCIAL_RELAY_IP=172.30.93.10\n'
+            printf 'TELCLAUDE_HERMES_CONTAINED_IP=172.30.92.11\n'
+            printf 'TELCLAUDE_HERMES_SOCIAL_IP=172.30.93.11\n'
+            printf 'TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1\n'
+            printf 'TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1\n'
+            printf 'TELCLAUDE_HERMES_LIVE_MCP_HOST=172.30.92.10\n'
+            printf 'TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=172.30.93.10@telclaude-hermes-social\n'
+            printf 'TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=172.30.92.11,172.30.93.11\n'
+            printf 'TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP=172.30.93.11\n'
             printf 'OPERATOR_RPC_AGENT_PUBLIC_KEY=%s\n' "$operator_agent_public_key"
             printf 'OPERATOR_RPC_RELAY_PRIVATE_KEY=%s\n' "$operator_relay_private_key"
           } > "$compose_env_file"
@@ -282,7 +306,7 @@ jobs:
             [ -n "$network_id" ] || continue
             subnet="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$network_id" 2>/dev/null || true)"
             case "$subnet" in
-              *192.0.2.0/24*|*192.0.3.0/24*) docker network rm "$network_id" >/dev/null 2>&1 || true ;;
+              *192.0.2.0/24*|*192.0.3.0/24*|*172.30.92.0/24*|*172.30.93.0/24*) docker network rm "$network_id" >/dev/null 2>&1 || true ;;
             esac
           done < <(docker network ls -q)
           docker compose "${compose_files[@]}" up -d --remove-orphans --wait --wait-timeout 480

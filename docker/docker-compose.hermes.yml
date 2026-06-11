@@ -24,12 +24,12 @@ services:
       - TELCLAUDE_HERMES_SOCIAL_API_BASE_URL=http://tc-hermes-social:8642
       - TELCLAUDE_HERMES_SOCIAL_API_KEY=${TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY:?generate an ephemeral social key for this compose up}
       - TELCLAUDE_HERMES_LIVE_MCP_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ENABLED:-0}
-      - TELCLAUDE_HERMES_LIVE_MCP_HOST=${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
+      - TELCLAUDE_HERMES_LIVE_MCP_HOST=${TELCLAUDE_HERMES_RELAY_IP:-172.30.92.10}
       - TELCLAUDE_HERMES_LIVE_MCP_PORT=8793
       - TELCLAUDE_HERMES_LIVE_MCP_PATH=/mcp
       - TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-private
-      - TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=${TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS:-${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}@telclaude-hermes-social}
-      - TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11,192.0.3.11}
+      - TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=${TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS:-${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-172.30.93.10}@telclaude-hermes-social}
+      - TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-172.30.92.11,172.30.93.11}
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET:-/run/telclaude/hermes-live-mcp-admin.sock}
       - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}
@@ -46,9 +46,9 @@ services:
       - telclaude-hermes-social-skill-catalog:/opt/data/telclaude-hermes-social-skill-catalog:rw
     networks:
       hermes-private-net:
-        ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
+        ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.30.92.10}
       hermes-social-net:
-        ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}
+        ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-172.30.93.10}
     # The live MCP admin socket is created after the entrypoint drops to uid
     # 1000, so the relay runtime dir must be node-owned and private.
     tmpfs: !override
@@ -109,7 +109,7 @@ services:
     cpus: 2
     networks:
       hermes-private-net:
-        ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-192.0.2.11}
+        ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.30.92.11}
     restart: unless-stopped
     healthcheck:
       test:
@@ -177,7 +177,7 @@ services:
     cpus: 2
     networks:
       hermes-social-net:
-        ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_IP:-192.0.3.11}
+        ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_IP:-172.30.93.11}
     restart: unless-stopped
     healthcheck:
       test:
@@ -199,14 +199,14 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-192.0.2.0/24}
+        - subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-172.30.92.0/24}
   hermes-social-net:
     name: telclaude-hermes-social
     driver: bridge
     internal: true
     ipam:
       config:
-        - subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-192.0.3.0/24}
+        - subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-172.30.93.0/24}
 
 volumes:
   # Private Hermes catalog: relay writes, tc-hermes-contained consumes read-only.

@@ -162,9 +162,9 @@ function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 		origin: {
 			kind: "contained-peer",
 			containerName: "tc-hermes-contained",
-			observedPeerAddress: "192.0.2.11",
+			observedPeerAddress: "172.30.92.11",
 			observedPeerSource: "server-peer-echo",
-			expectedPeerAddress: "192.0.2.11",
+			expectedPeerAddress: "172.30.92.11",
 			expectedPeerSource: "configured-contained-ip",
 			detail: "probe peer origin was observed by live MCP server",
 		},

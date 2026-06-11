@@ -121,7 +121,7 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain("      - ALL");
 		expect(compose).not.toContain("cap_add:");
 		expect(compose).toMatch(
-			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-192\.0\.2\.10\}/,
+			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-172\.30\.92\.10\}/,
 		);
 		expect(compose).toContain("TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-private");
 		expect(compose).toContain("telclaude-hermes-social");

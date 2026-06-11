@@ -202,9 +202,9 @@ Treat `cutover-check --strict` as the graduation gate: it fails closed unless pa
 
 In Docker the Hermes runtime is a second compose overlay, `docker/docker-compose.hermes.yml`, with the relay plus separate private/social runtime containers on separate internal-only bridge networks:
 
-- `telclaude` — the relay, joined to `telclaude-hermes-private` (`192.0.2.10`) and `telclaude-hermes-social` (`192.0.3.10`), hosting live MCP listeners on port `8793` and the admin socket for probe-token issuance.
-- `tc-hermes-contained` — pinned upstream Hermes for private/cron/observer work (image digest in the compose file), default `192.0.2.11`, running its API server on port `8642`.
-- `tc-hermes-social` — pinned upstream Hermes for social work, default `192.0.3.11`, running its own API server on port `8642`.
+- `telclaude` — the relay, joined to `telclaude-hermes-private` (`172.30.92.10`) and `telclaude-hermes-social` (`172.30.93.10`), hosting live MCP listeners on port `8793` and the admin socket for probe-token issuance.
+- `tc-hermes-contained` — pinned upstream Hermes for private/cron/observer work (image digest in the compose file), default `172.30.92.11`, running its API server on port `8642`.
+- `tc-hermes-social` — pinned upstream Hermes for social work, default `172.30.93.11`, running its own API server on port `8642`.
 
 The contained containers are hardened: non-root `10000:10000`, all capabilities dropped, read-only root filesystem, `noexec` tmpfs for `/tmp`, `/home/hermes`, and `/run`, 2GB / 2 CPU / 256 PID caps. The entrypoint (`docker/hermes-contained-entrypoint.sh`) curates skills from the source tree into `HERMES_HOME` against read-only allowlists — `docker/hermes-contained-skills.allowlist` for private/cron/observer and `docker/hermes-social-skills.allowlist` for social — rejecting path traversal and any entry missing a `SKILL.md`, and mints a peer-bound OpenAI Codex relay token so model traffic only reaches the relay's proxy route (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). Model-provider hosts are routed to a blackhole address; the containers have no path to providers, vault, or the public internet except through the relay.
 

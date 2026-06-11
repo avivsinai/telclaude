@@ -341,7 +341,7 @@ Use local `docker-compose.override.yml` for host-specific services or volumes; k
 
 Telclaude drives private Telegram, social, cron, and observer work through a pinned, unmodified upstream Hermes runtime. The relay stays the security envelope; Hermes is the agent loop behind it. Start the Hermes overlay for runtime operation; the base stack is not a complete LLM/persona deployment without it.
 
-The overlay (`docker-compose.hermes.yml`) adds two pinned upstream Hermes containers on two **internal-only** bridge networks. `tc-hermes-contained` joins only `telclaude-hermes-private` (default `192.0.2.11`); `tc-hermes-social` joins only `telclaude-hermes-social` (default `192.0.3.11`). The relay joins both networks (`192.0.2.10` and `192.0.3.10`) and is the only non-runtime member. Do not attach sidecars, vault, providers, or egress helpers to these networks.
+The overlay (`docker-compose.hermes.yml`) adds two pinned upstream Hermes containers on two **internal-only** RFC1918 bridge networks. `tc-hermes-contained` joins only `telclaude-hermes-private` (default `172.30.92.11`); `tc-hermes-social` joins only `telclaude-hermes-social` (default `172.30.93.11`). The relay joins both networks (`172.30.92.10` and `172.30.93.10`) and is the only non-runtime member. Do not attach sidecars, vault, providers, or egress helpers to these networks.
 
 ### Containment posture
 
@@ -383,10 +383,10 @@ docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaud
 | `TELCLAUDE_HERMES_IMAGE` | No | Override the pinned Hermes image digest (default pinned in the compose file) |
 | `TELCLAUDE_HERMES_INFERENCE_MODEL` | No | Hermes inference model (default `gpt-5.5`) |
 | `TELCLAUDE_HERMES_LIVE_MCP_ENABLED` | No | Enable the relay live MCP bridge (default `0`) |
-| `TELCLAUDE_HERMES_RELAY_IP` / `TELCLAUDE_HERMES_SOCIAL_RELAY_IP` | No | Override the relay IP on the private/social networks (defaults `192.0.2.10` / `192.0.3.10`) |
-| `TELCLAUDE_HERMES_CONTAINED_IP` / `TELCLAUDE_HERMES_SOCIAL_IP` | No | Override private/social runtime IPs (defaults `192.0.2.11` / `192.0.3.11`) |
-| `TELCLAUDE_HERMES_RELAY_SUBNET` / `TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET` | No | Override the private/social internal network CIDRs (defaults `192.0.2.0/24` / `192.0.3.0/24`) |
-| `TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS` | No | Extra relay live-MCP binds as `host@network` (default social bind `192.0.3.10@telclaude-hermes-social`) |
+| `TELCLAUDE_HERMES_RELAY_IP` / `TELCLAUDE_HERMES_SOCIAL_RELAY_IP` | No | Override the relay IP on the private/social networks (defaults `172.30.92.10` / `172.30.93.10`) |
+| `TELCLAUDE_HERMES_CONTAINED_IP` / `TELCLAUDE_HERMES_SOCIAL_IP` | No | Override private/social runtime IPs (defaults `172.30.92.11` / `172.30.93.11`) |
+| `TELCLAUDE_HERMES_RELAY_SUBNET` / `TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET` | No | Override the private/social internal network CIDRs (defaults `172.30.92.0/24` / `172.30.93.0/24`) |
+| `TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS` | No | Extra relay live-MCP binds as `host@network` (default social bind `172.30.93.10@telclaude-hermes-social`) |
 
 The overlay default for `TELCLAUDE_INTERNAL_HOSTS` includes `tc-hermes-contained` and `tc-hermes-social` so the relay firewall allows both contained peers. If you override that variable, include both hosts explicitly.
 

@@ -41,7 +41,7 @@ function fakeCanaryWindow(overrides: Partial<HermesVerifyLiveCanaryWindowClient>
 	return { client, calls };
 }
 
-const ENDPOINT = "http://192.0.2.10:8793/mcp";
+const ENDPOINT = "http://172.30.92.10:8793/mcp";
 
 function fullTool(name: string): Record<string, unknown> {
 	return {

@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+	DEFAULT_HERMES_CONTAINED_IP,
+	DEFAULT_HERMES_RELAY_IP,
+} from "../../src/hermes/runtime-network.js";
 import { auditSandboxPosture } from "../../src/sandbox/validate-config.js";
 
 const TEMP_DIRS: string[] = [];
@@ -150,23 +154,25 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaude).toContain("condition: service_started");
 		expect(telclaude).not.toContain("condition: service_healthy");
 		expect(telclaude).toContain("hermes-private-net:");
-		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}");
+		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.30.92.10}");
+		expect(DEFAULT_HERMES_RELAY_IP).toBe("172.30.92.10");
 		expect(telclaude).toContain("hermes-social-net:");
-		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}");
+		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-172.30.93.10}");
 		expect(listValues(telclaude, "tmpfs")).toEqual([
 			"/tmp:size=512M,mode=1777",
 			"/home/node:size=256M,uid=1000,gid=1000,mode=0755",
 			"/run/telclaude:size=1M,uid=1000,gid=1000,mode=0700,noexec",
 		]);
 		expect(hermes).toContain("hermes-private-net:");
-		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-192.0.2.11}");
+		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.30.92.11}");
+		expect(DEFAULT_HERMES_CONTAINED_IP).toBe("172.30.92.11");
 		expect(socialHermes).toContain("hermes-social-net:");
-		expect(socialHermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_IP:-192.0.3.11}");
+		expect(socialHermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_SOCIAL_IP:-172.30.93.11}");
 		expect(compose).toContain("name: telclaude-hermes-private");
 		expect(compose).toContain("name: telclaude-hermes-social");
 		expect(compose).toContain("internal: true");
-		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-192.0.2.0/24}");
-		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-192.0.3.0/24}");
+		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-172.30.92.0/24}");
+		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET:-172.30.93.0/24}");
 
 		expect(telclaudeEnv.TELCLAUDE_HERMES_API_KEY).toBe(requiredApiKey);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_API_BASE_URL).toBe("http://tc-hermes-contained:8642");
@@ -174,10 +180,10 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.TELCLAUDE_HERMES_SOCIAL_API_BASE_URL).toBe("http://tc-hermes-social:8642");
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_NETWORK).toBe("telclaude-hermes-private");
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS).toBe(
-			"${TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS:-${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-192.0.3.10}@telclaude-hermes-social}",
+			"${TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS:-${TELCLAUDE_HERMES_SOCIAL_RELAY_IP:-172.30.93.10}@telclaude-hermes-social}",
 		);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS).toBe(
-			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11,192.0.3.11}",
+			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-172.30.92.11,172.30.93.11}",
 		);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED).toBe(
 			"${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}",
@@ -362,6 +368,41 @@ TELCLAUDE_LOG_LEVEL=info
 		}
 	});
 
+	it("keeps the William deploy env writer pinned to the live-MCP RFC1918 tuple", () => {
+		const workflow = fs.readFileSync(
+			path.resolve(process.cwd(), ".github/workflows/ci.yml"),
+			"utf8",
+		);
+		const step = workflowStep(workflow, "Persist William Hermes deploy keys");
+		const required = [
+			["TELCLAUDE_HERMES_RELAY_SUBNET", "172.30.92.0/24"],
+			["TELCLAUDE_HERMES_SOCIAL_RELAY_SUBNET", "172.30.93.0/24"],
+			["TELCLAUDE_HERMES_RELAY_IP", "172.30.92.10"],
+			["TELCLAUDE_HERMES_SOCIAL_RELAY_IP", "172.30.93.10"],
+			["TELCLAUDE_HERMES_CONTAINED_IP", "172.30.92.11"],
+			["TELCLAUDE_HERMES_SOCIAL_IP", "172.30.93.11"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ENABLED", "1"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED", "1"],
+			["TELCLAUDE_HERMES_LIVE_MCP_HOST", "172.30.92.10"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS", "172.30.93.10@telclaude-hermes-social"],
+			["TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS", "172.30.92.11,172.30.93.11"],
+			["TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP", "172.30.93.11"],
+		] as const;
+		const shellPattern = step.match(/shell_key_pattern='([^']+)'/)?.[1] ?? "";
+		const composePattern = step.match(/compose_key_pattern='([^']+)'/)?.[1] ?? "";
+
+		for (const [key, value] of required) {
+			const suffix = key.replace("TELCLAUDE_HERMES_", "");
+			expect(shellPattern).toContain(suffix);
+			expect(composePattern).toContain(suffix);
+			expect(step).toContain(`printf 'export ${key}=${value}\\n'`);
+			expect(step).toContain(`printf '${key}=${value}\\n'`);
+		}
+		expect(step).not.toContain("LIVE_MCP_ENABLED=0");
+		expect(step).not.toContain("192.0.2.10");
+		expect(step).not.toContain("192.0.3.10");
+	});
+
 	it("keeps the standalone Hermes CLI proof runner off host-gateway smoke paths", () => {
 		const scriptPath = path.resolve(process.cwd(), "scripts/hermes-contained-cli-probe.sh");
 		const script = fs.readFileSync(scriptPath, "utf8");
@@ -381,7 +422,7 @@ TELCLAUDE_LOG_LEVEL=info
 
 function serviceBlock(compose: string, serviceName: string): string {
 	const lines = compose.split(/\r?\n/);
-	const start = lines.findIndex((line) => line === `  ${serviceName}:`);
+	const start = lines.indexOf(`  ${serviceName}:`);
 	if (start < 0) throw new Error(`Missing service ${serviceName}`);
 	let end = lines.length;
 	for (let index = start + 1; index < lines.length; index += 1) {
@@ -422,4 +463,13 @@ function envMap(entries: string[]): Record<string, string> {
 			return [entry.slice(0, separator), entry.slice(separator + 1)];
 		}),
 	);
+}
+
+function workflowStep(workflow: string, name: string): string {
+	const marker = `      - name: ${name}`;
+	const start = workflow.indexOf(marker);
+	expect(start).toBeGreaterThanOrEqual(0);
+	const rest = workflow.slice(start);
+	const next = rest.indexOf("\n      - name: ", 1);
+	return next === -1 ? rest : rest.slice(0, next);
 }

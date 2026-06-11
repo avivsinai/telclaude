@@ -52,13 +52,13 @@ The relay is the security boundary — it holds all secrets, enforces tiers/rate
 Private Telegram, social, cron, and observer execution run through **pinned, no-fork wrappers around upstream Hermes**. Private replies/heartbeats route to `tc-hermes-contained`; social work routes to a separate `tc-hermes-social` API server. The documented runtime has no alternate worker or durable runtime selector.
 
 ```
-┌──────────── telclaude-hermes-private (internal, 192.0.2.0/24) ────────────┐
+┌─────────── telclaude-hermes-private (internal, 172.30.92.0/24) ───────────┐
 │ telclaude relay .10  ◀── MCP/model proxy ──▶  tc-hermes-contained .11     │
 │ • live MCP :8793                         • private/cron/observer API :8642│
 │ • OpenAI Codex proxy :8790               • private curated skill allowlist │
 └───────────────────────────────────────────────────────────────────────────┘
                          │ relay process only
-┌──────────── telclaude-hermes-social (internal, 192.0.3.0/24) ─────────────┐
+┌─────────── telclaude-hermes-social (internal, 172.30.93.0/24) ────────────┐
 │ telclaude relay .10  ◀── MCP/model proxy ──▶  tc-hermes-social .11        │
 │ • live MCP :8793                         • social API :8642               │
 │ • side-effect ledger                     • narrow social skill allowlist   │

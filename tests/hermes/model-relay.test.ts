@@ -17,8 +17,8 @@ describe("Hermes model-relay probe", () => {
 	const directModelUrl = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
 	const relayProxyUrl = "http://telclaude:8790/v1/openai-codex-proxy";
 	const relayProbeUrl = "http://telclaude:8790/v1/models";
-	const containedIp = "192.0.2.11";
-	const relayIp = "192.0.2.10";
+	const containedIp = "172.30.92.11";
+	const relayIp = "172.30.92.10";
 	const proxyTokenEnv = "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN";
 	const proxyTokenSecret = "test-openai-codex-proxy-token";
 	const originalInferenceModel = process.env.HERMES_INFERENCE_MODEL;
@@ -347,7 +347,7 @@ describe("Hermes model-relay probe", () => {
 	it("fails closed when the relay auth token is not bound to the expected peer", async () => {
 		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
-		writeRelayCredentialProfile(profileDir, "192.0.2.99");
+		writeRelayCredentialProfile(profileDir, "172.30.92.99");
 
 		const report = await runHermesModelRelayProbe({
 			allowRun: true,

@@ -398,7 +398,7 @@ describe("OpenAI Codex relay proxy", () => {
 		for (const tokenScope of ["run", "server"] as const) {
 			const token = mintEntrypointPeerBoundToken({
 				secret,
-				peerAddress: "192.0.2.11",
+				peerAddress: "172.30.92.11",
 				tokenScope,
 			});
 			const payload = decodePeerBoundTokenPayload(token);
@@ -406,7 +406,7 @@ describe("OpenAI Codex relay proxy", () => {
 			expect(payload).toMatchObject({
 				version: 1,
 				tokenScope,
-				peerAddress: "192.0.2.11",
+				peerAddress: "172.30.92.11",
 			});
 			expect(payload.runId).toEqual(expect.stringMatching(/^hermes-contained-/));
 			expect(payload.nonce).toEqual(expect.any(String));
@@ -419,7 +419,7 @@ describe("OpenAI Codex relay proxy", () => {
 			expect(
 				verifyOpenAiCodexPeerBoundProxyToken(token, {
 					secret,
-					peerAddress: "::ffff:192.0.2.11",
+					peerAddress: "::ffff:172.30.92.11",
 					now: new Date(payload.issuedAt),
 				}),
 			).toMatchObject({
