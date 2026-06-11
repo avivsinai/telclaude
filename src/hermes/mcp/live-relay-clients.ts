@@ -15,7 +15,7 @@ import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
-import { redactSecrets } from "../../security/output-filter.js";
+import { filterOutput, redactSecrets } from "../../security/output-filter.js";
 import { generateImage } from "../../services/image-generation.js";
 import {
 	consumeRateLimit,
@@ -145,6 +145,34 @@ export class TelclaudeLiveMcpUnsupportedContentError extends Error {
 	constructor(contentType: string) {
 		super(`web fetch unsupported content type: ${contentType || "(none)"}`);
 		this.name = "TelclaudeLiveMcpUnsupportedContentError";
+	}
+}
+
+/**
+ * A private turn can read private memory, so a secret-shaped value in an
+ * outbound web URL or search query would turn the relay into an exfiltration
+ * channel. Both tc_web_fetch.url and tc_web_search.query are scanned for
+ * secret/token patterns and fail closed BEFORE any network or provider call.
+ * The error carries only the field name — never the offending value.
+ */
+export class TelclaudeLiveMcpOutboundSecretError extends Error {
+	readonly code = "mcp_outbound_secret_blocked";
+
+	constructor(field: string) {
+		super(`outbound ${field} blocked: secret-shaped material must not leave via web egress`);
+		this.name = "TelclaudeLiveMcpOutboundSecretError";
+	}
+}
+
+/**
+ * Outbound egress preflight. Uses pattern-based secret detection (API keys,
+ * tokens, JWTs across plain/base64/hex/url encodings) — NOT the raw-entropy
+ * heuristic — so legitimate URLs carrying UUIDs or media ids do not
+ * false-positive, while key-shaped material fails closed.
+ */
+function assertNoSecretInOutbound(value: string, field: string): void {
+	if (filterOutput(value).blocked) {
+		throw new TelclaudeLiveMcpOutboundSecretError(field);
 	}
 }
 
@@ -391,11 +419,15 @@ export function createTelclaudeLiveMcpRelayClients(
 		async webFetch(request: TelclaudeMcpWebFetchRequest) {
 			assertAuthorityMemoryBoundary(request);
 			enforceRateLimit("web_fetch", request.actorId, webRateLimit());
-			const fetched = await fetchWebContent(request);
+			// Refuse to carry secret-shaped material outbound, then reserve the
+			// rate-limit slot so a failed network attempt (SSRF/content-type/
+			// timeout) still consumes quota rather than being freely repeatable.
+			assertNoSecretInOutbound(request.url, "url");
 			consumeRateLimit("web_fetch", request.actorId);
+			const fetched = await fetchWebContent(request);
 			await auditFromRequest(request, "web.fetch", {
-				url: request.url,
-				finalUrl: fetched.finalUrl,
+				url: redactSecrets(request.url),
+				finalUrl: redactSecrets(fetched.finalUrl),
 				httpStatus: fetched.httpStatus,
 				contentType: fetched.contentType,
 				truncated: fetched.truncated,
@@ -406,24 +438,25 @@ export function createTelclaudeLiveMcpRelayClients(
 		async webSearch(request: TelclaudeMcpWebSearchRequest) {
 			assertAuthorityMemoryBoundary(request);
 			enforceRateLimit("web_search", request.actorId, webRateLimit());
+			assertNoSecretInOutbound(request.query, "query");
+			consumeRateLimit("web_search", request.actorId);
 			const found = await searchWeb(request.query, {
 				count: request.count,
 				...(options.webSearchFetch ? { fetchImpl: options.webSearchFetch } : {}),
 			});
 			const results = found.results.map((result) => ({
 				title: redactSecrets(result.title),
-				url: result.url,
+				url: redactSecrets(result.url),
 				snippet: redactSecrets(result.snippet),
 			}));
-			consumeRateLimit("web_search", request.actorId);
 			await auditFromRequest(request, "web.search", {
-				query: request.query,
+				query: redactSecrets(request.query),
 				count: request.count,
 				provider: found.provider,
 				resultCount: results.length,
 			});
 			return {
-				query: request.query,
+				query: redactSecrets(request.query),
 				provider: found.provider,
 				results: wrapExternalContent(JSON.stringify(results, null, 2), {
 					source: "web-search",

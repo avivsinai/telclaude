@@ -236,6 +236,76 @@ describe("Telclaude live MCP web capability clients", () => {
 		await expect(clients.webSearch(webSearch())).rejects.toThrow(/Hourly limit reached/);
 	});
 
+	it("blocks a secret-shaped tc_web_fetch url before any network call or audit", async () => {
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const clients = makeClients({ auditEntries });
+
+		const err = await clients
+			.webFetch(webFetch({ url: `${hostBaseUrl}/page?token=${FAKE_AWS_KEY}` }))
+			.catch((error: unknown) => error);
+
+		expect(err).toMatchObject({
+			name: "TelclaudeLiveMcpOutboundSecretError",
+			code: "mcp_outbound_secret_blocked",
+		});
+		// The preflight fires before fetchWebContent, so nothing is audited and the
+		// key never reaches the error message, audit, or any log.
+		expect(String(err)).not.toContain(FAKE_AWS_KEY);
+		expect(auditEntries).toEqual([]);
+	});
+
+	it("blocks a secret-shaped tc_web_search query before calling the provider", async () => {
+		process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY = "brave-test-key";
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const webSearchFetch = vi.fn();
+		const clients = makeClients({
+			auditEntries,
+			webSearchFetch: webSearchFetch as unknown as typeof fetch,
+		});
+
+		const err = await clients
+			.webSearch(webSearch({ query: `look up ${FAKE_AWS_KEY} please` }))
+			.catch((error: unknown) => error);
+
+		expect(err).toMatchObject({
+			name: "TelclaudeLiveMcpOutboundSecretError",
+			code: "mcp_outbound_secret_blocked",
+		});
+		expect(webSearchFetch).not.toHaveBeenCalled();
+		expect(String(err)).not.toContain(FAKE_AWS_KEY);
+		expect(auditEntries).toEqual([]);
+	});
+
+	it("consumes the web_fetch quota even when the network attempt fails (SSRF)", async () => {
+		const clients = makeClients({
+			webRateLimit: { maxPerHourPerUser: 1, maxPerDayPerUser: 1 },
+		});
+
+		// A real (non-secret) but SSRF-blocked URL: passes the preflight, reserves
+		// the slot, then fails inside the guard — the slot must stay consumed.
+		await expect(clients.webFetch(webFetch({ url: "http://10.0.0.1/admin" }))).rejects.toThrow(
+			/private\/internal IP/,
+		);
+		await expect(clients.webFetch(webFetch({ url: `${hostBaseUrl}/page` }))).rejects.toThrow(
+			/Hourly limit reached/,
+		);
+	});
+
+	it("consumes the web_search quota even when the provider call fails", async () => {
+		const webSearchFetch = vi.fn();
+		const clients = makeClients({
+			webRateLimit: { maxPerHourPerUser: 1, maxPerDayPerUser: 1 },
+			webSearchFetch: webSearchFetch as unknown as typeof fetch,
+		});
+
+		// No provider key → searchWeb throws after the slot is reserved.
+		await expect(clients.webSearch(webSearch())).rejects.toMatchObject({
+			code: "web_search_not_configured",
+		});
+		await expect(clients.webSearch(webSearch())).rejects.toThrow(/Hourly limit reached/);
+		expect(webSearchFetch).not.toHaveBeenCalled();
+	});
+
 	it("fails web search closed with a typed error when no provider key is configured", async () => {
 		const webSearchFetch = vi.fn();
 		const clients = makeClients({
