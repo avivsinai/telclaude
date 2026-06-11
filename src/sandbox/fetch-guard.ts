@@ -11,7 +11,7 @@
  */
 
 import type { LookupAddress, LookupOptions } from "node:dns";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import { getChildLogger } from "../logging.js";
 import { cachedDNSLookup, isBlockedIP, isNonOverridableBlock } from "./network-proxy.js";
 
@@ -345,7 +345,7 @@ export async function fetchWithGuard(opts: FetchWithGuardOptions): Promise<Fetch
 				...(signal ? { signal } : {}),
 			};
 
-			const response = await fetch(parsedUrl.toString(), init);
+			const response = await undiciFetch(parsedUrl.toString(), init);
 
 			// Handle redirects
 			if (isRedirectStatus(response.status)) {
