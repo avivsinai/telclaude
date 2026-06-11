@@ -291,9 +291,17 @@ function readManifest(root: string): HermesSkillCatalogManifest {
 	if (!fs.existsSync(manifestPath)) {
 		return { schemaVersion: HERMES_SKILL_CATALOG_MANIFEST_VERSION, skills: [] };
 	}
-	const parsed = HermesSkillCatalogManifestSchema.safeParse(
-		JSON.parse(fs.readFileSync(manifestPath, "utf8")),
-	);
+	let json: unknown;
+	try {
+		json = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+	} catch (err) {
+		throw new Error(
+			`corrupt catalog manifest at ${manifestPath}: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+	}
+	const parsed = HermesSkillCatalogManifestSchema.safeParse(json);
 	if (!parsed.success) {
 		throw new Error(`corrupt catalog manifest at ${manifestPath}: ${parsed.error.message}`);
 	}
@@ -319,6 +327,33 @@ function writeManifestAtomic(root: string, manifest: HermesSkillCatalogManifest)
 		throw err;
 	}
 	return manifestPath;
+}
+
+function assertWritableDirectory(dir: string, label: string): void {
+	fs.mkdirSync(dir, { recursive: true });
+	const tempPath = path.join(dir, `.write-test-${process.pid}.${crypto.randomUUID()}.tmp`);
+	try {
+		fs.writeFileSync(tempPath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+	} catch (err) {
+		throw new Error(
+			`${label} is not writable: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	} finally {
+		fs.rmSync(tempPath, { force: true });
+	}
+}
+
+/**
+ * Fail before a multi-entry sync mutates catalog contents. This verifies the
+ * existing manifest can be parsed and that the root/skills directories can
+ * accept the temp files and renames used by installs.
+ */
+export function preflightCatalogMutation(options: CatalogOptions = {}): void {
+	const root = catalogRootFrom(options);
+	readManifest(root);
+	const skillsDir = catalogSkillsDir(root);
+	assertWritableDirectory(root, "Hermes skill catalog root");
+	assertWritableDirectory(skillsDir, "Hermes skill catalog skills directory");
 }
 
 /**

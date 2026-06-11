@@ -307,6 +307,22 @@ describe("hermes-skills sync-manifest", () => {
 		expect(listCatalog({ catalogRoot })).toEqual([]);
 	});
 
+	it("rejects non-seed manifest origins before mutating the catalog", async () => {
+		const manifestPath = path.join(tempRoot, "unmanaged-seed.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify({
+				schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+				entries: [{ sourceDir: writeSkill("shaon"), origin: "local:shaon" }],
+			}),
+		);
+
+		await runCli(["sync-manifest", manifestPath]);
+		expect(process.exitCode).toBe(1);
+		expect(String(errorSpy.mock.calls.at(-1)?.[0])).toContain("origin must start with seed:");
+		expect(listCatalog({ catalogRoot })).toEqual([]);
+	});
+
 	it("preflights every seed source before installing any declared entry", async () => {
 		const invalidSkill = writeSkill("invalid-seed");
 		fs.mkdirSync(path.join(invalidSkill, "scripts"));
@@ -338,6 +354,34 @@ describe("hermes-skills sync-manifest", () => {
 		expect(process.exitCode).toBe(1);
 		expect(String(errorSpy.mock.calls.at(-1)?.[0])).toContain("seed source validation failed");
 		expect(listCatalog({ catalogRoot })).toEqual([]);
+	});
+
+	it("preflights catalog manifest readability before installing any declared entry", async () => {
+		fs.mkdirSync(catalogRoot, { recursive: true });
+		fs.writeFileSync(path.join(catalogRoot, "catalog-manifest.json"), "{not-json");
+		const manifestPath = path.join(tempRoot, "seed-with-corrupt-destination.json");
+		fs.writeFileSync(
+			manifestPath,
+			JSON.stringify(
+				{
+					schemaVersion: "telclaude.hermes.skill-catalog-seed-manifest.v1",
+					entries: [
+						{
+							catalog: "private",
+							sourceDir: writeSkill("shaon"),
+							origin: "seed:william:shaon@0.8.3",
+						},
+					],
+				},
+				null,
+				2,
+			),
+		);
+
+		await runCli(["sync-manifest", manifestPath]);
+		expect(process.exitCode).toBe(1);
+		expect(String(errorSpy.mock.calls.at(-1)?.[0])).toContain("corrupt catalog manifest");
+		expect(fs.existsSync(path.join(catalogRoot, "skills", "shaon"))).toBe(false);
 	});
 });
 

@@ -17,6 +17,7 @@ import {
 	type HermesSkillCatalogKind,
 	installSkillFromDir,
 	listCatalog,
+	preflightCatalogMutation,
 	removeSkill,
 	validateCatalogSkillDir,
 	verifyCatalogAgainstManifest,
@@ -30,7 +31,13 @@ const HermesSkillCatalogSeedEntrySchema = z
 	.object({
 		catalog: z.enum(["private", "social"]).default("private"),
 		sourceDir: z.string().trim().min(1),
-		origin: z.string().trim().min(1),
+		origin: z
+			.string()
+			.trim()
+			.min(1)
+			.refine((origin) => origin.startsWith("seed:"), {
+				message: "origin must start with seed:",
+			}),
 	})
 	.strict();
 
@@ -138,9 +145,17 @@ function parseCuratorCatalogInstall(item: CuratorItem): CuratorCatalogInstall {
 }
 
 function readSeedManifest(manifestPath: string): HermesSkillCatalogSeedManifest {
-	const parsed = HermesSkillCatalogSeedManifestSchema.safeParse(
-		JSON.parse(fs.readFileSync(manifestPath, "utf8")),
-	);
+	let json: unknown;
+	try {
+		json = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+	} catch (err) {
+		throw new Error(
+			`invalid seed manifest at ${manifestPath}: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+	}
+	const parsed = HermesSkillCatalogSeedManifestSchema.safeParse(json);
 	if (!parsed.success) {
 		throw new Error(`invalid seed manifest at ${manifestPath}: ${parsed.error.message}`);
 	}
@@ -161,8 +176,8 @@ function resolveSeedEntries(manifestPath: string): ResolvedSeedEntry[] {
 	const resolvedManifestPath = path.resolve(manifestPath);
 	const manifest = readSeedManifest(resolvedManifestPath);
 	const resolvedEntries: ResolvedSeedEntry[] = [];
-	const duplicateKeys = new Set<string>();
-	const seenKeys = new Set<string>();
+	const duplicateCatalogNames = new Set<string>();
+	const seenCatalogNames = new Set<string>();
 
 	for (const entry of manifest.entries) {
 		const sourceDir = resolveSeedSourceDir(resolvedManifestPath, entry.sourceDir);
@@ -172,9 +187,9 @@ function resolveSeedEntries(manifestPath: string): ResolvedSeedEntry[] {
 				`seed source validation failed for ${sourceDir}: ${validation.errors.join("; ")}`,
 			);
 		}
-		const key = `${entry.catalog}:${validation.name}`;
-		if (seenKeys.has(key)) duplicateKeys.add(key);
-		seenKeys.add(key);
+		const catalogName = `${entry.catalog}:${validation.name}`;
+		if (seenCatalogNames.has(catalogName)) duplicateCatalogNames.add(catalogName);
+		seenCatalogNames.add(catalogName);
 		resolvedEntries.push({
 			catalog: entry.catalog,
 			sourceDir,
@@ -183,9 +198,9 @@ function resolveSeedEntries(manifestPath: string): ResolvedSeedEntry[] {
 		});
 	}
 
-	if (duplicateKeys.size > 0) {
+	if (duplicateCatalogNames.size > 0) {
 		throw new Error(
-			`seed manifest contains duplicate catalog/name entries: ${Array.from(duplicateKeys)
+			`seed manifest contains duplicate catalog/name entries: ${Array.from(duplicateCatalogNames)
 				.sort()
 				.join(", ")}`,
 		);
@@ -201,11 +216,14 @@ function syncSeedManifest(
 	const resolvedEntries = resolveSeedEntries(manifestPath);
 	const installed: CatalogInstallResult[] = [];
 	const expectedSeedNamesByCatalog = new Map<HermesSkillCatalogKind, Set<string>>();
-	const declaredCatalogs = new Set<HermesSkillCatalogKind>();
+	const declaredCatalogs = new Set(resolvedEntries.map((entry) => entry.catalog));
+
+	for (const catalog of declaredCatalogs) {
+		preflightCatalogMutation({ catalogKind: catalog });
+	}
 
 	for (const entry of resolvedEntries) {
 		const catalog = entry.catalog;
-		declaredCatalogs.add(catalog);
 		const result = installSkillFromDir(entry.sourceDir, {
 			catalogKind: catalog,
 			origin: entry.origin,
