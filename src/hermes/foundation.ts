@@ -129,7 +129,6 @@ export const FeatureProbeSchema = z
 		security_scope: z
 			.enum([
 				"headless-availability-only",
-				"approval-continuation",
 				"api-server-containment",
 				"headless-entrypoint-semantics",
 				"edge-adapter",
@@ -369,18 +368,6 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/session-map.ts",
 		"tests/hermes/api-adapter.test.ts",
 		"tests/hermes/private-runtime.test.ts",
-	],
-	"execution.approval_continuation": [
-		"src/hermes/approval-continuation.ts",
-		"src/hermes/approval-continuation-runner.ts",
-		"src/hermes/mcp/approval-token.ts",
-		"src/hermes/mcp/side-effect-ledger.ts",
-	],
-	"approval.continuation": [
-		"src/hermes/approval-continuation.ts",
-		"src/hermes/approval-continuation-runner.ts",
-		"src/hermes/mcp/approval-token.ts",
-		"src/hermes/mcp/side-effect-ledger.ts",
 	],
 	"execution.api_server_containment": [
 		"src/hermes/api-server-containment.ts",

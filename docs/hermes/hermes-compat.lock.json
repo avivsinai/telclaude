@@ -3,7 +3,7 @@
   "hermes": {
     "version": "0.15.1"
   },
-  "featureProbeMatrixDigest": "sha256:61a0c9e8412a9fb7f967da3e90f4f6fa156a77ea0c730c06f6bf43ae428ed772",
+  "featureProbeMatrixDigest": "sha256:f9b33c9ed8a2f5fcb4ee39dd74f3ab8c138e5a28e9f6c28e6b5d71e1847f75df",
   "featureProbes": [
     {
       "surface_id": "execution.cli_headless",
@@ -14,11 +14,6 @@
       "surface_id": "execution.headless_entrypoint",
       "status": "pass",
       "evidence_path": "artifacts/hermes/probes/execution-headless-entrypoint.json"
-    },
-    {
-      "surface_id": "execution.approval_continuation",
-      "status": "pass",
-      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json"
     },
     {
       "surface_id": "execution.api_server_containment",
@@ -136,11 +131,6 @@
       "evidence_path": "artifacts/hermes/probes/workflow-longrun.json"
     },
     {
-      "surface_id": "approval.continuation",
-      "status": "pass",
-      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json"
-    },
-    {
       "surface_id": "sideeffect.ledger",
       "status": "pass",
       "evidence_path": "artifacts/hermes/probes/sideeffect-ledger.json"
@@ -164,7 +154,6 @@
   "adapterApiSignatures": {
     "execution.cli_headless": "sha256:4e6eb8288c3b4a75f7c1854da2353f5a18ad0925185d8154e42d57fafaa5a64d",
     "execution.headless_entrypoint": "sha256:1ae7e9de715878eb4461bb8a2a9baac1470aff96fdcf4e2073a73acc2115f487",
-    "execution.approval_continuation": "sha256:a50338354492dfaf1554b6724e0892e2807a90927a09dfde87206458512afb27",
     "execution.api_server_containment": "sha256:5f093c9c4aa6a42734ed2adbd22cf5005e0be0e6dbe53feb7e26544318bd2fd2",
     "execution.served_mcp_containment": "sha256:02d83ffacf86fb373daf21cacc233e2a076edf39efe374a43a2497d6b71e2a48",
     "model.relay": "sha256:7dd94dca3e3caeb89878a3dfddd15465533744aedf9b48c4c59fd3f899573124",
@@ -188,7 +177,6 @@
     "providers.google": "sha256:15706fd2c599f8c28b3d490ffe0bf68bf744f2b4f81f824f42a569f2e275d7eb",
     "workflow.cron": "sha256:203c3a470796ed0dd42faa949f8989c0fc66dc2c6c044cc7cc6d0bfeb0fa6302",
     "workflow.longrun": "sha256:ac288f7c6d207a4906f668e8923713645e482c70ccc1aae4391cd66326007e9f",
-    "approval.continuation": "sha256:4bfa3b6f6db98ce41662011b8508e93479ffe4a8e881ff7b982137b26935f7ab",
     "sideeffect.ledger": "sha256:42ce05d83f47efe66b575e99d556e9342f4c9e8e7991e128977f60b4d598bddf",
     "browser.profiles": "sha256:7e7b7f7471f4be356da564d0346870c7abbb0881fb8c4522a43b35846d76ecc0",
     "computer.broker": "sha256:2495e49975e67a5cb486926b2a3c282992b8276bf598375351574fe28311b4dc",

@@ -34,22 +34,6 @@
       "status": "pass"
     },
     {
-      "surface_id": "execution.approval_continuation",
-      "documented_seam": "Hermes MCP bridge tools events_wait, permissions_list_open, and permissions_respond in mcp_serve.py",
-      "probe_command": "pnpm dev hermes probe execution.approval_continuation --allow-run",
-      "expected_result": "Approval request is observed, responded to, and the same Hermes run continues without cross-thread leakage",
-      "negative_probe": "Wrong actor, stale request, replayed approval, and mutated decision are denied",
-      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json",
-      "lockfile_key": "featureProbes.execution.approvalContinuation",
-      "security_scope": "approval-continuation",
-      "approval_equivalent": true,
-      "failure_outcome": "disable",
-      "hermes_pin": {
-        "version": "0.15.1"
-      },
-      "status": "pass"
-    },
-    {
       "surface_id": "execution.api_server_containment",
       "documented_seam": "Pinned Hermes API server runs as a contained process behind Telclaude relay control",
       "probe_command": "pnpm dev hermes probe execution.api_server_containment --allow-run",
@@ -403,22 +387,6 @@
       "evidence_path": "artifacts/hermes/probes/workflow-longrun.json",
       "lockfile_key": "featureProbes.workflow.longrun",
       "security_scope": "workflow-ledger",
-      "approval_equivalent": true,
-      "failure_outcome": "disable",
-      "hermes_pin": {
-        "version": "0.15.1"
-      },
-      "status": "pass"
-    },
-    {
-      "surface_id": "approval.continuation",
-      "documented_seam": "Hermes MCP approval fallback through Telclaude MCP bridge",
-      "probe_command": "pnpm dev hermes probe execution.approval_continuation --allow-run",
-      "expected_result": "Approval continuation remains available through the canonical fallback surface and is bound to the same execution proof.",
-      "negative_probe": "Wrong actor, stale request, replayed approval, and mutated decision are denied",
-      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json",
-      "lockfile_key": "featureProbes.approval.continuation",
-      "security_scope": "approval-continuation",
       "approval_equivalent": true,
       "failure_outcome": "disable",
       "hermes_pin": {
