@@ -324,13 +324,13 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.hermes.yml 
 
 **MCP bridge & side-effect ledger.** The relay-owned MCP bridge exposes a fixed set of relay-scoped tools (provider read/prepare/execute, memory search/write, attachment get, outbound prepare/execute, audit note). It is not an agent tool allowlist: each connection is bound to an opaque, TTL-limited authority handle, and provider/outbound writes are two-phase (prepare → human approval → execute) with one-time, Ed25519-signed, request-bound approval tokens (params-hash + JTI replay protection, self-approval blocked). Memory access is domain-scoped, so the private Hermes runtime can never read social memory.
 
-**Proof spine.** Hermes private-runtime operation is gated by signed evidence, not trust. The `telclaude hermes` command group generates and evaluates these artifacts:
-- **No-fork proof** — the pinned checkout is present, pinned, and byte-clean before and after a wrapper run (no diff, no source replacement, no monkeypatch), with an optional signed runner attestation.
-- **Feature probes** — a per-surface matrix (headless execution, approval continuation, served-MCP containment, model relay, edge adapters, providers, skills allowlist, workflows, browser/computer broker) backed by readable, attested evidence.
+**Steady-state proofs.** Hermes private-runtime operation is gated by signed evidence, not trust. The `telclaude hermes` command group generates and evaluates these artifacts:
+- **No-fork proof** — the pinned checkout is present, pinned, and byte-clean (no diff, no source replacement, no monkeypatch); re-run on every pin bump.
+- **Feature probes** — a per-surface matrix (headless execution, served-MCP containment and memory air-gap, model relay, edge adapters, providers, skills allowlist, workflows, browser/computer broker) backed by readable, attested evidence.
 - **Network probes** — proof that direct egress to providers, the vault, model providers, and DNS/metadata exfil is denied while the relay control path is allowed, under a `contained-internal` posture.
-- **Parity roster + cutover check** — `telclaude hermes cutover-check` (strict by default) fails closed unless every workflow in scope is inventoried, fixtured, decision-resolved, queue-owned, rollback-rehearsed, and (for a complete cutover) every canonical parity row is backed or explicitly descoped. Non-descopable rows (`cutover`, `redaction`, `private-chat`, `approval-tokens`, `identity-migration`, `memory`, `skills`) can never be waived.
+- **Live canary** — `telclaude hermes verify-live` exercises the contained runtime, live MCP, and provider canaries end to end.
 
-Strict readiness is all-or-nothing per approved workflow bundle — there is no gradual, partially-proven private runtime. See `docs/architecture.md` for the trust-boundary rationale.
+Production readiness is `doctor` + `probes` + `verify-live`; rollback is the previous container image. See `docs/architecture.md` for the trust-boundary rationale.
 
 ## CLI reference
 
@@ -392,25 +392,18 @@ Strict readiness is all-or-nothing per approved workflow bundle — there is no 
 | `telclaude providers setup google --base-url <url>` | Configure Google provider end-to-end |
 
 ### Hermes wrapper
-All commands live under the `telclaude hermes` group; most accept `--json`. Cutover evaluators such as `cutover-check` use exit `0` for safe/pass, `1` for semantic failure, and `2` for unreadable or unsafe inputs; generator commands report their own status in JSON.
+All commands live under the `telclaude hermes` group; most accept `--json`. Probe commands use exit `0` for pass, `1` for failure, and `2` for pending or unreadable inputs.
 
 | Command | Description |
 |---------|-------------|
 | `telclaude hermes doctor [--pin <pin>] [--probes] [--compat-lock]` | Check pinned Hermes wrapper readiness |
-| `telclaude hermes inventory [--out <path>]` | Emit the Phase 0 wrapper inventory |
-| `telclaude hermes generate [--write] [--dry-run] [--pin <pin>]` | Generate Hermes wrapper profile artifacts |
-| `telclaude hermes fixtures [--write]` | Generate parity fixture result artifacts |
+| `telclaude hermes prove --upstream-clean` | Generate the fail-closed no-fork proof of the pinned upstream checkout |
 | `telclaude hermes probes [--pin <pin>] [--out <path>]` | Generate the canonical feature-probe matrix from observed evidence |
 | `telclaude hermes probe <surface> [--allow-run] [--out <path>]` | Evaluate a single feature probe |
-| `telclaude hermes network-probes [--allow-run] [--posture <posture>]` | Run gated network isolation probes and write cutover evidence |
-| `telclaude hermes prove --upstream-clean [--p0]` | Generate fail-closed no-fork proof artifacts; `--p0` requires an existing proof bundle and evidence inputs |
-| `telclaude hermes proof-bundle --inventory <path> --scope-manifest <path> --decision-log <path> --compatibility-lockfile <path> --feature-probe-matrix <path> --fixture-results <path> --nofork-proof-file <path> --network-probe-bundle <path> --queue-snapshot <path> --rollback-evidence <path>` | Build a byte-bound cutover proof bundle from strict evidence artifacts |
-| `telclaude hermes cutover-scope --inventory <path>` | Generate a fail-closed cutover scope skeleton from an inventory snapshot |
-| `telclaude hermes decision-log [--inventory <path>]` | Generate a fail-closed cutover decision log draft |
+| `telclaude hermes network-probes [--allow-run] [--posture <posture>]` | Run gated network isolation probes and write signed evidence |
 | `telclaude hermes compat-lock --dry-run [--pin <pin>]` | Generate a Hermes compatibility lockfile draft |
-| `telclaude hermes queue-snapshot [--inventory <path>]` | Build cutover queue ownership evidence |
-| `telclaude hermes rollback-rehearsal [--allow-run]` | Generate relay-observed Hermes containment recovery evidence |
-| `telclaude hermes cutover-check [--strict] [--dry-run] [--scoped]` | Evaluate strict cutover evidence; strict mode is the default |
+| `telclaude hermes verify-live` | Run the live canary across the contained runtime, live MCP, and providers |
+| `telclaude hermes private-runtime status` | Show the relay-observed private-runtime state |
 | `telclaude hermes live-mcp probe-tokens` | Issue served-MCP containment probe tokens through the relay admin socket |
 
 ### Media & messaging

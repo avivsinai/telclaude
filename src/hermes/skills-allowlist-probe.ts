@@ -106,7 +106,7 @@ function originGate(origin: SkillsAllowlistEvidence["origin"]): SkillsAllowlistG
 }
 
 /**
- * Deterministic evaluator the cutover-check consumes. As with the memory probe, a
+ * Deterministic evaluator for the probe evidence. As with the memory probe, a
  * property is proven only when its boolean bit is true AND backed by at least one
  * check of the same name whose every occurrence is "pass". Runtime/profile checks
  * must also be observed through docker exec inside the contained Hermes runtime.

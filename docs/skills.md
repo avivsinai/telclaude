@@ -195,9 +195,9 @@ package state; use curated Hermes catalog sources for runtime exposure.
 
 ### Proving allowlist enforcement (`skills.allowlist` probe)
 
-The Hermes cutover evidence bundle includes a `skills.allowlist` feature probe
-that proves the allowlist is enforced *inside* the contained runtime, not just
-present on disk:
+The Hermes feature-probe matrix includes a `skills.allowlist` probe that proves
+the allowlist is enforced *inside* the contained runtime, not just present on
+disk:
 
 ```bash
 telclaude hermes probe skills.allowlist --allow-run \
@@ -209,5 +209,5 @@ The probe runs its profile and runtime checks via `docker exec` against
 Hermes PreToolUse policy — the primary enforcement layer (`pretooluse`) — allows
 an allowlisted skill, denies a non-allowlisted one, and fail-closes a SOCIAL service whose allowlist is missing or empty
 (architecture invariant #9). The resulting evidence is signed with the operator
-relay key; `telclaude hermes cutover-check` rejects the bundle if the attestation
-is missing, stale, or unbound.
+relay key; evidence validation rejects it if the attestation is missing, stale,
+or unbound.

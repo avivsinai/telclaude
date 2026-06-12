@@ -1131,47 +1131,12 @@ describe("Hermes wrapper foundation", () => {
 				"docs/hermes/hermes-compat.lock.json": {
 					featureProbes: [{ surface_id: "execution.cli_headless", status: "pass" }],
 				},
-				"docs/hermes/cutover-scope.json": {
-					workflows: [
-						{
-							workflow_id: "telegram.private",
-							status: "included",
-							unresolved_decision_ids: [],
-						},
-					],
-				},
-				"docs/hermes/decisions.json": {
-					decisions: [{ id: "D-first-cutover-workflow-set", status: "accepted" }],
-				},
-				"docs/hermes/fixture-results.json": {
-					results: [{ fixture_id: "fixture", status: "pass" }],
-				},
-				"docs/hermes/inventory.json": {
-					status: "complete",
-					risks: [],
-					summary: { pendingQueues: { approvals: 0, backgroundJobs: 0 } },
-				},
 				"docs/hermes/network-probes.json": {
 					probes: [{ id: "relay.allowed", status: "pass" }],
-				},
-				"docs/hermes/queue-snapshot.json": {
-					unownedActiveCount: 0,
 				},
 				"docs/hermes/no-fork-proof.json": {
 					hermesCheckoutClean: true,
 					checks: [{ name: "git.diff", status: "pass" }],
-				},
-				"docs/hermes/cutover-proof-bundle.json": {
-					artifacts: { featureProbeMatrix: { status: "pass" } },
-				},
-				"docs/hermes/profile-generation-proof.json": {
-					schemaVersion: "telclaude.hermes.profile-generation-proof.v1",
-					status: "pass",
-					checks: [{ name: "profile.pin", status: "pass", detail: "green" }],
-				},
-				"docs/hermes/rollback-rehearsal.json": {
-					passed: true,
-					checks: [{ name: "rollback.transcript", status: "pass" }],
 				},
 			};
 
@@ -1191,15 +1156,14 @@ describe("Hermes wrapper foundation", () => {
 		const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-green-seed-cwd-"));
 		execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
 		await withCwd(otherDir, async () => {
-			const seedPath = path.join(repoDir, "docs/hermes/profile-generation-proof.json");
+			const seedPath = path.join(repoDir, "docs/hermes/no-fork-proof.json");
 
 			expect(() =>
 				writeHermesJsonArtifact(
 					seedPath,
 					{
-						schemaVersion: "telclaude.hermes.profile-generation-proof.v1",
-						status: "pass",
-						checks: [{ name: "profile.pin", status: "pass", detail: "green" }],
+						hermesCheckoutClean: true,
+						checks: [{ name: "git.diff", status: "pass" }],
 					},
 					{ allowTrackedSeedWrite: true },
 				),

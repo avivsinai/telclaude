@@ -170,7 +170,7 @@ function offDomainSentinelEvidence(
 }
 
 /**
- * Deterministic evaluator the cutover-check consumes. A property is proven only
+ * Deterministic evaluator for the probe evidence. A property is proven only
  * when its boolean bit is true AND backed by at least one check of the same name
  * whose every occurrence is "pass" — a self-reported property bit without a
  * passing backing check does not count. The producer (which drives tc_memory_*

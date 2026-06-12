@@ -5,7 +5,7 @@
 ## Intent
 - Status: alpha (0.x); breaking changes allowed until 1.0.
 - Goal: keep this file lean for project memory; use imports for depth.
-- Hermes wrapper: all LLM/persona runtime execution is a pristine **no-fork wrapper** around upstream Hermes (pinned `nousresearch/hermes-agent`), not a fork or patch set. The relay stays the security envelope; private Telegram, social, cron, and observer work route to contained Hermes via the relay-owned MCP bridge. Hermes production readiness is all-or-nothing per workflow bundle, gated by strict parity + no-fork proof (`src/hermes/`, `telclaude hermes cutover-check`).
+- Hermes wrapper: all LLM/persona runtime execution is a pristine **no-fork wrapper** around upstream Hermes (pinned `nousresearch/hermes-agent`), not a fork or patch set. The relay stays the security envelope; private Telegram, social, cron, and observer work route to contained Hermes via the relay-owned MCP bridge. The cutover to Hermes completed 2026-06-10; production readiness is steady-state — no-fork proof on every pin bump plus containment/served-MCP/skills/network probes and the verify-live canary (`src/hermes/`, `telclaude hermes doctor|probes|verify-live`).
 
 ## Ground rules
 - Write clean TypeScript; remove dead code.
@@ -67,7 +67,7 @@
 - `src/storage/` — SQLite storage layer.
 - `src/config/` — configuration loading.
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
-- `src/hermes/` — no-fork Hermes wrapper: `foundation` (artifact schemas + `evaluateCutoverCheck`), `parity-roster` (canonical parity rows + descope), `no-fork-proof` / `no-fork-attestation` (pinned-checkout-clean proof + runner attestation), `inventory`, `private-runtime` / `private-execute` / `private-runtime-control` (Hermes private dispatch and relay-observed runtime state), `api-adapter` (`HermesApiRuntimeAdapter` → contained Hermes API server), `api-server-containment`, `relay-conversation-store` / `session-map` (relay-owned conversation + session authority), `model-relay`, `approval-continuation*`, edge probes (`edge-adapter-contract` with `PreparedOutbound`/`AttachmentRef`/`DeliveryReceipt`, `edge-adapter-runtime`/`-probes`/`-attestation`), `served-mcp-*` (memory/provider/containment evidence + attestations), `skills-allowlist-*`, `network-probe*`, `provider-*-probe`, `workflow-*` / `*-ledger*` (run + side-effect ledgers), `rollback-rehearsal`, `pro-review`, `attestation-validation`.
+- `src/hermes/` — no-fork Hermes wrapper: `foundation` (artifact schemas, doctor report, feature-probe evidence collection), `no-fork-proof` / `no-fork-attestation` (pinned-checkout-clean proof + runner attestation), `private-runtime` / `private-execute` / `private-runtime-control` (Hermes private dispatch and relay-observed runtime state), `api-adapter` (`HermesApiRuntimeAdapter` → contained Hermes API server), `api-server-containment`, `relay-conversation-store` / `session-map` (relay-owned conversation + session authority), `model-relay`, edge probes (`edge-adapter-contract` with `PreparedOutbound`/`AttachmentRef`/`DeliveryReceipt`, `edge-adapter-runtime`/`-probes`/`-attestation`), `served-mcp-*` (memory/provider/containment evidence + attestations), `skills-allowlist-*`, `network-probe*`, `provider-*-probe`, `workflow-*` / `*-ledger*` (run + side-effect ledgers), `verify-live`, `attestation-validation`.
 - `src/hermes/mcp/` — relay-owned MCP bridge (NOT an agent tool allowlist): `live-server` / `live-runtime` / `live-listen` (relay-internal HTTP `/mcp`, 14 `tc_*` tools), `authority-registry` (opaque handle ↔ actor/domain/scope binding), `bridge` (per-connection request validation + dispatch), `side-effect-ledger` (+`-attestation`/`-probe`) (two-phase prepare→approve→execute for provider/outbound side effects), `approval-token` (Ed25519 one-time JTI side-effect tokens), `side-effect-human-approval`, `ledger-execute`, `provider-routing` / `provider-sidecar-token`, `live-connection-resolver` / `live-admin` / `live-probe-tokens` (connection auth + adversarial probe tokens), `policy`.
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
 - `.claude/skills/` and `.agents/skills/` — operator skills, including codex-work-unit, security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
@@ -108,18 +108,17 @@
 | `pnpm dev sessions [--active <min>] [--json]` | List active sessions |
 
 ### Hermes wrapper commands
-The `hermes` group builds and evaluates the no-fork cutover proof spine. Most subcommands support `--json`; cutover evaluators such as `cutover-check` use exit 0 (safe), 1 (semantic fail), and 2 (input error), while generator commands report their own status in JSON.
+The `hermes` group runs the steady-state no-fork and containment proofs. Most subcommands support `--json`; probe commands exit 0 (pass), 1 (fail), 2 (pending/input error).
 
 | Command | Description |
 |---------|-------------|
 | `pnpm dev hermes doctor [--pin <p>] [--probes] [--compat-lock]` | Pinned Hermes wrapper readiness |
-| `pnpm dev hermes prove --upstream-clean [--p0]` | No-fork proof; `--p0` requires an existing proof bundle and evidence inputs |
-| `pnpm dev hermes inventory` | Phase-0 workflow roster |
+| `pnpm dev hermes prove --upstream-clean` | No-fork proof of the pinned upstream checkout |
 | `pnpm dev hermes probes` / `probe <surface> [--allow-run]` | Feature-probe matrix / single-surface probe |
 | `pnpm dev hermes network-probes [--allow-run] [--posture <p>]` | Egress isolation probes (deny direct provider/model/vault/DNS) |
-| `pnpm dev hermes fixtures` / `generate` | Parity fixture results / profile artifacts |
-| `pnpm dev hermes proof-bundle --inventory <path> --scope-manifest <path> --decision-log <path> --compatibility-lockfile <path> --feature-probe-matrix <path> --fixture-results <path> --nofork-proof-file <path> --network-probe-bundle <path> --queue-snapshot <path> --rollback-evidence <path>` | Byte-bind all required proof artifacts into one bundle |
-| `pnpm dev hermes cutover-check [--strict] [--scoped] [--dry-run]` | Strict cutover evidence evaluation (parity-roster closure) |
+| `pnpm dev hermes compat-lock --dry-run [--out <path>]` | Compatibility lockfile draft bound to the pin + matrix |
+| `pnpm dev hermes verify-live` | Live canary across contained runtime, live MCP, and providers |
+| `pnpm dev hermes private-runtime status` | Relay-observed private-runtime state |
 | `pnpm dev hermes live-mcp probe-tokens` | Issue MCP probe tokens via relay admin socket |
 
 ## Auth & control plane

@@ -193,10 +193,11 @@ Hermes private-runtime readiness is proven through generated evidence rather tha
 ```
 pnpm dev hermes doctor --probes --compat-lock
 pnpm dev hermes prove --upstream-clean
-pnpm dev hermes cutover-check --strict
+pnpm dev hermes network-probes --allow-run
+pnpm dev hermes verify-live
 ```
 
-Treat `cutover-check --strict` as the graduation gate: it fails closed unless parity, containment, no-fork proof, queue ownership, rollback rehearsal, and served-MCP evidence are present and reviewed.
+Treat `doctor` + `probes` + `verify-live` as the readiness gate: doctor fails closed unless the pinned feature-probe matrix and compatibility lockfile are present and green, `prove --upstream-clean` proves the checkout is unmodified upstream, and `verify-live` exercises the live contained runtime end to end.
 
 ### The contained runtime (Docker)
 
@@ -228,9 +229,9 @@ Hermes production management deliberately stays on three supported layers:
    manifests, and acceptance checks outside the OSS repository. A production
    host may attach this automation to a self-hosted CI runner post-job hook, but
    the hook must call the same fail-closed gate an operator can run manually.
-3. **`telclaude hermes` evidence commands** own parity and cutover proof:
-   inventory, no-fork proof, network probes, fixture evidence, rollback
-   rehearsal, proof bundles, and strict cutover evaluation.
+3. **`telclaude hermes` evidence commands** own the steady-state proofs:
+   no-fork proof, feature probes, network probes, served-MCP/skills evidence,
+   and the live verification canary.
 
 Do not introduce a second runtime orchestrator for Hermes unless the deployment
 has actually outgrown a single Compose host. Kubernetes, Nomad, UI auto-updaters,
@@ -242,39 +243,20 @@ Generic MCP catalog or gateway tools can be useful for non-privileged MCP server
 inventory, but they are not a substitute for Telclaude's relay-owned live MCP
 bridge. The live bridge resolves opaque authority handles server-side, strips
 client-supplied scope/provenance, binds provider and memory access to the relay's
-policy, and is covered by the Hermes proof spine.
+policy, and is covered by the steady-state Hermes proofs.
 
-### Proving parity before cutover
+### Steady-state proofs
 
-Cutover is all-or-nothing: operators only enter `hermes` mode once a strict evidence chain proves the contained runtime is at parity with the Claude path. The artifacts are produced by the `hermes` subcommands and then byte-bound into a single bundle:
+The cutover completed; Hermes is the only runtime. What remains is the recurring proof loop, run after every Hermes pin bump or containment change:
 
-```
-pnpm dev hermes doctor --probes --compat-lock
-pnpm dev hermes inventory --out <inventory>
-pnpm dev hermes prove --upstream-clean --out <nofork>
-pnpm dev hermes network-probes --allow-run
-pnpm dev hermes proof-bundle \
-  --inventory <inventory> --scope-manifest <scope> --decision-log <decisions> \
-  --compatibility-lockfile <lockfile> --feature-probe-matrix <probes> \
-  --fixture-results <fixtures> --nofork-proof-file <nofork> \
-  --network-probe-bundle <netprobes> --queue-snapshot <queue> \
-  --rollback-evidence <rollback> --out <bundle>
-pnpm dev hermes cutover-check \
-  --inventory <inventory> --scope <scope> --decisions <decisions> \
-  --proof-bundle <bundle> --lockfile <lockfile> --feature-probes <probes> \
-  --fixtures <fixtures> --nofork <nofork> --network-probes <netprobes> \
-  --queue-snapshot <queue> --rollback <rollback>
-```
+- **`prove --upstream-clean`** — the pinned Hermes checkout is byte-identical to upstream: no diff, no patch, no monkeypatch, no runtime source replacement.
+- **`probes` / `probe <surface> --allow-run`** — regenerate the feature-probe matrix from observed evidence (headless execution, API-server and served-MCP containment, served-MCP memory air-gap, skills allowlist, model relay, edge adapters, providers, workflows, side-effect ledger).
+- **`network-probes --allow-run`** — gated egress isolation: the relay/control URL stays reachable while direct calls to providers, the vault, the model provider, and DNS exfil targets are all denied. `--posture` is `agent-iptables` or `contained-internal`. Use `--defer-attestation` to capture an unsigned run report on the runner and `--from-report` to promote it into signed artifacts later.
+- **`doctor --probes --compat-lock`** — fails closed unless the matrix and the pin-bound compatibility lockfile are present, schema-valid, and green.
+- **`verify-live`** — the live canary: exercises the contained runtime, live MCP, and provider canaries end to end.
 
-What the chain proves:
-
-- **`prove --upstream-clean`** — the pinned Hermes checkout is byte-identical to upstream: no diff, no patch, no monkeypatch, no runtime source replacement. `--p0` is a follow-up classifier after the proof bundle and P0 evidence inputs already exist; it reads that bundle, so do not run it before `proof-bundle` has been built.
-- **`network-probes`** — gated egress isolation: the relay/control URL stays reachable while direct calls to providers, the vault, the model provider, and DNS exfil targets are all denied. `--posture` is `agent-iptables` or `contained-internal`; `--allow-run` permits real probes (otherwise it emits a pending matrix). Use `--defer-attestation` to capture an unsigned run report on the runner and `--from-report` to promote it into signed artifacts later.
-- **`proof-bundle`** — byte-binds all ten required artifacts (inventory, scope, decisions, lockfile, feature-probe matrix, fixtures, no-fork proof, network probes, queue snapshot, rollback rehearsal). Every flag is required; the bundle records the exact `pnpm dev hermes ...` command that regenerates each input.
-- **`cutover-check`** — the gate. `--strict` is the default; non-strict input fails closed. It evaluates the full gate pipeline (workflow scope, resolved decisions, profile-generation proof, feature probes, lockfile consistency, fixtures, no-fork cleanliness, network posture, queue ownership, rollback rehearsal) plus, for a complete-parity cutover, the parity roster. `--scoped` evaluates only the included workflow set and is allowed for dry-run diagnostics only — strict live cutover rejects `--scoped` because production demands the full roster. Exit codes: `0` safe, `1` gate failure, `2` input error. Add `--dry-run` to evaluate evidence without touching runtime state.
-
-Roster rows can be explicitly descoped with an accepted decision-log entry (`parity-descope:<row>`), but the non-descopable core (cutover, redaction, private-chat, approval-tokens, identity-migration, memory, skills) fails loudly if you try (`src/hermes/parity-roster.ts`). The proof evidence itself is signed Ed25519 attestations from the operator relay key — the contained agent cannot hold that key, so it cannot forge its own parity proof.
+The sensitive probes are signed Ed25519 attestations from the operator relay key — the contained agent cannot hold that key, so it cannot forge its own containment proof. Rollback is the previous container image: redeploy the prior pinned digest with the same overlay.
 
 ## Security stays on at every level
 
-Levels 1 through 4 add capability, not authority. The vault still gates credentials, approval tokens still bind writes to a specific request, persona memory air-gap still keeps social timeline content out of the private agent. The Hermes runtime inherits the same envelope: it never sees raw credentials, model traffic stays on the relay proxy path, and production procedure refuses promotion until parity is proven and signed. No level skips security — see `docs/architecture.md` for the invariants.
+Levels 1 through 4 add capability, not authority. The vault still gates credentials, approval tokens still bind writes to a specific request, persona memory air-gap still keeps social timeline content out of the private agent. The Hermes runtime inherits the same envelope: it never sees raw credentials, model traffic stays on the relay proxy path, and production readiness is re-proven (doctor, probes, verify-live) on every pin bump. No level skips security — see `docs/architecture.md` for the invariants.

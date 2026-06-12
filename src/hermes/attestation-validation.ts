@@ -2,12 +2,12 @@ const MAX_CUTOVER_PROOF_ARTIFACT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Freshness window for evidence-attestation proof signatures (Ed25519
- * InternalResponseProof timestamps) under live cutover validation.
+ * InternalResponseProof timestamps) under live evidence validation.
  *
  * Deliberately wider than the RPC anti-replay skew (DEFAULT_SKEW_MS, 5 min,
  * src/internal-auth.ts): evidence is captured by a multi-step operator-driven
- * sequence (probes → fixtures → network promote → rollback → no-fork → bundle
- * → cutover-check), and the prover and verifier are the same operator shell —
+ * sequence (probes → network promote → no-fork → doctor), and the prover and
+ * verifier are the same operator shell —
  * a tighter window buys no additional trust, it only turns the capture into a
  * speedrun. Replay protection for live RPC keeps the tight default.
  */

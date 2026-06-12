@@ -88,7 +88,7 @@ Key paths:
 - `src/security/` — permission tiers, observer, approvals, output filter, external-content wrapping
 - `src/google-services/` — Google Services sidecar (Gmail, Calendar, Drive, Contacts)
 - `src/providers/` — external provider integration, health, validation, skill injection
-- `src/hermes/` — no-fork Hermes wrapper: private runtime adapter, containment, no-fork proof, parity roster, cutover-check, feature probes, edge adapters, model relay
+- `src/hermes/` — no-fork Hermes wrapper: private runtime adapter, containment, no-fork proof, feature probes, edge adapters, model relay
 - `src/hermes/mcp/` — relay-served MCP: authority registry, bridge, side-effect ledger, approval tokens, live runtime/server
 - `docs/social-contract.md` — the social contract between telclaude and its operator
 - `docs/architecture.md` — system architecture deep dive
