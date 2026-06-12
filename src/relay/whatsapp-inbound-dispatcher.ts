@@ -199,7 +199,8 @@ function buildWhatsAppAuthorityContext(
 	return [
 		"<whatsapp-edge-authority>",
 		"Relay CL-1 has authenticated, paired, replay-checked, risk-wrapped, and quarantined this inbound WhatsApp event.",
-		`Use conversationToken="${escapeXmlAttr(input.conversation.token)}" when calling tc_outbound_prepare for a reply.`,
+		"Use the value inside <relay-conversation-ref> as the tc_outbound_prepare conversationToken argument.",
+		`<relay-conversation-ref>${escapeXmlText(input.conversation.token)}</relay-conversation-ref>`,
 		"The current MCP authority is already bound to the inbound turn. Do not include turn refs, conversation tokens, or internal relay refs in user-visible text.",
 		"Never call WhatsApp, provider, browser, or credential services directly; use only the served MCP tools.",
 		"</whatsapp-edge-authority>",
