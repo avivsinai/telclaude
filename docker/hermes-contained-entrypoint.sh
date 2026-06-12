@@ -305,7 +305,7 @@ mcp_servers:
     type: http
     url: ${TELCLAUDE_MCP_URL}
     headers:
-      Authorization: "Bearer \${TELCLAUDE_HERMES_MCP_RELAY_TOKEN}"
+      Authorization: "Bearer \${TELCLAUDE_HERMES_MCP_RELAY_TOKEN}" # gitleaks:allow -- env reference, not a literal bearer token
     enabled: true
     timeout: 120
     connect_timeout: 60
