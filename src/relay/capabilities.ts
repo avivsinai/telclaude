@@ -85,6 +85,12 @@ import {
 	isTokenManagerActive,
 	verifyTokenLocally,
 } from "./token-manager.js";
+import {
+	handleWhatsAppInboundBridgePost,
+	WHATSAPP_INBOUND_BRIDGE_PATH,
+	WHATSAPP_INBOUND_SIGNATURE_HEADER,
+	type WhatsAppInboundBridgeHttpOptions,
+} from "./whatsapp-inbound-http.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -350,6 +356,7 @@ type CapabilityServerOptions = {
 	port?: number;
 	host?: string;
 	telegramApi?: Api;
+	whatsappInbound?: WhatsAppInboundBridgeHttpOptions | false;
 };
 
 type ImageRequest = {
@@ -967,8 +974,20 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				? ""
 				: await parseBody(
 						req,
-						req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit,
+						requestPath === "/v1/attachment/deliver" || requestPath === WHATSAPP_INBOUND_BRIDGE_PATH
+							? ATTACHMENT_DELIVER_BODY_LIMIT
+							: bodyLimit,
 					);
+
+			if (req.method === "POST" && requestPath === WHATSAPP_INBOUND_BRIDGE_PATH) {
+				const result = await handleWhatsAppInboundBridgePost({
+					body,
+					signatureHeader: req.headers[WHATSAPP_INBOUND_SIGNATURE_HEADER],
+					options: options.whatsappInbound,
+				});
+				writeJson(res, result.status, result.payload);
+				return;
+			}
 
 			// Try v3 session token auth first (no vault roundtrip)
 			let usedSessionToken = false;

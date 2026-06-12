@@ -66,7 +66,7 @@ The plan should reuse those primitives rather than creating a parallel authoriza
 4. TOTP is a session identity gate, not a per-write fresh step-up gate.
 5. Side-effect ledger records are in memory. JTI replay storage is durable, but pending prepared effects are not.
 6. Google writes are currently limited to Gmail draft and self-only calendar event. Drive writes, Gmail send, sharing, deletion, and richer calendar changes are not implemented.
-7. WhatsApp outbound is shaped but not product-wired. WhatsApp inbound CL-1 is not wired.
+7. WhatsApp outbound and the operator-only WhatsApp inbound CL-1 bridge path are wired; household/group WhatsApp and email inbound remain pending.
 8. Email edge is documented in the Hermes proof matrix but needs the same concrete edge treatment as WhatsApp.
 9. The current private memory source naming is Telegram-flavored; multichannel operator memory needs a server-owned profile source that does not imply Telegram-only authority.
 
@@ -276,7 +276,7 @@ Tasks:
 3. Strong-link family identities to household authority.
 4. Treat external email as public/untrusted and proposal-only.
 5. Add group handling rules before enabling WhatsApp group chats.
-6. Wire the usable WhatsApp listener only in a follow-up slice: the bridge must POST signed inbound events to a relay endpoint, the endpoint calls the complete CL-1 pipeline, and `onInboundEvent` dispatches only sanitized events into Hermes.
+6. Wired for the operator WhatsApp path: the bridge POSTs signed inbound events to `POST /v1/whatsapp/inbound`, the endpoint calls the complete CL-1 pipeline, and only sanitized events dispatch into Hermes.
 7. Inbound bridge signing contract: compute HMAC over the post-schema-default canonical object that the relay verifies, including defaulted fields such as `attachments: []`; signing a sparse pre-default payload must fail closed.
 8. Operator-only W-B may use a static operator address allowlist; Telegram `/approve` strong-link pairing and household/multi-number pairing remain separate Aviv-gated follow-up work.
 

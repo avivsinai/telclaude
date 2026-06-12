@@ -92,6 +92,12 @@ services:
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude}
       - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-http://whatsapp-bridge:3004}
       - TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS=${TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS:-}
+      # Signed WhatsApp inbound bridge events. The relay verifies this HMAC before CL-1.
+      - TELCLAUDE_WHATSAPP_INBOUND_SECRET=${TELCLAUDE_WHATSAPP_INBOUND_SECRET:-}
+      - TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES=${TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES:-}
+      - TELCLAUDE_WHATSAPP_INBOUND_PROFILE_ID=${TELCLAUDE_WHATSAPP_INBOUND_PROFILE_ID:-default}
+      - TELCLAUDE_WHATSAPP_INBOUND_ACTOR_ID=${TELCLAUDE_WHATSAPP_INBOUND_ACTOR_ID:-}
+      - TELCLAUDE_WHATSAPP_INBOUND_DISPLAY_NAME=${TELCLAUDE_WHATSAPP_INBOUND_DISPLAY_NAME:-}
       # Relay egress policy: restricted (domain allowlist) or permissive (all public
       # egress; metadata/RFC1918 stay kernel-blocked). tc_web_fetch executes in the
       # relay, so the free-GET web capability requires permissive.

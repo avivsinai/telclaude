@@ -143,6 +143,97 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 		});
 	});
 
+	it("mints reply-capable member scopes that live MCP can auto-grant for paired replies", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createTelclaudeLiveMcpRelayClients } = await import(
+			"../../src/hermes/mcp/live-relay-clients.js"
+		);
+		const { createTelclaudeMcpSideEffectLedger } = await import(
+			"../../src/hermes/mcp/side-effect-ledger.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const {
+			createOperatorWhatsAppIdentityResolver,
+			createWhatsAppInboundCl1Pipeline,
+			signWhatsAppInboundBridgeEvent,
+		} = await import("../../src/relay/whatsapp-inbound-cl1.js");
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		const pipeline = createWhatsAppInboundCl1Pipeline({
+			signatureSecret: SECRET,
+			conversationStore,
+			quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+			resolveIdentity: createOperatorWhatsAppIdentityResolver({
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profileId: "operator-private",
+				actorId: "operator:aviv",
+				displayName: "Aviv",
+			}),
+			nowMs: () => NOW,
+		});
+		const event = whatsappEvent();
+		const result = await pipeline.ingest({
+			event,
+			signature: signWhatsAppInboundBridgeEvent(event, SECRET),
+		});
+		expect(result).toMatchObject({ ok: true, duplicate: false });
+		if (!result.ok || result.duplicate) throw new Error("expected first-seen event");
+		const operatorSeat = result.conversation.members.find(
+			(member) => member.actorId === "operator:aviv",
+		);
+		expect(operatorSeat?.scopes).toEqual(
+			expect.arrayContaining(["message:reply", "whatsapp:reply"]),
+		);
+		expect(operatorSeat?.scopes).not.toContain("reply");
+
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			makeRef: makeEffectRefs(),
+			verifyApproval: async () => ({
+				ok: false,
+				code: "approval_required",
+				reason: "test verifier not used by prepare",
+			}),
+		});
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			conversationStore,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const prepared = (await clients.outboundPrepare({
+			actorId: "operator:aviv",
+			profileId: "operator-private",
+			domain: "private",
+			memorySource: "telegram:operator-private",
+			writableNamespace: "private:operator-private",
+			endpointId: "test-endpoint",
+			networkNamespace: "test-network",
+			turnConversationRef: result.turn.ref,
+			conversationToken: result.conversation.token,
+			body: "Reply from Hermes.",
+			mediaRefs: [],
+			outboundChannels: ["whatsapp"],
+		})) as { outboundRef: string; approvalRequestId: string };
+		expect(prepared.approvalRequestId).toBe("approval-1");
+		expect(ledger.get(prepared.outboundRef)).toMatchObject({
+			kind: "outbound",
+			status: "prepared",
+			actorId: "operator:aviv",
+			approverActorId: "operator:outbound-approver",
+			channel: "whatsapp",
+			conversationRef: result.conversation.token,
+			turnConversationRef: result.turn.ref,
+			approvalMetadata: expect.objectContaining({
+				pairedProvenance: true,
+				replyCapableActorSeat: true,
+				actorIdentityAssurance: "strong_link",
+			}),
+		});
+	});
+
 	it("denies invalid signatures, unlinked senders, groups, and smuggled authority fields", async () => {
 		const { createAttachmentQuarantineStore } = await import(
 			"../../src/relay/attachment-quarantine-store.js"
@@ -340,4 +431,14 @@ function whatsappEvent(overrides: WhatsAppEventOverride = {}) {
 		receivedAtMs: NOW,
 		...overrides,
 	};
+}
+
+function makeEffectRefs(): () => string {
+	let ref = 0;
+	return () => `effect-test-${++ref}`;
+}
+
+function makeApprovalIds(): () => string {
+	let id = 0;
+	return () => `approval-${++id}`;
 }

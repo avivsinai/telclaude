@@ -269,7 +269,7 @@ export function createWhatsAppInboundCl1Pipeline(
 						...(identity.displayName ? { displayName: identity.displayName } : {}),
 						role: "sender",
 						identityAssurance: identity.identityAssurance,
-						scopes: ["send", "reply"],
+						scopes: ["message:reply", "whatsapp:reply"],
 					},
 				],
 				threadMessageIds: [event.messageId],
