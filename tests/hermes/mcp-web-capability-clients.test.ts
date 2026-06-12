@@ -276,6 +276,67 @@ describe("Telclaude live MCP web capability clients", () => {
 		expect(auditEntries).toEqual([]);
 	});
 
+	it("allows public contact-like tc_web_fetch urls through the normal fetch path", async () => {
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const clients = makeClients({ auditEntries });
+		const publicEmail = "public-contact@example.com";
+
+		const result = await clients.webFetch(
+			webFetch({ url: `${hostBaseUrl}/page?email=${publicEmail}` }),
+		);
+
+		expect(result.httpStatus).toBe(404);
+		expect(auditEntries).toHaveLength(1);
+		expect(auditEntries[0]?.payload).toMatchObject({
+			url: `${hostBaseUrl}/page?email=${publicEmail}`,
+			httpStatus: 404,
+		});
+	});
+
+	it("blocks explicit private-data-shaped tc_web_search queries before calling the provider", async () => {
+		process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY = "brave-test-key";
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const webSearchFetch = vi.fn();
+		const clients = makeClients({
+			auditEntries,
+			webSearchFetch: webSearchFetch as unknown as typeof fetch,
+		});
+
+		const err = await clients
+			.webSearch(webSearch({ query: "look up my address is 123 Oak Street" }))
+			.catch((error: unknown) => error);
+
+		expect(err).toMatchObject({
+			name: "TelclaudeLiveMcpOutboundPrivateDataError",
+			code: "mcp_outbound_private_data_blocked",
+		});
+		expect(webSearchFetch).not.toHaveBeenCalled();
+		expect(String(err)).not.toContain("123 Oak Street");
+		expect(auditEntries).toEqual([]);
+	});
+
+	it("blocks explicit contact disclosure tc_web_search queries before calling the provider", async () => {
+		process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY = "brave-test-key";
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const webSearchFetch = vi.fn();
+		const clients = makeClients({
+			auditEntries,
+			webSearchFetch: webSearchFetch as unknown as typeof fetch,
+		});
+
+		const err = await clients
+			.webSearch(webSearch({ query: "look up my email is aviv.private@example.com" }))
+			.catch((error: unknown) => error);
+
+		expect(err).toMatchObject({
+			name: "TelclaudeLiveMcpOutboundPrivateDataError",
+			code: "mcp_outbound_private_data_blocked",
+		});
+		expect(webSearchFetch).not.toHaveBeenCalled();
+		expect(String(err)).not.toContain("aviv.private@example.com");
+		expect(auditEntries).toEqual([]);
+	});
+
 	it("consumes the web_fetch quota even when the network attempt fails (SSRF)", async () => {
 		const clients = makeClients({
 			webRateLimit: { maxPerHourPerUser: 1, maxPerDayPerUser: 1 },
@@ -416,7 +477,9 @@ function privateStamp(): TelclaudeMcpAuthorityStamp {
 	};
 }
 
-function webFetch(overrides: Partial<TelclaudeMcpWebFetchRequest> = {}): TelclaudeMcpWebFetchRequest {
+function webFetch(
+	overrides: Partial<TelclaudeMcpWebFetchRequest> = {},
+): TelclaudeMcpWebFetchRequest {
 	return {
 		...privateStamp(),
 		url: `${hostBaseUrl}/page`,

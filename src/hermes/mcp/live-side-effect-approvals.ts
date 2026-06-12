@@ -1,4 +1,5 @@
 import { type PendingApproval, peekPendingApprovalByNonce } from "../../security/approvals.js";
+import type { StepUpVerificationMetadata } from "../../security/totp-session.js";
 import {
 	type SideEffectHumanApprovalController,
 	TELCLAUDE_MCP_SIDE_EFFECT_HUMAN_APPROVAL_TOOL_KEY_PREFIX,
@@ -16,6 +17,7 @@ export type TelclaudeLiveMcpSideEffectApprovalBinding = {
 export type TelclaudeLiveMcpSideEffectApprovalConsumeInput = {
 	readonly nonce: string;
 	readonly chatId: number;
+	readonly stepUp?: StepUpVerificationMetadata;
 };
 
 export type TelclaudeLiveMcpSideEffectApprovalConsumeResult =
@@ -87,11 +89,15 @@ export async function consumeTelclaudeLiveMcpSideEffectApproval(
 			reason: "Hermes side-effect approval record is unavailable; re-request approval.",
 		};
 	}
+	// The Telegram /approve handler derives this only from trusted TOTP session
+	// state. If the proof is absent or stale, the controller leaves the pending
+	// approval intact and fails closed before minting side-effect tokens.
 	const consumed = await activeBinding.controller.consume({
 		record,
 		chatId: input.chatId,
 		approverActorId: telegramActorForChat(input.chatId),
 		approvalNonce,
+		stepUp: input.stepUp,
 	});
 	if (!consumed.ok) {
 		return { handled: true, ok: false, reason: consumed.reason };

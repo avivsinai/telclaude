@@ -340,7 +340,12 @@ describe("auto-reply executeAndReply", () => {
 			...baseCtx(),
 			config: {
 				...baseCtx().config,
-				hermes: { privateRuntime: { providerScopes: ["google", "bank"] } },
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["google", "bank"],
+						capabilityScopes: ["web.search", "web.fetch"],
+					},
+				},
 			},
 		};
 		await autoReplyTest.executeAndReply(ctx as never);
@@ -348,7 +353,10 @@ describe("auto-reply executeAndReply", () => {
 		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({
-				mcpAuthority: { providerScopes: ["bank", "google"] },
+				mcpAuthority: {
+					providerScopes: ["bank", "google"],
+					capabilityScopes: ["web.fetch", "web.search"],
+				},
 				systemPromptAppend: expect.stringContaining("tc_provider_read"),
 			}),
 		);
@@ -356,6 +364,7 @@ describe("auto-reply executeAndReply", () => {
 			systemPromptAppend?: string;
 		};
 		expect(options.systemPromptAppend).toContain("Granted provider scopes: bank, google");
+		expect(options.systemPromptAppend).toContain("Granted capability scopes: web.fetch, web.search");
 		expect(options.systemPromptAppend).toContain("Do not call provider hostnames");
 		expect(options.systemPromptAppend).toContain("supersedes any legacy external-provider");
 	});

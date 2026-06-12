@@ -169,15 +169,65 @@ export class TelclaudeLiveMcpOutboundSecretError extends Error {
 	}
 }
 
+export class TelclaudeLiveMcpOutboundPrivateDataError extends Error {
+	readonly code = "mcp_outbound_private_data_blocked";
+
+	constructor(field: string, reason: string) {
+		super(`outbound ${field} blocked: private data must not leave via web egress (${reason})`);
+		this.name = "TelclaudeLiveMcpOutboundPrivateDataError";
+	}
+}
+
 /**
- * Outbound egress preflight. Uses pattern-based secret detection (API keys,
- * tokens, JWTs across plain/base64/hex/url encodings) — NOT the raw-entropy
- * heuristic — so legitimate URLs carrying UUIDs or media ids do not
- * false-positive, while key-shaped material fails closed.
+ * Outbound egress preflight. Uses pattern-based secret detection plus a small
+ * high-confidence private-data denylist. This is not a DLP classifier; it is a
+ * fail-closed guard for obvious accidental exfiltration before public web
+ * fetch/search leaves the relay boundary.
  */
-function assertNoSecretInOutbound(value: string, field: string): void {
+function assertSafeWebEgress(value: string, field: string): void {
 	if (filterOutput(value).blocked) {
 		throw new TelclaudeLiveMcpOutboundSecretError(field);
+	}
+	const privateDataReason = privateDataEgressReason(value);
+	if (privateDataReason) {
+		throw new TelclaudeLiveMcpOutboundPrivateDataError(field, privateDataReason);
+	}
+}
+
+function privateDataEgressReason(value: string): string | undefined {
+	const decoded = decodeURIComponentSafe(value);
+	const normalized = decoded.replace(/\s+/g, " ").trim().toLowerCase();
+	if (!normalized) return undefined;
+	if (/\b\d{3}-\d{2}-\d{4}\b/.test(normalized)) return "ssn-like identifier";
+	if (
+		/\b(?:my|our|family|wife|husband|child|kid|son|daughter)\s+(?:home\s+)?address\s+(?:is|:)\s+\S/.test(
+			normalized,
+		)
+	) {
+		return "address disclosure phrase";
+	}
+	if (
+		/\b(?:my|our|family|wife|husband|child|kid|son|daughter)\s+(?:email|e-mail|phone|mobile|cell)\s+(?:is|:)\s+\S/.test(
+			normalized,
+		)
+	) {
+		return "contact disclosure phrase";
+	}
+	if (
+		/\b(?:my|our|family)\s+(?:passport|national id|identity number|bank account|iban|credit card)\s+(?:is|:)\s+\S/.test(
+			normalized,
+		)
+	) {
+		return "identity or financial disclosure phrase";
+	}
+	return undefined;
+}
+
+function decodeURIComponentSafe(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
 	}
 }
 
@@ -503,7 +553,7 @@ export function createTelclaudeLiveMcpRelayClients(
 			// Refuse to carry secret-shaped material outbound, then reserve the
 			// rate-limit slot so a failed network attempt (SSRF/content-type/
 			// timeout) still consumes quota rather than being freely repeatable.
-			assertNoSecretInOutbound(request.url, "url");
+			assertSafeWebEgress(request.url, "url");
 			consumeRateLimit("web_fetch", request.actorId);
 			const fetched = await fetchWebContent(request);
 			await auditFromRequest(request, "web.fetch", {
@@ -519,7 +569,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async webSearch(request: TelclaudeMcpWebSearchRequest) {
 			assertAuthorityMemoryBoundary(request);
 			enforceRateLimit("web_search", request.actorId, webRateLimit());
-			assertNoSecretInOutbound(request.query, "query");
+			assertSafeWebEgress(request.query, "query");
 			consumeRateLimit("web_search", request.actorId);
 			const found = await searchWeb(request.query, {
 				count: request.count,

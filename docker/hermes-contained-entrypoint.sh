@@ -43,6 +43,7 @@ TELCLAUDE_MCP_URL=${TELCLAUDE_HERMES_MCP_URL:-http://telclaude:8793/mcp}
 TELCLAUDE_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:-}
 SKILL_CATALOG_MOUNT=${TELCLAUDE_HERMES_SKILL_CATALOG_MOUNT:-/opt/data/telclaude-hermes-skill-catalog}
 CATALOG_SKILLS_DIR="${SKILL_CATALOG_MOUNT}/skills"
+PROFILE_ONLY=0
 
 # Relay-owned skill catalog (read-only mount). When present, every entry must
 # pass the same path-safety discipline as the curated allowlist; any entry with
@@ -98,17 +99,31 @@ if [ "${1:-}" = "validate-catalog-only" ]; then
 	exit 0
 fi
 
+if [ "${1:-}" = "provision-profile-only" ]; then
+	PROFILE_ONLY=1
+fi
+
 [ -d "$SOURCE_SKILLS_DIR" ] || die "source skills directory missing: $SOURCE_SKILLS_DIR"
 [ -f "$ALLOWLIST_PATH" ] || die "skill allowlist missing: $ALLOWLIST_PATH"
 
+allow_profile_only_tmp_path() {
+	target=$1
+	[ "$PROFILE_ONLY" = "1" ] || return 1
+	[ "${TELCLAUDE_HERMES_ENTRYPOINT_TEST_ALLOW_TMP_HOME:-}" = "1" ] || return 1
+	case "$target" in
+		/tmp/hermes-entrypoint-profile-*|/tmp/hermes-entrypoint-curated-*) return 0 ;;
+	esac
+	return 1
+}
+
 case "$HERMES_HOME" in
 	/home/hermes/*) ;;
-	*) die "refusing to manage HERMES_HOME outside /home/hermes: $HERMES_HOME" ;;
+	*) allow_profile_only_tmp_path "$HERMES_HOME" || die "refusing to manage HERMES_HOME outside /home/hermes: $HERMES_HOME" ;;
 esac
 
 case "$CURATED_SKILLS_DIR" in
 	/home/hermes/*) ;;
-	*) die "refusing to build curated skills outside /home/hermes: $CURATED_SKILLS_DIR" ;;
+	*) allow_profile_only_tmp_path "$CURATED_SKILLS_DIR" || die "refusing to build curated skills outside /home/hermes: $CURATED_SKILLS_DIR" ;;
 esac
 
 restore_owner_write_if_present "$CURATED_SKILLS_DIR"
@@ -229,6 +244,22 @@ while True:
 			sys.exit(0)
 		time.sleep(1)
 PY
+	}
+
+assert_generated_profile_omits_token() {
+	token=$1
+	label=$2
+	[ -n "$token" ] || return 0
+	for generated_file in \
+		"${HERMES_HOME}/config.yaml" \
+		"${HERMES_HOME}/auth.json" \
+		"${HERMES_HOME}/secret-manifest.json"
+	do
+		[ -f "$generated_file" ] || continue
+		if grep -F -- "$token" "$generated_file" >/dev/null 2>&1; then
+			die "generated HERMES_HOME file contains ${label}: $generated_file"
+		fi
+	done
 }
 
 if [ "$CODEX_PROVIDER" = "openai-codex" ]; then
@@ -274,7 +305,7 @@ mcp_servers:
     type: http
     url: ${TELCLAUDE_MCP_URL}
     headers:
-      Authorization: "Bearer ${TELCLAUDE_MCP_RELAY_TOKEN}"
+      Authorization: "Bearer \${TELCLAUDE_HERMES_MCP_RELAY_TOKEN}"
     enabled: true
     timeout: 120
     connect_timeout: 60
@@ -306,7 +337,9 @@ EOF
   "schemaVersion": 1,
   "rawCredentialPolicy": "relay-owned-only",
   "relayTokenBinding": "run-peer-bound",
-  "mcpTransportTokenBinding": "contained-peer-active-authority"
+  "mcpTransportTokenBinding": "runtime-env-reference",
+  "mcpTransportTokenLocation": "process-env:not-HERMES_HOME",
+  "remainingRuntimeTokenCustody": "openai-codex-auth-store-peer-bound-compat"
 }
 EOF
 	tmp_auth="${HERMES_HOME}/auth.json.tmp.$$"
@@ -353,7 +386,14 @@ EOF
 	else
 		chmod 600 "${HERMES_HOME}/config.yaml" "${HERMES_HOME}/secret-manifest.json" "${HERMES_HOME}/auth.json"
 	fi
-	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE TELCLAUDE_HERMES_MCP_RELAY_TOKEN TELCLAUDE_MCP_RELAY_TOKEN
+	assert_generated_profile_omits_token "$CODEX_RELAY_TOKEN" "OpenAI Codex proxy root token"
+	assert_generated_profile_omits_token "$TELCLAUDE_MCP_RELAY_TOKEN" "Hermes MCP relay transport token"
+	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE TELCLAUDE_MCP_RELAY_TOKEN
+
+	if [ "$PROFILE_ONLY" = "1" ]; then
+		printf 'telclaude hermes contained entrypoint: profile provisioned at %s\n' "$HERMES_HOME"
+		exit 0
+	fi
 
 	wait_for_telclaude_mcp_relay telclaude 8793 "${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}"
 fi

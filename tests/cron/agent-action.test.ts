@@ -569,7 +569,12 @@ describe("scheduled agent cron action", () => {
 			},
 			{
 				profiles: [{ id: "engineer", label: "Engineer" }],
-				hermes: { privateRuntime: { providerScopes: ["google"] } },
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["google"],
+						capabilityScopes: ["web.search"],
+					},
+				},
 				telegram: { botToken: "token" },
 				cron: { timeoutSeconds: 30 },
 				security: {},
@@ -592,7 +597,7 @@ describe("scheduled agent cron action", () => {
 				chatId: 123,
 				threadId: 7,
 				userId: "alice",
-				mcpAuthority: { providerScopes: ["google"] },
+				mcpAuthority: { providerScopes: ["google"], capabilityScopes: ["web.search"] },
 				systemPromptAppend: expect.stringContaining("tc_provider_read"),
 			}),
 		);

@@ -79,6 +79,8 @@ services:
       - HERMES_INFERENCE_PROVIDER=openai-codex
       - HERMES_INFERENCE_MODEL=${TELCLAUDE_HERMES_INFERENCE_MODEL:-gpt-5.5}
       - HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy
+      # Compatibility bootstrap only: the entrypoint leak-scans generated
+      # HERMES_HOME files and must not persist these startup secret values there.
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_HERMES_MCP_URL=http://telclaude:8793/mcp
       - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}
@@ -147,6 +149,8 @@ services:
       - HERMES_INFERENCE_PROVIDER=openai-codex
       - HERMES_INFERENCE_MODEL=${TELCLAUDE_HERMES_SOCIAL_INFERENCE_MODEL:-gpt-5.5}
       - HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy
+      # Compatibility bootstrap only: the entrypoint leak-scans generated
+      # HERMES_HOME files and must not persist these startup secret values there.
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_HERMES_MCP_URL=http://telclaude:8793/mcp
       - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}

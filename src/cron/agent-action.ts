@@ -193,7 +193,10 @@ export async function executeScheduledAgentPromptAction(
 		query: job.action.prompt,
 		includeRecentHistory: true,
 	});
-	const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(cfg);
+	const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
+		cfg,
+		activeProfile.profile,
+	);
 	const systemPromptAppend = [
 		chatContext,
 		scheduleContext,
@@ -223,6 +226,12 @@ export async function executeScheduledAgentPromptAction(
 		compiledMemoryMd: memoryBundle.compiledMemoryMd,
 		mcpAuthority: {
 			providerScopes: hermesProviderContext.providerScopes,
+			...(hermesProviderContext.capabilityScopes.length
+				? { capabilityScopes: hermesProviderContext.capabilityScopes }
+				: {}),
+			...(hermesProviderContext.outboundChannels.length
+				? { outboundChannels: hermesProviderContext.outboundChannels }
+				: {}),
 		},
 	});
 

@@ -73,9 +73,12 @@ describe("Hermes contained profile provisioning", () => {
 		expect(script).toContain("  openai_runtime: auto");
 		expect(script).toContain("skills:");
 		expect(script).toContain("  creation_nudge_interval: 0");
+		expect(script).toContain('Authorization: "Bearer \\${TELCLAUDE_HERMES_MCP_RELAY_TOKEN}"');
+		expect(script).not.toContain('Authorization: "Bearer ${TELCLAUDE_MCP_RELAY_TOKEN}"');
 		expect(script).toContain(`cat > "\${HERMES_HOME}/secret-manifest.json" <<'EOF'`);
 		expect(script).toContain('"rawCredentialPolicy": "relay-owned-only"');
 		expect(script).toContain('"relayTokenBinding": "run-peer-bound"');
+		expect(script).toContain('"mcpTransportTokenLocation": "process-env:not-HERMES_HOME"');
 		expect(script).toContain(`mv "$tmp_auth" "\${HERMES_HOME}/auth.json"`);
 		expect(script).toContain(`chown "0:$HERMES_RUNTIME_GID" "$HERMES_HOME"`);
 		expect(script).toContain(`chmod 1770 "$HERMES_HOME"`);

@@ -45,7 +45,16 @@ describe("operator profile resolution", () => {
 		setChatActiveProfileId(123, "engineer", 1_234);
 
 		const resolved = resolveChatProfile(123, {
-			profiles: [{ id: "engineer", label: "Engineer", allowedSkills: ["telegram-reply"] }],
+			profiles: [
+				{
+					id: "engineer",
+					label: "Engineer",
+					allowedSkills: ["telegram-reply"],
+					providerScopes: ["google"],
+					capabilityScopes: ["web.search"],
+					outboundChannels: ["whatsapp"],
+				},
+			],
 		} as never);
 
 		expect(resolved.profile).toMatchObject({
@@ -53,6 +62,9 @@ describe("operator profile resolution", () => {
 			label: "Engineer",
 			implicit: false,
 			allowedSkills: ["telegram-reply"],
+			providerScopes: ["google"],
+			capabilityScopes: ["web.search"],
+			outboundChannels: ["whatsapp"],
 		});
 	});
 

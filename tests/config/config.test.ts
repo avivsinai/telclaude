@@ -57,7 +57,12 @@ describe("config defaults", () => {
 		const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
 		const removedRuntimeKey = ["s", "d", "k"].join("");
 		expect(Object.hasOwn(cfg, removedRuntimeKey)).toBe(false);
-		expect(cfg.hermes).toEqual({ privateRuntime: { providerScopes: [] } });
+		expect(cfg.hermes).toEqual({
+			privateRuntime: {
+				providerScopes: [],
+				capabilityScopes: ["web.fetch", "web.search", "media.image", "media.tts", "skills.request"],
+			},
+		});
 		expect(cfg.profiles).toEqual([]);
 		expect(cfg.webhooks).toMatchObject({
 			enabled: false,
@@ -85,9 +90,16 @@ describe("config defaults", () => {
 		});
 		expect(cfg.profiles).toEqual([]);
 		expect(cfg.hermes.privateRuntime.providerScopes).toEqual([]);
+		expect(cfg.hermes.privateRuntime.capabilityScopes).toEqual([
+			"web.fetch",
+			"web.search",
+			"media.image",
+			"media.tts",
+			"skills.request",
+		]);
 	});
 
-	it("accepts explicit Hermes private-runtime provider scopes", () => {
+	it("accepts explicit Hermes private-runtime provider and capability scopes", () => {
 		setConfigPath(configPath());
 		fs.writeFileSync(
 			configPath(),
@@ -95,6 +107,7 @@ describe("config defaults", () => {
 				hermes: {
 					privateRuntime: {
 						providerScopes: ["google", "bank"],
+						capabilityScopes: ["web.search", "web.fetch"],
 					},
 				},
 			}),
@@ -102,6 +115,7 @@ describe("config defaults", () => {
 
 		const cfg = loadConfig();
 		expect(cfg.hermes.privateRuntime.providerScopes).toEqual(["google", "bank"]);
+		expect(cfg.hermes.privateRuntime.capabilityScopes).toEqual(["web.search", "web.fetch"]);
 	});
 
 	it("rejects non-canonical Hermes provider scope ids", () => {
@@ -120,6 +134,22 @@ describe("config defaults", () => {
 		expect(() => loadConfig()).toThrow(/provider scope/);
 	});
 
+	it("rejects unknown Hermes capability scopes", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				hermes: {
+					privateRuntime: {
+						capabilityScopes: ["web.post"],
+					},
+				},
+			}),
+		);
+
+		expect(() => loadConfig()).toThrow();
+	});
+
 	it("accepts valid operator profiles", () => {
 		setConfigPath(configPath());
 		fs.writeFileSync(
@@ -132,6 +162,9 @@ describe("config defaults", () => {
 						description: "Code-heavy private operator profile",
 						soulPath: "docs/soul.md",
 						allowedSkills: ["telegram-reply"],
+						providerScopes: ["google"],
+						capabilityScopes: ["web.search"],
+						outboundChannels: ["telegram"],
 						defaultModel: {
 							providerId: "anthropic",
 							modelId: "claude-sonnet-4-5-20250929",
@@ -146,6 +179,9 @@ describe("config defaults", () => {
 			id: "engineer",
 			label: "Engineer",
 			allowedSkills: ["telegram-reply"],
+			providerScopes: ["google"],
+			capabilityScopes: ["web.search"],
+			outboundChannels: ["telegram"],
 		});
 	});
 

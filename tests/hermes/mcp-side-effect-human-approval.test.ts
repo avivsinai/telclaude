@@ -23,6 +23,7 @@ import {
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
 import { getPendingApprovalsForChat } from "../../src/security/approvals.js";
+import type { StepUpVerificationMetadata } from "../../src/security/totp-session.js";
 import { closeDb, getDb, resetDatabase } from "../../src/storage/db.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
@@ -102,6 +103,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 			chatId: 111,
 			approverActorId: record.approverActorId,
 			approvalNonce: request.nonce.toUpperCase(),
+			stepUp: freshStepUp(record.approverActorId),
 		});
 
 		expect(consumed).toMatchObject({
@@ -137,6 +139,107 @@ describe("Hermes MCP side-effect human approvals", () => {
 		});
 	});
 
+	it("requires fresh approver-bound step-up metadata before minting provider approval tokens", async () => {
+		const record = prepareProviderRecord();
+		const controller = createController();
+		const request = await controller.request({ record, chatId: 111 });
+		if (!request.ok) throw new Error(request.reason);
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "fresh_step_up_required",
+			reason: "fresh TOTP step-up verification is required before minting approval tokens",
+			retryable: true,
+		});
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		expect(vault.signCalls).toHaveLength(0);
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
+			}),
+		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
+	});
+
+	it("rejects stale or wrong-actor provider step-up metadata before token signing", async () => {
+		const record = prepareProviderRecord();
+		const controller = createController({ stepUpMaxAgeMs: 30_000 });
+		const request = await controller.request({ record, chatId: 111 });
+		if (!request.ok) throw new Error(request.reason);
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+				stepUp: freshStepUp("telegram:someone-else"),
+			}),
+		).resolves.toMatchObject({ ok: false, code: "fresh_step_up_actor_mismatch" });
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId, { verifiedAtMs: 1 }),
+			}),
+		).resolves.toMatchObject({ ok: false, code: "fresh_step_up_stale" });
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		expect(vault.signCalls).toHaveLength(0);
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
+			}),
+		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
+	});
+
+	it("requires fresh step-up metadata before minting high-risk outbound approval tokens", async () => {
+		const record = prepareOutboundRecord({ domain: "social", profileId: "social" });
+		const controller = createController();
+		const request = await controller.request({ record, chatId: 111 });
+		if (!request.ok) throw new Error(request.reason);
+		expect(request).not.toHaveProperty("autoGranted");
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+			}),
+		).resolves.toMatchObject({ ok: false, code: "fresh_step_up_required" });
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		expect(vault.signCalls).toHaveLength(0);
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
+			}),
+		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
+		expect(vault.signCalls).toHaveLength(1);
+	});
+
 	it("rejects wrong approver before consuming the legitimate pending approval", async () => {
 		const record = prepareProviderRecord();
 		const controller = createController();
@@ -160,6 +263,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 				chatId: 111,
 				approverActorId: record.approverActorId,
 				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
 			}),
 		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
 	});
@@ -244,6 +348,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 				chatId: 111,
 				approverActorId: record.approverActorId,
 				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
 			}),
 		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
 	});
@@ -261,6 +366,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 				chatId: 111,
 				approverActorId: record.approverActorId,
 				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
 			}),
 		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
 
@@ -305,6 +411,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 			consumeTelclaudeLiveMcpSideEffectApproval({
 				nonce: approval.nonce.toUpperCase(),
 				chatId: 111,
+				stepUp: freshStepUp("telegram:111"),
 			}),
 		).resolves.toMatchObject({
 			handled: true,
@@ -329,6 +436,34 @@ describe("Hermes MCP side-effect human approvals", () => {
 			ok: false,
 			code: "approval_token_unavailable",
 		});
+	});
+
+	it("fails live provider approval closed until the /approve path supplies fresh step-up metadata", async () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			nowMs: () => 100_000,
+			makeRef: () => "effect-live-step-up-required",
+			defaultTtlMs: 300_000,
+			verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+		});
+		const record = ledger.prepare(providerPrepareInput({ approverActorId: "telegram:111" }));
+		const controller = createController();
+		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
+		await requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		const [approval] = getPendingApprovalsForChat(111);
+		if (!approval) throw new Error("missing side-effect approval row");
+
+		await expect(
+			consumeTelclaudeLiveMcpSideEffectApproval({
+				nonce: approval.nonce,
+				chatId: 111,
+			}),
+		).resolves.toEqual({
+			handled: true,
+			ok: false,
+			reason: "fresh TOTP step-up verification is required before minting approval tokens",
+		});
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		expect(vault.signCalls).toHaveLength(0);
 	});
 
 	it("handles side-effect approvals without falling through to generic approve when live binding is unavailable", async () => {
@@ -424,6 +559,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 				chatId: 111,
 				approverActorId: record.approverActorId,
 				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -588,6 +724,19 @@ function prepareOutboundRecord(
 	const record = ledger.prepare(outboundPrepareInput(overrides));
 	if (record.kind !== "outbound") throw new Error("expected outbound record");
 	return record;
+}
+
+function freshStepUp(
+	actorId: string,
+	overrides: Partial<StepUpVerificationMetadata> = {},
+): StepUpVerificationMetadata {
+	return {
+		method: "totp",
+		actorId,
+		verifiedAtMs: 99_000,
+		expiresAtMs: 105_000,
+		...overrides,
+	};
 }
 
 function providerPrepareInput(

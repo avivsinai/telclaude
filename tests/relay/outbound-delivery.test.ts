@@ -465,6 +465,99 @@ describe("outbound delivery dispatcher", () => {
 		]);
 	});
 
+	it("fails closed before WhatsApp sidecar I/O when prepared destination carries raw credentials", async () => {
+		let sidecarCalls = 0;
+		const failureContexts: unknown[] = [];
+		const failures: unknown[] = [];
+		const rawBridgeCredential = "raw-whatsapp-bridge-credential";
+		const connector = createWhatsAppEdgeChannelConnector({
+			sendToSidecar: async () => {
+				sidecarCalls += 1;
+				return { ok: true, platformMessageId: "wa-direct-credential-leak" };
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (failureContext, failure) => {
+				failureContexts.push(failureContext);
+				failures.push(failure);
+			},
+		});
+		const validPrepared = preparedOutbound({
+			channel: "whatsapp",
+			resolvedDestination: {
+				kind: "address",
+				addressRef: "whatsapp:+15551234567",
+				conversationId: "relay-conversation-token",
+			},
+		});
+		const credentialedPrepared = {
+			...validPrepared,
+			resolvedDestination: {
+				...validPrepared.resolvedDestination,
+				transportCredentials: { sessionKey: rawBridgeCredential },
+			},
+		} as unknown as PreparedOutbound;
+
+		const receipt = await dispatch(credentialedPrepared);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(JSON.stringify(failureContexts)).not.toContain(rawBridgeCredential);
+		expect(JSON.stringify(failures)).not.toContain(rawBridgeCredential);
+		expect(failureContexts).toEqual([
+			expect.objectContaining({
+				kind: "invalid_prepared_outbound",
+				channel: "whatsapp",
+				outboundRef: "invalid-prepared-outbound",
+				idempotencyKey: "invalid-prepared-outbound",
+				maxAttempts: 3,
+			}),
+		]);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "outbound_prepared_invalid",
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("returns a failed receipt instead of throwing when invalid prepared payload lacks retry policy", async () => {
+		const failureContexts: unknown[] = [];
+		const validPrepared = preparedOutbound({ channel: "whatsapp" });
+		const malformedPrepared = {
+			...validPrepared,
+			retryPolicy: undefined,
+		} as unknown as PreparedOutbound;
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createDefaultEdgeOutboundExecutorRegistry({ whatsapp: {} }),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (failureContext) => failureContexts.push(failureContext),
+		});
+
+		await expect(dispatch(malformedPrepared)).resolves.toMatchObject({
+			outboundRef: "invalid-prepared-outbound",
+			deliveryStatus: "failed",
+			retry: {
+				attempt: 1,
+				maxAttempts: 1,
+				idempotencyKey: "invalid-prepared-outbound",
+			},
+		});
+		expect(failureContexts).toEqual([
+			expect.objectContaining({
+				kind: "invalid_prepared_outbound",
+				channel: "whatsapp",
+				maxAttempts: 1,
+			}),
+		]);
+	});
+
 	it("generates fresh bridge-session headers and keeps them out of the sidecar body", async () => {
 		const seen: Array<{
 			readonly url: string;

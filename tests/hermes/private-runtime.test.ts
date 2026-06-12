@@ -224,6 +224,13 @@ describe("Hermes private runtime seam", () => {
 					mcpAuthority: {
 						providerScopes: ["calendar"],
 						outboundChannels: ["whatsapp"],
+						capabilityScopes: [
+							"web.fetch",
+							"web.search",
+							"media.image",
+							"media.tts",
+							"skills.request",
+						],
 						turnConversationRef,
 						endpointId: "endpoint-private",
 						networkNamespace: "netns-private",
@@ -260,6 +267,60 @@ describe("Hermes private runtime seam", () => {
 			ok: false,
 			code: "mcp_authority_revoked",
 		});
+	});
+
+	it("does not grant capability tools by default for private authorities", async () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const sessions = new HermesSessionMap(() => "tc-session-1");
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* (request) {
+				expect(
+					registry.resolve({
+						handle: request.mcpAuthority?.handle ?? "",
+						connection: request.mcpAuthority?.connection ?? {
+							sessionKey: "",
+							profileId: "",
+							endpointId: "",
+							networkNamespace: "",
+						},
+						nowMs: 1_001,
+					}),
+				).toMatchObject({
+					ok: true,
+					authority: {
+						profileId: "ops",
+						providerScopes: ["calendar"],
+					},
+				});
+				const resolved = registry.resolve({
+					handle: request.mcpAuthority?.handle ?? "",
+					connection: request.mcpAuthority?.connection ?? {
+						sessionKey: "",
+						profileId: "",
+						endpointId: "",
+						networkNamespace: "",
+					},
+					nowMs: 1_001,
+				});
+				if (!resolved.ok) throw new Error(resolved.code);
+				expect(resolved.authority).not.toHaveProperty("capabilityScopes");
+				yield { type: "done", response: "ok" };
+			},
+		};
+
+		await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions,
+				mcpAuthorityRegistry: registry,
+				request: baseRequest({
+					mcpAuthority: {
+						providerScopes: ["calendar"],
+					},
+				}),
+				now: () => 1_000,
+			}),
+		);
 	});
 
 	it("does not mint default MCP authority when the caller explicitly disables it", async () => {

@@ -81,7 +81,13 @@ import { createRateLimiter, type RateLimiter } from "../security/rate-limit.js";
 import { createStreamingRedactor } from "../security/streaming-redactor.js";
 import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import { checkTOTPAuthGate } from "../security/totp-auth-gate.js";
-import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/totp-session.js";
+import {
+	createTOTPSession,
+	getTOTPSessionForChat,
+	invalidateTOTPSessionForChat,
+	type StepUpVerificationMetadata,
+	stepUpMetadataForTOTPSession,
+} from "../security/totp-session.js";
 import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
@@ -1520,7 +1526,10 @@ async function executeWithSession(
 			includeProjectSoul: true,
 			cwd: process.cwd(),
 		});
-		const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(ctx.config);
+		const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
+			ctx.config,
+			activeProfile.profile,
+		);
 
 		// Build lightweight system info for agent awareness
 		const systemInfoContext = buildSystemInfoContext(msg.chatId);
@@ -1579,6 +1588,12 @@ async function executeWithSession(
 			compiledMemoryMd: memoryBundle.compiledMemoryMd,
 			mcpAuthority: {
 				providerScopes: hermesProviderContext.providerScopes,
+				...(hermesProviderContext.capabilityScopes.length
+					? { capabilityScopes: hermesProviderContext.capabilityScopes }
+					: {}),
+				...(hermesProviderContext.outboundChannels.length
+					? { outboundChannels: hermesProviderContext.outboundChannels }
+					: {}),
 				...(turnConversationRef ? { turnConversationRef } : {}),
 			},
 		});
@@ -2750,6 +2765,7 @@ async function handleApproveCommand(
 	const sideEffectApproval = await consumeTelclaudeLiveMcpSideEffectApproval({
 		nonce,
 		chatId: msg.chatId,
+		stepUp: sideEffectApprovalStepUpForChat(msg.chatId),
 	});
 	if (sideEffectApproval.handled) {
 		if (sideEffectApproval.ok) {
@@ -2841,6 +2857,16 @@ async function handleApproveCommand(
 		recentlySent,
 		mcpConversationStore,
 	);
+}
+
+function sideEffectApprovalStepUpForChat(chatId: number): StepUpVerificationMetadata | undefined {
+	const session = getTOTPSessionForChat(chatId);
+	if (!session) return undefined;
+	return stepUpMetadataForTOTPSession({
+		actorId: `telegram:${chatId}`,
+		session,
+		sessionId: `totp-session:${session.localUserId}`,
+	});
 }
 
 async function handleDenyCommand(
@@ -3057,7 +3083,10 @@ async function executePlanPhase(
 				includeProjectSoul: true,
 				cwd: process.cwd(),
 			});
-			const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(cfg);
+			const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
+				cfg,
+				activeProfile.profile,
+			);
 			const planningPromptAppend = [
 				PLANNING_SYSTEM_PROMPT,
 				buildProfileContext(activeProfile),
@@ -3101,6 +3130,12 @@ async function executePlanPhase(
 				compiledMemoryMd: memoryBundle.compiledMemoryMd,
 				mcpAuthority: {
 					providerScopes: hermesProviderContext.providerScopes,
+					...(hermesProviderContext.capabilityScopes.length
+						? { capabilityScopes: hermesProviderContext.capabilityScopes }
+						: {}),
+					...(hermesProviderContext.outboundChannels.length
+						? { outboundChannels: hermesProviderContext.outboundChannels }
+						: {}),
 					...(planTurnConversationRef ? { turnConversationRef: planTurnConversationRef } : {}),
 				},
 			});

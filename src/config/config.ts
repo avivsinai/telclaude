@@ -130,9 +130,26 @@ const ProviderScopeIdSchema = z
 	.max(64)
 	.regex(/^[a-zA-Z0-9_-]+$/, "provider scope must be a canonical provider id");
 
+const HermesCapabilityScopeSchema = z.enum([
+	"web.fetch",
+	"web.search",
+	"media.image",
+	"media.tts",
+	"skills.request",
+]);
+
+const HERMES_PRIVATE_RUNTIME_DEFAULT_CAPABILITY_SCOPES = [
+	"web.fetch",
+	"web.search",
+	"media.image",
+	"media.tts",
+	"skills.request",
+] satisfies z.infer<typeof HermesCapabilityScopeSchema>[];
+
 const HERMES_DEFAULTS = {
 	privateRuntime: {
 		providerScopes: [],
+		capabilityScopes: HERMES_PRIVATE_RUNTIME_DEFAULT_CAPABILITY_SCOPES,
 	},
 };
 
@@ -140,6 +157,9 @@ const HermesConfigSchema = z.object({
 	privateRuntime: z
 		.object({
 			providerScopes: z.array(ProviderScopeIdSchema).default([]),
+			capabilityScopes: z
+				.array(HermesCapabilityScopeSchema)
+				.default(HERMES_DEFAULTS.privateRuntime.capabilityScopes),
 		})
 		.default(HERMES_DEFAULTS.privateRuntime),
 });
@@ -155,6 +175,9 @@ const OperatorProfileConfigSchema = z.object({
 	description: z.string().max(500).optional(),
 	soulPath: z.string().min(1).optional(),
 	allowedSkills: z.array(z.string().min(1).max(128)).optional(),
+	providerScopes: z.array(ProviderScopeIdSchema).optional(),
+	capabilityScopes: z.array(HermesCapabilityScopeSchema).optional(),
+	outboundChannels: z.array(z.string().min(1).max(64)).optional(),
 	defaultModel: z
 		.object({
 			providerId: z.string().min(1).max(64),
@@ -853,6 +876,7 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			hermes: {
 				privateRuntime: {
 					providerScopes: [],
+					capabilityScopes: [...HERMES_DEFAULTS.privateRuntime.capabilityScopes],
 				},
 			},
 			inbound: {

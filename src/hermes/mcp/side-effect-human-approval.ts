@@ -8,6 +8,11 @@ import {
 	peekPendingApprovalByNonce,
 } from "../../security/approvals.js";
 import {
+	freshTotpStepUpVerification,
+	type StepUpVerification,
+	type StepUpVerificationMetadata,
+} from "../../security/totp-session.js";
+import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectRecord,
@@ -24,6 +29,7 @@ export type SideEffectHumanApprovalCreateInput = {
 	readonly chatId: number;
 	readonly username?: string;
 	readonly ttlMs?: number;
+	readonly stepUp?: StepUpVerificationMetadata;
 };
 
 export type SideEffectHumanApprovalConsumeInput = {
@@ -31,6 +37,7 @@ export type SideEffectHumanApprovalConsumeInput = {
 	readonly chatId: number;
 	readonly approverActorId: string;
 	readonly approvalNonce: string;
+	readonly stepUp?: StepUpVerificationMetadata;
 };
 
 export type SideEffectHumanApprovalTokenRequest = {
@@ -117,6 +124,8 @@ export type SideEffectHumanApprovalDependencies = {
 		record: Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }>,
 	) => string;
 	readonly autoGrant?: SideEffectHumanApprovalAutoGrantOptions;
+	readonly stepUpVerification?: StepUpVerification;
+	readonly stepUpMaxAgeMs?: number;
 };
 
 export type SideEffectHumanApprovalAutoGrantOptions = {
@@ -140,6 +149,7 @@ export function createSideEffectHumanApprovalController(
 	const consumeApprovalMatching =
 		dependencies.consumeApprovalMatching ?? consumeSecurityApprovalMatching;
 	const nowMs = dependencies.nowMs ?? Date.now;
+	const stepUpVerification = dependencies.stepUpVerification ?? freshTotpStepUpVerification;
 	const serverSideApprovals = new Map<string, StoredServerSideApproval>();
 
 	return {
@@ -153,6 +163,8 @@ export function createSideEffectHumanApprovalController(
 				dependencies,
 				authorizationNowMs,
 				serverSideApprovals,
+				input.stepUp,
+				stepUpVerification,
 			);
 			if (autoGrant) return autoGrant;
 			const ttlMs = normalizeTtlMs(input.ttlMs ?? DEFAULT_HUMAN_APPROVAL_TTL_MS);
@@ -211,6 +223,14 @@ export function createSideEffectHumanApprovalController(
 				MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS,
 				Math.max(1, pending.data.expiresAt - authorizationNowMs),
 			);
+			const stepUpFailure = await approvalTokenMintStepUpFailure(
+				input.record,
+				input.stepUp,
+				dependencies,
+				stepUpVerification,
+				authorizationNowMs,
+			);
+			if (stepUpFailure) return stepUpFailure;
 			let minted: SideEffectHumanApprovalTokenResult | string;
 			try {
 				minted = await dependencies.mintApprovalToken({
@@ -305,11 +325,25 @@ async function maybeAutoGrantSideEffect(
 	dependencies: SideEffectHumanApprovalDependencies,
 	nowMs: number,
 	serverSideApprovals: Map<string, StoredServerSideApproval>,
+	stepUp: StepUpVerificationMetadata | undefined,
+	stepUpVerification: StepUpVerification,
 ): Promise<SideEffectHumanApprovalResult | null> {
 	if (dependencies.autoGrant?.enabled !== true) return null;
 	if (!autoGrantEligible(record)) return null;
 	const ttlMs = normalizeAutoGrantTtlMs(dependencies.autoGrant.ttlMs);
 	const approvalId = autoGrantJtiFor(record);
+	// This is currently unreachable because autoGrantEligible is limited to
+	// low-risk private reply records. If that eligibility widens later, stale or
+	// missing step-up proof must fail closed here rather than silently creating
+	// a human-approval row from an auto-grant path.
+	const stepUpFailure = await approvalTokenMintStepUpFailure(
+		record,
+		stepUp,
+		dependencies,
+		stepUpVerification,
+		nowMs,
+	);
+	if (stepUpFailure) return stepUpFailure;
 	let minted: SideEffectHumanApprovalTokenResult | string;
 	try {
 		minted = (await dependencies.mintApprovalToken({
@@ -360,6 +394,37 @@ function autoGrantEligible(record: TelclaudeMcpSideEffectRecord): boolean {
 
 function autoGrantJtiFor(record: TelclaudeMcpSideEffectRecord): string {
 	return `auto-${record.ref}`;
+}
+
+async function approvalTokenMintStepUpFailure(
+	record: TelclaudeMcpSideEffectRecord,
+	stepUp: StepUpVerificationMetadata | undefined,
+	dependencies: Pick<SideEffectHumanApprovalDependencies, "stepUpMaxAgeMs">,
+	stepUpVerification: StepUpVerification,
+	nowMs: number,
+): Promise<SideEffectHumanApprovalFailure | null> {
+	if (!sideEffectRequiresFreshStepUp(record)) return null;
+	try {
+		const verified = await stepUpVerification.verify({
+			metadata: stepUp,
+			requiredActorId: record.approverActorId,
+			nowMs,
+			maxAgeMs: dependencies.stepUpMaxAgeMs,
+		});
+		if (verified.ok) return null;
+		return failure(verified.code, verified.reason, verified.retryable);
+	} catch (error) {
+		return failure(
+			"fresh_step_up_verification_failed",
+			error instanceof Error ? error.message : String(error),
+			true,
+		);
+	}
+}
+
+function sideEffectRequiresFreshStepUp(record: TelclaudeMcpSideEffectRecord): boolean {
+	if (record.kind === "provider") return true;
+	return !autoGrantEligible(record);
 }
 
 function prepareApprovalBinding(

@@ -9,6 +9,9 @@ export type EffectiveOperatorProfile = {
 	description?: string;
 	soulPath?: string;
 	allowedSkills?: string[];
+	providerScopes?: string[];
+	capabilityScopes?: OperatorProfileConfig["capabilityScopes"];
+	outboundChannels?: string[];
 	defaultModel?: OperatorProfileConfig["defaultModel"];
 	implicit: boolean;
 };
@@ -34,6 +37,9 @@ export function listOperatorProfiles(cfg: TelclaudeConfig): EffectiveOperatorPro
 		...(cfg.profiles ?? []).map((profile) => ({
 			...profile,
 			allowedSkills: profile.allowedSkills ? [...profile.allowedSkills] : undefined,
+			providerScopes: profile.providerScopes ? [...profile.providerScopes] : undefined,
+			capabilityScopes: profile.capabilityScopes ? [...profile.capabilityScopes] : undefined,
+			outboundChannels: profile.outboundChannels ? [...profile.outboundChannels] : undefined,
 			implicit: false,
 		})),
 	];
@@ -51,6 +57,9 @@ export function getOperatorProfile(
 	return {
 		...configured,
 		allowedSkills: configured.allowedSkills ? [...configured.allowedSkills] : undefined,
+		providerScopes: configured.providerScopes ? [...configured.providerScopes] : undefined,
+		capabilityScopes: configured.capabilityScopes ? [...configured.capabilityScopes] : undefined,
+		outboundChannels: configured.outboundChannels ? [...configured.outboundChannels] : undefined,
 		implicit: false,
 	};
 }

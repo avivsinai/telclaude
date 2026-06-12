@@ -8,8 +8,10 @@
  * a configurable duration (default: 1 week). During this time,
  * subsequent messages don't require TOTP re-verification.
  *
- * NOTE: TOTP is used as an identity verification gate, not for approvals.
- * Approvals use nonce-based confirmation only (intent verification).
+ * Long-lived TOTP sessions are used as an identity verification gate.
+ * High-risk side-effect approvals can also require a fresh per-write step-up
+ * proof before minting approval tokens; that proof is explicit metadata, not
+ * implied by the remembered session alone.
  */
 
 import { getChildLogger } from "../logging.js";
@@ -20,6 +22,7 @@ const logger = getChildLogger({ module: "totp-session" });
 
 // Default TTL: 1 week (in milliseconds)
 const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_STEP_UP_MAX_AGE_MS = 2 * 60 * 1000;
 
 /**
  * A TOTP verification session.
@@ -28,6 +31,47 @@ export type TOTPSession = {
 	localUserId: string;
 	verifiedAt: number;
 	expiresAt: number;
+};
+
+export type StepUpVerificationMetadata = {
+	/**
+	 * Construct only from trusted relay/TOTP verification state, never from model
+	 * output or client-supplied request fields.
+	 */
+	readonly method: "totp";
+	readonly actorId: string;
+	readonly verifiedAtMs: number;
+	readonly expiresAtMs?: number;
+	readonly sessionId?: string;
+};
+
+export type StepUpVerificationInput = {
+	readonly metadata?: StepUpVerificationMetadata;
+	readonly requiredActorId: string;
+	readonly nowMs?: number;
+	readonly maxAgeMs?: number;
+};
+
+export type StepUpVerificationResult =
+	| {
+			readonly ok: true;
+			readonly metadata: StepUpVerificationMetadata;
+	  }
+	| {
+			readonly ok: false;
+			readonly code: string;
+			readonly reason: string;
+			readonly retryable: boolean;
+	  };
+
+export type StepUpVerification = {
+	verify(
+		input: StepUpVerificationInput,
+	): StepUpVerificationResult | Promise<StepUpVerificationResult>;
+};
+
+export const freshTotpStepUpVerification: StepUpVerification = {
+	verify: verifyFreshStepUp,
 };
 
 /**
@@ -64,6 +108,78 @@ export function createTOTPSession(localUserId: string, ttlMs?: number): TOTPSess
 		verifiedAt: now,
 		expiresAt,
 	};
+}
+
+export function stepUpMetadataForTOTPSession(input: {
+	readonly actorId: string;
+	readonly session: TOTPSession;
+	readonly sessionId?: string;
+}): StepUpVerificationMetadata {
+	return {
+		method: "totp",
+		actorId: requiredStepUpString(input.actorId, "actorId"),
+		verifiedAtMs: input.session.verifiedAt,
+		expiresAtMs: input.session.expiresAt,
+		...(input.sessionId ? { sessionId: requiredStepUpString(input.sessionId, "sessionId") } : {}),
+	};
+}
+
+export function verifyFreshStepUp(input: StepUpVerificationInput): StepUpVerificationResult {
+	const metadata = input.metadata;
+	if (!metadata) {
+		return stepUpFailure(
+			"fresh_step_up_required",
+			"fresh TOTP step-up verification is required before minting approval tokens",
+			true,
+		);
+	}
+	const nowMs = normalizeStepUpTimestamp(input.nowMs ?? Date.now(), "nowMs");
+	const maxAgeMs = normalizeStepUpDuration(
+		input.maxAgeMs ?? DEFAULT_STEP_UP_MAX_AGE_MS,
+		"maxAgeMs",
+	);
+	const requiredActorId = requiredStepUpString(input.requiredActorId, "requiredActorId");
+	const actorId = requiredStepUpString(metadata.actorId, "metadata.actorId");
+	if (actorId !== requiredActorId) {
+		return stepUpFailure(
+			"fresh_step_up_actor_mismatch",
+			"fresh TOTP step-up actor does not match side-effect approver",
+			false,
+		);
+	}
+	if (metadata.method !== "totp") {
+		return stepUpFailure(
+			"fresh_step_up_invalid",
+			"fresh step-up verification method is not supported",
+			false,
+		);
+	}
+	const verifiedAtMs = normalizeStepUpTimestamp(metadata.verifiedAtMs, "metadata.verifiedAtMs");
+	if (verifiedAtMs > nowMs) {
+		return stepUpFailure(
+			"fresh_step_up_invalid",
+			"fresh TOTP step-up verification time is in the future",
+			false,
+		);
+	}
+	if (metadata.expiresAtMs !== undefined) {
+		const expiresAtMs = normalizeStepUpTimestamp(metadata.expiresAtMs, "metadata.expiresAtMs");
+		if (expiresAtMs <= nowMs) {
+			return stepUpFailure(
+				"fresh_step_up_expired",
+				"fresh TOTP step-up verification has expired",
+				true,
+			);
+		}
+	}
+	if (nowMs - verifiedAtMs > maxAgeMs) {
+		return stepUpFailure(
+			"fresh_step_up_stale",
+			"fresh TOTP step-up verification is too old for this side-effect approval",
+			true,
+		);
+	}
+	return { ok: true, metadata };
 }
 
 /**
@@ -161,4 +277,34 @@ export function cleanupExpiredTOTPSessions(): number {
 	}
 
 	return result.changes;
+}
+
+function requiredStepUpString(value: string, field: string): string {
+	const trimmed = value.trim();
+	if (!trimmed) {
+		throw new Error(`${field} is required`);
+	}
+	return trimmed;
+}
+
+function normalizeStepUpTimestamp(value: number, field: string): number {
+	if (!Number.isSafeInteger(value) || value < 0) {
+		throw new Error(`${field} must be a non-negative integer timestamp`);
+	}
+	return value;
+}
+
+function normalizeStepUpDuration(value: number, field: string): number {
+	if (!Number.isSafeInteger(value) || value <= 0 || value > DEFAULT_SESSION_TTL_MS) {
+		throw new Error(`${field} must be a positive bounded duration`);
+	}
+	return value;
+}
+
+function stepUpFailure(
+	code: string,
+	reason: string,
+	retryable: boolean,
+): Extract<StepUpVerificationResult, { ok: false }> {
+	return { ok: false, code, reason, retryable };
 }
