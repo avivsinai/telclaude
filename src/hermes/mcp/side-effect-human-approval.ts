@@ -476,6 +476,7 @@ function prepareApprovalBinding(
 		binding,
 		bindingDigest,
 		humanVisibleRender,
+		nowMs,
 	);
 	return { ok: true, binding, bindingDigest, body };
 }
@@ -558,6 +559,7 @@ function formatSideEffectHumanApprovalBody(
 	binding: TelclaudeMcpSideEffectApprovalBinding,
 	bindingDigest: string,
 	humanVisibleRender: string,
+	nowMs: number,
 ): string {
 	const common = [
 		`Action ref: ${record.ref}`,
@@ -593,11 +595,44 @@ function formatSideEffectHumanApprovalBody(
 		"Hermes MCP outbound side-effect approval required",
 		`Channel: ${record.channel}`,
 		`Destination: ${record.destination}`,
-		`Conversation: ${record.conversationRef}`,
-		`Media refs: ${record.mediaRefs.join(", ") || "(none)"}`,
+		...formatOutboundApprovalSummary(record, humanVisibleRender, nowMs),
 		"",
 		...common,
 	].join("\n");
+}
+
+function formatOutboundApprovalSummary(
+	record: Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }>,
+	humanVisibleRender: string,
+	nowMs: number,
+): string[] {
+	return [
+		`Recipient: ${resolvedDestinationRecipient(record)}`,
+		`Thread: ${resolvedDestinationThread(record)}`,
+		`Conversation: ${record.conversationRef}`,
+		`Body: ${humanVisibleRender}`,
+		`Attachment hashes: ${record.preparedMediaRefs.map((ref) => ref.contentHash).join(", ") || "(none)"}`,
+		`Media refs: ${record.mediaRefs.join(", ") || "(none)"}`,
+		`TTL ms: ${Math.max(0, record.expiresAtMs - nowMs)}`,
+		`Expires at: ${new Date(record.expiresAtMs).toISOString()}`,
+		`Idempotency key: ${record.idempotencyKey ?? "(none)"}`,
+	];
+}
+
+function resolvedDestinationRecipient(
+	record: Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }>,
+): string {
+	const destination = record.resolvedDestination;
+	return (
+		destination.addressRef ?? destination.actorId ?? destination.threadId ?? record.destination
+	);
+}
+
+function resolvedDestinationThread(
+	record: Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }>,
+): string {
+	const destination = record.resolvedDestination;
+	return destination.threadId ?? destination.conversationId ?? record.conversationRef;
 }
 
 function digestBinding(binding: TelclaudeMcpSideEffectApprovalBinding): string {

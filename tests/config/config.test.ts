@@ -61,6 +61,7 @@ describe("config defaults", () => {
 			privateRuntime: {
 				providerScopes: [],
 				capabilityScopes: ["web.fetch", "web.search", "media.image", "media.tts", "skills.request"],
+				outboundChannels: ["whatsapp"],
 			},
 		});
 		expect(cfg.profiles).toEqual([]);
@@ -97,9 +98,10 @@ describe("config defaults", () => {
 			"media.tts",
 			"skills.request",
 		]);
+		expect(cfg.hermes.privateRuntime.outboundChannels).toEqual(["whatsapp"]);
 	});
 
-	it("accepts explicit Hermes private-runtime provider and capability scopes", () => {
+	it("accepts explicit Hermes private-runtime provider, capability, and outbound channel scopes", () => {
 		setConfigPath(configPath());
 		fs.writeFileSync(
 			configPath(),
@@ -108,6 +110,7 @@ describe("config defaults", () => {
 					privateRuntime: {
 						providerScopes: ["google", "bank"],
 						capabilityScopes: ["web.search", "web.fetch"],
+						outboundChannels: [],
 					},
 				},
 			}),
@@ -116,6 +119,7 @@ describe("config defaults", () => {
 		const cfg = loadConfig();
 		expect(cfg.hermes.privateRuntime.providerScopes).toEqual(["google", "bank"]);
 		expect(cfg.hermes.privateRuntime.capabilityScopes).toEqual(["web.search", "web.fetch"]);
+		expect(cfg.hermes.privateRuntime.outboundChannels).toEqual([]);
 	});
 
 	it("rejects non-canonical Hermes provider scope ids", () => {

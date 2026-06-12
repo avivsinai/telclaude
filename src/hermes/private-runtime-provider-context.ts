@@ -22,7 +22,9 @@ export function buildHermesPrivateRuntimeProviderContext(
 	const capabilityScopes = uniqueSorted(
 		profile?.capabilityScopes ?? config.hermes?.privateRuntime?.capabilityScopes,
 	) as TelclaudeMcpCapabilityScope[];
-	const outboundChannels = uniqueSorted(profile?.outboundChannels);
+	const outboundChannels = uniqueSorted(
+		profile?.outboundChannels ?? config.hermes?.privateRuntime?.outboundChannels,
+	);
 	return {
 		providerScopes,
 		capabilityScopes,

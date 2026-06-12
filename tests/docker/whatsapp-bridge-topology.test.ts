@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const whatsappSidecarUrlEnv =
-	"TELCLAUDE_WHATSAPP_SIDECAR_URL=$" + "{TELCLAUDE_WHATSAPP_SIDECAR_URL:-}";
+	"TELCLAUDE_WHATSAPP_SIDECAR_URL=$" +
+	"{TELCLAUDE_WHATSAPP_SIDECAR_URL:-http://whatsapp-bridge:3004}";
+const whatsappAllowedRecipientsEnv =
+	"TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS=$" + "{TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS:-}";
 const internalHostsEnvPattern = /TELCLAUDE_INTERNAL_HOSTS=\$\{TELCLAUDE_INTERNAL_HOSTS:-([^}]*)\}/;
 
 function readDockerFile(relativePath: string): string {
@@ -32,6 +35,15 @@ function networkBlock(compose: string, networkName: string): string | null {
 	return nextNetwork < 0 ? rest : rest.slice(0, nextNetwork);
 }
 
+function networksSection(service: string | null): string {
+	if (!service) return "";
+	const start = service.indexOf("\n    networks:\n");
+	if (start < 0) return "";
+	const rest = service.slice(start + "\n    networks:\n".length);
+	const nextTopLevelKey = rest.search(/\n {4}[a-zA-Z0-9_-]+:\n/);
+	return nextTopLevelKey < 0 ? rest : rest.slice(0, nextTopLevelKey);
+}
+
 describe("WhatsApp bridge Docker topology", () => {
 	it.each([
 		"docker/docker-compose.yml",
@@ -39,17 +51,36 @@ describe("WhatsApp bridge Docker topology", () => {
 	])("keeps %s on a dedicated relay-to-bridge network", (relativePath) => {
 		const compose = readDockerFile(relativePath);
 		const relay = serviceBlock(compose, "telclaude");
+		const bridge = serviceBlock(compose, "whatsapp-bridge");
 		const whatsappNetwork = networkBlock(compose, "relay-whatsapp-net");
+		const whatsappEgressNetwork = networkBlock(compose, "whatsapp-egress");
+		const relayNetworks = networksSection(relay);
+		const bridgeNetworks = networksSection(bridge);
 
 		expect(relay).toContain("TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude");
 		expect(relay).toContain(whatsappSidecarUrlEnv);
-		expect(relay).toContain("- relay-whatsapp-net");
+		expect(relay).toContain(whatsappAllowedRecipientsEnv);
+		expect(relayNetworks).toContain("- relay-whatsapp-net");
+		expect(relayNetworks).not.toContain("- whatsapp-egress");
+		expect(bridge).toContain('profiles: ["whatsapp"]');
+		expect(bridge).toContain("healthcheck:");
+		expect(bridge).toContain("http://localhost:3004/health");
+		expect(bridgeNetworks).toContain("- relay-whatsapp-net");
+		expect(bridgeNetworks).toContain("- whatsapp-egress");
+		expect(bridgeNetworks).not.toContain("- relay-egress");
+		expect(bridgeNetworks).not.toContain("- relay-vault-net");
+		expect(bridgeNetworks).not.toContain("- relay-totp-net");
+		expect(bridgeNetworks).not.toContain("- relay-google-net");
+		expect(bridge).not.toContain("TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS");
 		expect(whatsappNetwork).toContain("name: telclaude-relay-whatsapp");
 		expect(whatsappNetwork).toContain("internal: true");
+		expect(whatsappEgressNetwork).toContain("name: telclaude-whatsapp-egress");
+		expect(whatsappEgressNetwork).not.toContain("internal: true");
 		expect(relay?.match(internalHostsEnvPattern)?.[1]).not.toContain("whatsapp-bridge");
 
 		for (const service of ["google-services", "totp", "vault"]) {
 			expect(serviceBlock(compose, service) ?? "").not.toContain("- relay-whatsapp-net");
+			expect(serviceBlock(compose, service) ?? "").not.toContain("- whatsapp-egress");
 		}
 	});
 

@@ -33,6 +33,8 @@ import {
 } from "../../src/relay/whatsapp-edge-channel-connector.js";
 
 const HEX64 = "a".repeat(64);
+const OPERATOR_WHATSAPP_RECIPIENT = "whatsapp:+15551234567";
+const OTHER_WHATSAPP_RECIPIENT = "whatsapp:+15557654321";
 
 function preparedOutbound(overrides: Partial<PreparedOutbound> = {}): PreparedOutbound {
 	return PreparedOutboundSchema.parse({
@@ -392,10 +394,11 @@ describe("outbound delivery dispatcher", () => {
 		const sessions: string[] = [];
 		const resolvedDestination = {
 			kind: "address" as const,
-			addressRef: "whatsapp:+15551234567",
+			addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 			conversationId: "relay-conversation-token",
 		};
 		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			now: () => 1717459200000,
 			sendToSidecar: async (request, session) => {
 				sent.push(request);
@@ -449,7 +452,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 			}),
@@ -460,6 +463,85 @@ describe("outbound delivery dispatcher", () => {
 		expect(failures).toEqual([
 			expect.objectContaining({
 				code: "whatsapp_sidecar_unconfigured",
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("fails closed before WhatsApp sidecar I/O when the operator recipient allowlist is missing", async () => {
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "http://whatsapp-bridge:3004",
+			fetch: async () => {
+				sidecarCalls += 1;
+				throw new Error("sidecar must not be called without recipient allowlist");
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_recipient_allowlist_unconfigured",
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("fails closed before WhatsApp sidecar I/O when the prepared recipient is not the operator allowlist recipient", async () => {
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "http://whatsapp-bridge:3004",
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			fetch: async () => {
+				sidecarCalls += 1;
+				throw new Error("sidecar must not be called for wrong recipient");
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: OTHER_WHATSAPP_RECIPIENT,
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_recipient_not_allowed",
 				retryable: false,
 			}),
 		]);
@@ -490,7 +572,7 @@ describe("outbound delivery dispatcher", () => {
 			channel: "whatsapp",
 			resolvedDestination: {
 				kind: "address",
-				addressRef: "whatsapp:+15551234567",
+				addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 				conversationId: "relay-conversation-token",
 			},
 		});
@@ -566,6 +648,7 @@ describe("outbound delivery dispatcher", () => {
 		}> = [];
 		const connector = createWhatsAppEdgeChannelConnector({
 			sidecarUrl: "http://whatsapp-bridge:3004",
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			now: () => 1717459200000,
 			fetch: async (url, init) => {
 				seen.push({
@@ -592,7 +675,7 @@ describe("outbound delivery dispatcher", () => {
 			channel: "whatsapp" as const,
 			resolvedDestination: {
 				kind: "address" as const,
-				addressRef: "whatsapp:+15551234567",
+				addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 				conversationId: "relay-conversation-token",
 			},
 		};
@@ -646,6 +729,7 @@ describe("outbound delivery dispatcher", () => {
 			| undefined;
 		const connector = createWhatsAppEdgeChannelConnector({
 			sidecarUrl: "http://whatsapp-bridge:3004",
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			bridgeSessionFactory: async (request) => ({
 				sessionKey: "relay-issued-single-use-session",
 				requestDigest: digestWhatsAppSidecarSendRequest(request),
@@ -676,7 +760,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 			}),
@@ -704,6 +788,7 @@ describe("outbound delivery dispatcher", () => {
 			  }
 			| undefined;
 		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			bridgeSessionFactory: async (request) => ({
 				sessionKey: "relay-issued-single-use-session",
 				requestDigest: digestWhatsAppSidecarSendRequest(request),
@@ -730,7 +815,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 			}),
@@ -748,6 +833,7 @@ describe("outbound delivery dispatcher", () => {
 		const failures: unknown[] = [];
 		const connector = createWhatsAppEdgeChannelConnector({
 			sidecarUrl: "http://whatsapp-bridge:3004",
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			bridgeSessionFactory: async () => ({
 				sessionKey: "relay-issued-single-use-session",
 				requestDigest: `sha256:${"b".repeat(64)}`,
@@ -771,7 +857,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 			}),
@@ -791,6 +877,7 @@ describe("outbound delivery dispatcher", () => {
 		let sidecarCalls = 0;
 		const failures: unknown[] = [];
 		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			bridgeSessionFactory: async () => ({
 				sessionKey: "relay-issued-single-use-session",
 				requestDigest: `sha256:${"b".repeat(64)}`,
@@ -814,7 +901,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 			}),
@@ -853,7 +940,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 			}),
@@ -886,6 +973,7 @@ describe("outbound delivery dispatcher", () => {
 			scanState: "clean",
 		});
 		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
 			sendToSidecar: async () => {
 				sidecarCalls += 1;
 				return { ok: true };
@@ -905,7 +993,7 @@ describe("outbound delivery dispatcher", () => {
 				channel: "whatsapp",
 				resolvedDestination: {
 					kind: "address",
-					addressRef: "whatsapp:+15551234567",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
 					conversationId: "relay-conversation-token",
 				},
 				mediaRefs: [first, second],

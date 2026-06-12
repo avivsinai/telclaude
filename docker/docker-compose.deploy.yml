@@ -90,7 +90,8 @@ services:
       # Network / firewall
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude}
-      - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-}
+      - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-http://whatsapp-bridge:3004}
+      - TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS=${TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS:-}
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
       - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
 
@@ -160,6 +161,51 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WhatsApp Bridge Sidecar (optional profile)
+  # ─────────────────────────────────────────────────────────────────────────────
+  whatsapp-bridge:
+    profiles: ["whatsapp"]
+    image: ${TELCLAUDE_WHATSAPP_BRIDGE_IMAGE:-ghcr.io/avivsinai/telclaude-whatsapp-bridge:latest}
+    container_name: telclaude-whatsapp-bridge
+
+    environment:
+      - WHATSAPP_BRIDGE_PORT=3004
+      - WHATSAPP_BRIDGE_DATA_DIR=/data
+      - NODE_ENV=production
+
+    volumes:
+      - whatsapp-bridge-data:/data:rw
+
+    networks:
+      - relay-whatsapp-net
+      - whatsapp-egress
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3004/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
 
     logging:
       driver: json-file
@@ -358,6 +404,10 @@ volumes:
   media-outbox:
     name: telclaude-media-outbox
 
+  # WhatsApp bridge session state (QR/browser auth lives outside agent runtime)
+  whatsapp-bridge-data:
+    name: telclaude-whatsapp-bridge-data
+
   # Shared operator-managed skill catalog (active + draft) across all Hermes personas.
   telclaude-skill-catalog:
     name: telclaude-skill-catalog
@@ -392,6 +442,12 @@ networks:
     name: telclaude-relay-whatsapp
     driver: bridge
     internal: true
+
+  # WhatsApp bridge outbound network. The relay is intentionally not attached;
+  # only the bridge sidecar gets internet egress for WhatsApp Web transport.
+  whatsapp-egress:
+    name: telclaude-whatsapp-egress
+    driver: bridge
 
   relay-egress:
     name: telclaude-relay-egress

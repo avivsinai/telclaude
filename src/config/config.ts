@@ -137,6 +137,7 @@ const HermesCapabilityScopeSchema = z.enum([
 	"media.tts",
 	"skills.request",
 ]);
+const HermesOutboundChannelSchema = z.enum(["whatsapp", "email", "agentmail", "social"]);
 
 const HERMES_PRIVATE_RUNTIME_DEFAULT_CAPABILITY_SCOPES = [
 	"web.fetch",
@@ -146,10 +147,15 @@ const HERMES_PRIVATE_RUNTIME_DEFAULT_CAPABILITY_SCOPES = [
 	"skills.request",
 ] satisfies z.infer<typeof HermesCapabilityScopeSchema>[];
 
+const HERMES_PRIVATE_RUNTIME_DEFAULT_OUTBOUND_CHANNELS = ["whatsapp"] satisfies z.infer<
+	typeof HermesOutboundChannelSchema
+>[];
+
 const HERMES_DEFAULTS = {
 	privateRuntime: {
 		providerScopes: [],
 		capabilityScopes: HERMES_PRIVATE_RUNTIME_DEFAULT_CAPABILITY_SCOPES,
+		outboundChannels: HERMES_PRIVATE_RUNTIME_DEFAULT_OUTBOUND_CHANNELS,
 	},
 };
 
@@ -160,6 +166,9 @@ const HermesConfigSchema = z.object({
 			capabilityScopes: z
 				.array(HermesCapabilityScopeSchema)
 				.default(HERMES_DEFAULTS.privateRuntime.capabilityScopes),
+			outboundChannels: z
+				.array(HermesOutboundChannelSchema)
+				.default(HERMES_DEFAULTS.privateRuntime.outboundChannels),
 		})
 		.default(HERMES_DEFAULTS.privateRuntime),
 });
@@ -877,6 +886,7 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 				privateRuntime: {
 					providerScopes: [],
 					capabilityScopes: [...HERMES_DEFAULTS.privateRuntime.capabilityScopes],
+					outboundChannels: [...HERMES_DEFAULTS.privateRuntime.outboundChannels],
 				},
 			},
 			inbound: {

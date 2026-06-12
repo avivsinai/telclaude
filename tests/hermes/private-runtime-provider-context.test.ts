@@ -4,7 +4,9 @@ import { buildHermesPrivateRuntimeProviderContext } from "../../src/hermes/priva
 describe("Hermes private runtime provider context", () => {
 	it("fails closed when no provider scopes are configured", () => {
 		const context = buildHermesPrivateRuntimeProviderContext({
-			hermes: { privateRuntime: { providerScopes: [], capabilityScopes: [] } },
+			hermes: {
+				privateRuntime: { providerScopes: [], capabilityScopes: [], outboundChannels: [] },
+			},
 		});
 
 		expect(context.providerScopes).toEqual([]);
@@ -23,17 +25,21 @@ describe("Hermes private runtime provider context", () => {
 				privateRuntime: {
 					providerScopes: ["bank", "google", "bank"],
 					capabilityScopes: ["web.search", "web.fetch", "web.search"],
+					outboundChannels: ["whatsapp", "whatsapp"],
 				},
 			},
 		});
 
 		expect(context.providerScopes).toEqual(["bank", "google"]);
 		expect(context.capabilityScopes).toEqual(["web.fetch", "web.search"]);
+		expect(context.outboundChannels).toEqual(["whatsapp"]);
 		expect(context.systemPromptAppend).toContain("tc_provider_read");
 		expect(context.systemPromptAppend).toContain("tc_provider_prepare_write");
 		expect(context.systemPromptAppend).toContain("tc_provider_execute_write");
 		expect(context.systemPromptAppend).toContain("Granted provider scopes: bank, google");
-		expect(context.systemPromptAppend).toContain("Granted capability scopes: web.fetch, web.search");
+		expect(context.systemPromptAppend).toContain(
+			"Granted capability scopes: web.fetch, web.search",
+		);
 		expect(context.systemPromptAppend).toContain("Do not call provider hostnames");
 		expect(context.systemPromptAppend).toContain("supersedes any legacy external-provider");
 	});
@@ -45,6 +51,7 @@ describe("Hermes private runtime provider context", () => {
 					privateRuntime: {
 						providerScopes: ["bank"],
 						capabilityScopes: ["media.tts"],
+						outboundChannels: ["whatsapp"],
 					},
 				},
 			},

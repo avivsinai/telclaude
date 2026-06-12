@@ -12,6 +12,7 @@ export const WHATSAPP_SIDECAR_MAX_MEDIA_BYTES = QUARANTINE_MAX_BYTES;
 export const WHATSAPP_INBOUND_RISK_WRAP_REQUIRED =
 	"WhatsApp inbound listener requires CL-1 risk wrapping before edge.ingest";
 export const TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV = "TELCLAUDE_WHATSAPP_SIDECAR_URL";
+export const TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV = "TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS";
 export const WHATSAPP_SIDECAR_ALLOWED_HOST = "whatsapp-bridge";
 export const WHATSAPP_SIDECAR_SESSION_KEY_HEADER = "x-telclaude-whatsapp-session-key";
 export const WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER = "x-telclaude-whatsapp-request-digest";
@@ -80,6 +81,7 @@ type FetchLike = (
 
 export type WhatsAppEdgeChannelConnectorOptions = {
 	readonly sidecarUrl?: string;
+	readonly allowedRecipientAddressRefs?: readonly string[];
 	readonly bridgeSessionFactory?: WhatsAppBridgeSessionFactory;
 	readonly sendToSidecar?: WhatsAppSidecarSender;
 	readonly fetch?: FetchLike;
@@ -90,6 +92,9 @@ export function createWhatsAppEdgeChannelConnector(
 	options: WhatsAppEdgeChannelConnectorOptions = {},
 ): EdgeChannelConnector {
 	const sidecarUrl = normalizeOptionalUrl(options.sidecarUrl);
+	const recipientAllowlist = normalizeAllowedRecipientAddressRefs(
+		options.allowedRecipientAddressRefs,
+	);
 	const fetchImpl = options.fetch ?? globalFetch();
 	const bridgeSessionFactory =
 		options.bridgeSessionFactory ??
@@ -101,6 +106,17 @@ export function createWhatsAppEdgeChannelConnector(
 		async send(context) {
 			const request = await buildWhatsAppSidecarSendRequest(context);
 			if (!request.ok) return request;
+
+			if (!options.sendToSidecar && !sidecarUrl.ok) {
+				return {
+					ok: false,
+					code: sidecarUrl.code,
+					reason: sidecarUrl.reason,
+					retryable: false,
+				};
+			}
+			const recipientCheck = validateWhatsAppRecipientAllowed(request.request, recipientAllowlist);
+			if (!recipientCheck.ok) return recipientCheck;
 
 			if (options.sendToSidecar) {
 				const session = await createBoundWhatsAppBridgeSession(
@@ -137,10 +153,19 @@ export function createWhatsAppEdgeChannelConnector(
 }
 
 export function whatsappSidecarOptionsFromEnv(
-	env: Partial<Record<typeof TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV, string | undefined>> = process.env,
+	env: Partial<
+		Record<
+			typeof TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV | typeof TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV,
+			string | undefined
+		>
+	> = process.env,
 ): WhatsAppEdgeChannelConnectorOptions {
 	const sidecarUrl = env[TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV]?.trim();
-	return sidecarUrl ? { sidecarUrl } : {};
+	const allowedRecipientAddressRefs = csvEnv(env[TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV]);
+	return {
+		...(sidecarUrl ? { sidecarUrl } : {}),
+		...(allowedRecipientAddressRefs.length ? { allowedRecipientAddressRefs } : {}),
+	};
 }
 
 async function buildWhatsAppSidecarSendRequest(context: OutboundDeliveryContext): Promise<
@@ -343,6 +368,86 @@ function normalizeOptionalUrl(value: string | undefined):
 		};
 	}
 	return { ok: true, url: new URL("/v1/whatsapp/send", base) };
+}
+
+function normalizeAllowedRecipientAddressRefs(
+	values: readonly string[] | undefined,
+):
+	| { readonly ok: true; readonly values: ReadonlySet<string> }
+	| Extract<ChannelSendOutcome, { ok: false }> {
+	const normalized = new Set<string>();
+	for (const value of values ?? []) {
+		const addressRef = normalizeWhatsAppAddressRef(value);
+		if (!addressRef) {
+			return {
+				ok: false,
+				code: "whatsapp_recipient_allowlist_invalid",
+				reason:
+					"WhatsApp recipient allowlist entries must be E.164 numbers with optional whatsapp: prefix",
+				retryable: false,
+			};
+		}
+		normalized.add(addressRef);
+	}
+	return { ok: true, values: normalized };
+}
+
+function validateWhatsAppRecipientAllowed(
+	request: WhatsAppSidecarSendRequest,
+	allowlist:
+		| { readonly ok: true; readonly values: ReadonlySet<string> }
+		| Extract<ChannelSendOutcome, { ok: false }>,
+): Extract<ChannelSendOutcome, { ok: false }> | { readonly ok: true } {
+	if (!allowlist.ok) return allowlist;
+	if (allowlist.values.size === 0) {
+		return {
+			ok: false,
+			code: "whatsapp_recipient_allowlist_unconfigured",
+			reason: "WhatsApp outbound requires an explicit operator recipient allowlist",
+			retryable: false,
+		};
+	}
+	if (request.destination.kind !== "address" || !request.destination.addressRef) {
+		return {
+			ok: false,
+			code: "whatsapp_recipient_invalid",
+			reason: "WhatsApp outbound requires an address resolvedDestination",
+			retryable: false,
+		};
+	}
+	const addressRef = normalizeWhatsAppAddressRef(request.destination.addressRef);
+	if (!addressRef) {
+		return {
+			ok: false,
+			code: "whatsapp_recipient_invalid",
+			reason:
+				"WhatsApp resolvedDestination.addressRef must be an E.164 number with optional whatsapp: prefix",
+			retryable: false,
+		};
+	}
+	if (!allowlist.values.has(addressRef)) {
+		return {
+			ok: false,
+			code: "whatsapp_recipient_not_allowed",
+			reason: "WhatsApp recipient is not in the operator allowlist",
+			retryable: false,
+		};
+	}
+	return { ok: true };
+}
+
+function normalizeWhatsAppAddressRef(value: string): string | null {
+	const trimmed = value.trim();
+	const e164 = trimmed.startsWith("whatsapp:") ? trimmed.slice("whatsapp:".length) : trimmed;
+	if (!/^\+[1-9]\d{6,14}$/.test(e164)) return null;
+	return `whatsapp:${e164}`;
+}
+
+function csvEnv(value: string | undefined): string[] {
+	return (value ?? "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter(Boolean);
 }
 
 export function createWhatsAppBridgeSessionMaterial(

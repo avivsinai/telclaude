@@ -82,6 +82,60 @@ describe("Hermes MCP side-effect human approvals", () => {
 		expect(approval?.body).toContain(`"ref":"${record.ref}"`);
 	});
 
+	it("renders WhatsApp outbound approvals with exact recipient, body, attachment hashes, ttl, and idempotency key", async () => {
+		const attachmentHash =
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const record = prepareOutboundRecord({
+			requestedBody: "Send the gate code.",
+			renderedBody: "Send the gate code.",
+			destination: "operator phone",
+			resolvedDestination: {
+				kind: "address",
+				addressRef: "whatsapp:+15551234567",
+				conversationId: "whatsapp:+15551234567",
+			},
+			mediaRefs: ["tc-quarantine:front-door-photo"],
+			preparedMediaRefs: [
+				{
+					quarantineId: "tc-quarantine:front-door-photo",
+					contentHash: attachmentHash,
+				},
+			],
+			edgePreparedHash: edgePreparedPayloadHash({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "whatsapp:+15551234567",
+				},
+				body: "Send the gate code.",
+				mediaRefs: [
+					{
+						quarantineId: "tc-quarantine:front-door-photo",
+						contentHash: attachmentHash,
+					},
+				],
+			}),
+			idempotencyKey: "idem-whatsapp-operator-self",
+		});
+		const controller = createController();
+
+		const request = await controller.request({ record, chatId: 111, username: "operator" });
+
+		expect(request).toMatchObject({ ok: true });
+		const [approval] = getPendingApprovalsForChat(111);
+		expect(approval?.body).toContain("Hermes MCP outbound side-effect approval required");
+		expect(approval?.body).toContain("Channel: whatsapp");
+		expect(approval?.body).toContain("Recipient: whatsapp:+15551234567");
+		expect(approval?.body).toContain("Thread: whatsapp:+15551234567");
+		expect(approval?.body).toContain("Conversation: conv_11111111111111111111111111111111");
+		expect(approval?.body).toContain("Body: Send the gate code.");
+		expect(approval?.body).toContain(`Attachment hashes: ${attachmentHash}`);
+		expect(approval?.body).toContain("TTL ms: 300000");
+		expect(approval?.body).toContain("Idempotency key: idem-whatsapp-operator-self");
+		expect(approval?.body).toContain("Human-visible render:\nSend the gate code.");
+	});
+
 	it("mints a one-shot server-side token after durable approval and authorizes the exact ledger record", async () => {
 		const ledger = createTelclaudeMcpSideEffectLedger({
 			nowMs: () => 100_000,
