@@ -105,6 +105,12 @@ services:
       # Optional external WhatsApp bridge; attach it only to telclaude-relay-whatsapp.
       - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-http://whatsapp-bridge:3004}
       - TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS=${TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS:-}
+      # Relay egress policy: restricted (domain allowlist) or permissive (all public
+      # egress; metadata/RFC1918 stay kernel-blocked). tc_web_fetch executes in the
+      # relay, so the free-GET web capability requires permissive.
+      - TELCLAUDE_NETWORK_MODE=${TELCLAUDE_NETWORK_MODE:-restricted}
+      # Brave Search API key for the relay-served tc_web_search capability.
+      - TELCLAUDE_BRAVE_SEARCH_API_KEY=${TELCLAUDE_BRAVE_SEARCH_API_KEY:-}
 
       # Drop privileges after firewall init (gosu -> node user).
       # LLM/persona execution runs through the Hermes overlay.
