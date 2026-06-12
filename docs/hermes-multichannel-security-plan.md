@@ -146,7 +146,7 @@ Tasks:
 1. Re-run relevant Hermes doctor/probe surfaces for current main.
 2. Confirm live MCP, model relay, network containment, served MCP memory, side-effect ledger, edge WhatsApp, edge email, and Google provider probe status.
 3. Produce a short current-state inventory: pass, fail, not wired, stale evidence.
-4. Re-run no-fork proof surfaces: `pnpm dev hermes prove --upstream-clean --p0 --json`, `pnpm dev hermes cutover-check --strict --dry-run --json`, and the `nofork.clean` assertion.
+4. Re-run the steady-state proof loop: `pnpm dev hermes doctor --probes --compat-lock --json`, `pnpm dev hermes prove --upstream-clean`, `pnpm dev hermes network-probes --allow-run` where egress posture changed, and `pnpm dev hermes verify-live`.
 
 Exit criteria:
 

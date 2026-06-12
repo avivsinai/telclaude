@@ -7,11 +7,9 @@ import {
 	type FeatureProbeMatrix,
 } from "../../src/hermes/foundation.js";
 import {
-	buildHermesWorkflowFixtureEvidenceBundle,
 	HERMES_WORKFLOW_SURFACE_IDS,
 	type HermesWorkflowSurfaceId,
 	runHermesWorkflowProbe,
-	workflowFixtureEvidenceFailure,
 	workflowProbeEvidenceFailure,
 } from "../../src/hermes/workflow-probes.js";
 import { generateKeyPair } from "../../src/internal-auth.js";
@@ -255,95 +253,7 @@ describe("Hermes workflow probes", () => {
 		);
 	});
 
-	it("builds fixture evidence bound to workflow probe artifacts", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-fixtures-"));
-		const probePaths = writeWorkflowProbeArtifacts(tempDir);
-		const bundle = buildHermesWorkflowFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			probePaths,
-			observedAt: "2026-06-01T09:10:00.000Z",
-		});
-
-		expect(bundle.results).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ id: "fixture.cron.background.delivery", status: "pass" }),
-				expect.objectContaining({ id: "fixture.cron.duplicate-deny", status: "pass" }),
-				expect.objectContaining({ id: "fixture.longrun.approval-resume", status: "pass" }),
-				expect.objectContaining({ id: "fixture.longrun.stale-resume-deny", status: "pass" }),
-			]),
-		);
-		const approvalResumeEvidence = bundle.evidence.find(
-			(evidence) => evidence.id === "fixture.longrun.approval-resume",
-		);
-		expect(
-			workflowFixtureEvidenceFailure("fixture.longrun.approval-resume", approvalResumeEvidence),
-		).toBeNull();
-	});
-
-	it("rejects workflow fixture evidence when the bound probe artifact changes", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-fixtures-"));
-		const probePaths = writeWorkflowProbeArtifacts(tempDir);
-		const bundle = buildHermesWorkflowFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			probePaths,
-			observedAt: "2026-06-01T09:10:00.000Z",
-		});
-		const cronEvidence = bundle.evidence.find(
-			(evidence) => evidence.id === "fixture.cron.background.delivery",
-		);
-
-		fs.writeFileSync(probePaths["workflow.cron"], JSON.stringify({ changed: true }), "utf8");
-
-		expect(
-			workflowFixtureEvidenceFailure("fixture.cron.background.delivery", cronEvidence),
-		).toContain("probeSha256 does not match");
-	});
-
-	it("rejects workflow fixture evidence when the bound probe artifact is unsigned", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-fixtures-"));
-		const probePaths = writeWorkflowProbeArtifacts(tempDir);
-		const unsignedCronProbe = runHermesWorkflowProbe({
-			surfaceId: "workflow.cron",
-			allowRun: true,
-			observedAt: "2026-06-01T09:00:00.000Z",
-		});
-		delete unsignedCronProbe.runnerAttestation;
-		fs.writeFileSync(
-			probePaths["workflow.cron"],
-			JSON.stringify(unsignedCronProbe, null, 2),
-			"utf8",
-		);
-
-		const bundle = buildHermesWorkflowFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			probePaths,
-			observedAt: "2026-06-01T09:10:00.000Z",
-		});
-		const cronEvidence = bundle.evidence.find(
-			(evidence) => evidence.id === "fixture.cron.background.delivery",
-		);
-
-		expect(
-			workflowFixtureEvidenceFailure("fixture.cron.background.delivery", cronEvidence),
-		).toContain("fixture probe artifact failed validation: runnerAttestation is missing");
-	});
 });
-
-function writeWorkflowProbeArtifacts(tempDir: string): Record<HermesWorkflowSurfaceId, string> {
-	const probePaths = {
-		"workflow.cron": path.join(tempDir, "workflow-cron.json"),
-		"workflow.longrun": path.join(tempDir, "workflow-longrun.json"),
-	} satisfies Record<HermesWorkflowSurfaceId, string>;
-	for (const surfaceId of HERMES_WORKFLOW_SURFACE_IDS) {
-		const evidence = runHermesWorkflowProbe({
-			surfaceId,
-			allowRun: true,
-			observedAt: "2026-06-01T09:00:00.000Z",
-		});
-		fs.writeFileSync(probePaths[surfaceId], JSON.stringify(evidence, null, 2), "utf8");
-	}
-	return probePaths;
-}
 
 function restoreEnv(key: keyof typeof ORIGINAL_ENV): void {
 	const value = ORIGINAL_ENV[key];

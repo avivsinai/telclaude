@@ -1349,6 +1349,21 @@ describe("Hermes wrapper foundation", () => {
 		]);
 	});
 
+	it("keeps deleted cutover commands out of lockfile requiredUpgradeTests", () => {
+		const draft = buildCompatibilityLockfileDraft({
+			pin: hermesPin,
+			featureProbeMatrix,
+			wrapperPackageVersion: "0.7.1",
+		});
+
+		expect(draft.requiredUpgradeTests.length).toBeGreaterThan(0);
+		for (const command of draft.requiredUpgradeTests) {
+			expect(command).not.toMatch(
+				/cutover-check|--p0|proof-bundle|fixtures|inventory|rollback-rehearsal|pro-review/,
+			);
+		}
+	});
+
 	it("writes machine-observed headless entrypoint proof from focused adapter runtime tests", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-headless-entrypoint-"));
 		const evidencePath = path.join(tempDir, "execution-headless-entrypoint.json");

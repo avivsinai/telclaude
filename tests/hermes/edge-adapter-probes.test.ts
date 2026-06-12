@@ -1,15 +1,14 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	buildEdgeAdapterFixtureEvidenceBundle,
 	buildEdgeAdapterProbeEvidence,
 	EDGE_ADAPTER_FEATURE_SURFACE_IDS,
-	edgeAdapterFixtureEvidenceFailure,
 	edgeAdapterProbeEvidenceFailure,
 } from "../../src/hermes/edge-adapter-probes.js";
-import { runTelclaudeProviderReleasePolicyProbe } from "../../src/hermes/provider-release-policy-probe.js";
+import {
+	runTelclaudeProviderReleasePolicyProbe,
+} from "../../src/hermes/provider-release-policy-probe.js";
 import { generateKeyPair } from "../../src/internal-auth.js";
 
 const observedAt = "2026-05-31T09:00:00.000Z";
@@ -367,52 +366,6 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("builds public and household fixture evidence from current edge probe artifacts", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-fixtures-"));
-		const probePaths = await writeEdgeFixtureProbeArtifacts(tempDir);
-		const bundle = buildEdgeAdapterFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			observedAt,
-			probePaths,
-		});
-
-		expect(bundle.results).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ id: "fixture.public.whatsapp.basic", status: "pass" }),
-				expect.objectContaining({
-					id: "fixture.household.provider.strong-link-read",
-					status: "pass",
-				}),
-				expect.objectContaining({ id: "fixture.public.social.private-leak-deny", status: "pass" }),
-			]),
-		);
-		for (const evidence of bundle.evidence) {
-			for (const artifact of evidence.edge.probeArtifacts) {
-				fs.mkdirSync(path.dirname(artifact.evidencePath), { recursive: true });
-			}
-			expect(edgeAdapterFixtureEvidenceFailure(evidence.id, evidence)).toBeNull();
-		}
-	});
-
-	it("rejects edge fixture evidence when a bound probe artifact changes", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-fixture-tamper-"));
-		const probePaths = await writeEdgeFixtureProbeArtifacts(tempDir);
-		const bundle = buildEdgeAdapterFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			observedAt,
-			probePaths,
-		});
-		const whatsappFixture = bundle.evidence.find(
-			(item) => item.id === "fixture.public.whatsapp.basic",
-		);
-		expect(whatsappFixture).toBeDefined();
-
-		fs.writeFileSync(probePaths["edge.whatsapp"], JSON.stringify({ changed: true }), "utf8");
-
-		expect(
-			edgeAdapterFixtureEvidenceFailure("fixture.public.whatsapp.basic", whatsappFixture),
-		).toContain("sha256 changed");
-	});
 });
 
 async function writeEdgeFixtureProbeArtifacts(tempDir: string) {

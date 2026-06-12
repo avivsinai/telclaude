@@ -205,8 +205,8 @@
   },
   "requiredUpgradeTests": [
     "pnpm dev hermes doctor --probes --compat-lock --json",
-    "pnpm dev hermes cutover-check --strict --dry-run --json",
-    "pnpm dev hermes prove --upstream-clean --p0"
+    "pnpm dev hermes prove --upstream-clean",
+    "pnpm dev hermes verify-live"
   ],
   "generatedProfileSchemaVersion": "1",
   "wrapperPackageVersion": "0.7.1",

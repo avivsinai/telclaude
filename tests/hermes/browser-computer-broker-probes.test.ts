@@ -1,13 +1,6 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-	BROWSER_COMPUTER_BROKER_SURFACE_IDS,
-	type BrowserComputerBrokerSurfaceId,
-	browserComputerBrokerFixtureEvidenceFailure,
 	browserComputerBrokerProbeEvidenceFailure,
-	buildBrowserComputerBrokerFixtureEvidenceBundle,
 	buildNetworkEgressBrokerProbeEvidenceFromReport,
 	NETWORK_EGRESS_BROKER_RUN_REPORT_SCHEMA_VERSION,
 	NETWORK_EGRESS_BROKER_RUN_REPORT_SOURCE,
@@ -191,79 +184,7 @@ describe("Hermes browser/computer broker probes", () => {
 		);
 	});
 
-	it("builds fixture evidence bound to broker probe artifacts", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-computer-fixtures-"));
-		const probePaths = writeBrokerProbeArtifacts(tempDir);
-		const bundle = buildBrowserComputerBrokerFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			probePaths,
-			observedAt: "2026-06-01T09:10:00.000Z",
-		});
-
-		expect(bundle.results).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ id: "fixture.browser.allowed-research", status: "pass" }),
-				expect.objectContaining({ id: "fixture.browser.cross-domain-deny", status: "pass" }),
-				expect.objectContaining({ id: "fixture.browser.cookie-leak-deny", status: "pass" }),
-				expect.objectContaining({ id: "fixture.computer.allowed-target", status: "pass" }),
-				expect.objectContaining({
-					id: "fixture.computer.unauthorized-target-deny",
-					status: "pass",
-				}),
-			]),
-		);
-		const browserAllowedEvidence = bundle.evidence.find(
-			(evidence) => evidence.id === "fixture.browser.allowed-research",
-		);
-		expect(
-			browserComputerBrokerFixtureEvidenceFailure(
-				"fixture.browser.allowed-research",
-				browserAllowedEvidence,
-			),
-		).toBeNull();
-	});
-
-	it("rejects fixture evidence when the bound broker artifact changes", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-computer-fixtures-"));
-		const probePaths = writeBrokerProbeArtifacts(tempDir);
-		const bundle = buildBrowserComputerBrokerFixtureEvidenceBundle({
-			evidenceDir: path.join(tempDir, "fixtures"),
-			probePaths,
-			observedAt: "2026-06-01T09:10:00.000Z",
-		});
-		const cookieLeakEvidence = bundle.evidence.find(
-			(evidence) => evidence.id === "fixture.browser.cookie-leak-deny",
-		);
-
-		fs.writeFileSync(probePaths["browser.profiles"], JSON.stringify({ changed: true }), "utf8");
-
-		expect(
-			browserComputerBrokerFixtureEvidenceFailure(
-				"fixture.browser.cookie-leak-deny",
-				cookieLeakEvidence,
-			),
-		).toContain("probeSha256 does not match");
-	});
 });
-
-function writeBrokerProbeArtifacts(
-	tempDir: string,
-): Record<BrowserComputerBrokerSurfaceId, string> {
-	const probePaths = {
-		"browser.profiles": path.join(tempDir, "browser-profiles.json"),
-		"computer.broker": path.join(tempDir, "computer-broker.json"),
-		"network.egress-broker": path.join(tempDir, "network-egress-broker.json"),
-	} satisfies Record<BrowserComputerBrokerSurfaceId, string>;
-	for (const surfaceId of BROWSER_COMPUTER_BROKER_SURFACE_IDS) {
-		const evidence = runTelclaudeBrowserComputerBrokerProbe({
-			surfaceId,
-			allowRun: true,
-			observedAt: "2026-06-01T09:00:00.000Z",
-		});
-		fs.writeFileSync(probePaths[surfaceId], JSON.stringify(evidence, null, 2), "utf8");
-	}
-	return probePaths;
-}
 
 function completeNetworkEgressBrokerRunReport() {
 	const observedAt = "2026-06-01T09:00:00.000Z";
