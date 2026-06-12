@@ -258,6 +258,7 @@ Tasks:
 4. Route outbound through `tc_outbound_prepare` and `tc_outbound_execute`.
 5. Approval prompt shows exact recipient/thread/body/attachments/hash/TTL/idempotency key.
 6. Add negative probes for wrong recipient, changed body, wrong conversation attachment, replayed idempotency key, missing sidecar, direct credential injection.
+7. Bridge contract: implement `POST /v1/whatsapp/send` and `GET /health`; verify relay-issued `x-telclaude-whatsapp-session-key` and `x-telclaude-whatsapp-request-digest` against the exact request body before sending; pin the bridge image by digest once published.
 
 Exit criteria:
 
@@ -275,6 +276,9 @@ Tasks:
 3. Strong-link family identities to household authority.
 4. Treat external email as public/untrusted and proposal-only.
 5. Add group handling rules before enabling WhatsApp group chats.
+6. Wire the usable WhatsApp listener only in a follow-up slice: the bridge must POST signed inbound events to a relay endpoint, the endpoint calls the complete CL-1 pipeline, and `onInboundEvent` dispatches only sanitized events into Hermes.
+7. Inbound bridge signing contract: compute HMAC over the post-schema-default canonical object that the relay verifies, including defaulted fields such as `attachments: []`; signing a sparse pre-default payload must fail closed.
+8. Operator-only W-B may use a static operator address allowlist; Telegram `/approve` strong-link pairing and household/multi-number pairing remain separate Aviv-gated follow-up work.
 
 Exit criteria:
 
