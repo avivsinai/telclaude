@@ -27,6 +27,7 @@ export type TelclaudeMcpDomain = "private" | "social" | "household" | "public" |
 
 export type TelclaudeMcpAuthority = {
 	actorId: string;
+	subjectUserId?: string;
 	profileId: string;
 	domain: TelclaudeMcpDomain;
 	memorySource: MemorySource;
@@ -45,6 +46,7 @@ export type TelclaudeMcpAuthority = {
 
 export type TelclaudeMcpAuthorityStamp = {
 	actorId: string;
+	subjectUserId?: string;
 	profileId: string;
 	domain: TelclaudeMcpDomain;
 	memorySource: MemorySource;
@@ -313,6 +315,7 @@ const SkillRequestInputSchema = z
 
 const AUTHORITY_PROVENANCE_KEYS = new Set([
 	"actorId",
+	"subjectUserId",
 	"profileId",
 	"domain",
 	"memorySource",
@@ -552,8 +555,10 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 	if (memorySourceError) {
 		throw new Error(memorySourceError);
 	}
+	const subjectUserId = optionalTrimmed(authority.subjectUserId);
 	return {
 		actorId: requiredTrimmed(authority.actorId, "actorId"),
+		...(subjectUserId ? { subjectUserId } : {}),
 		profileId: requiredTrimmed(authority.profileId, "profileId"),
 		domain: authority.domain,
 		memorySource: authority.memorySource,
@@ -574,6 +579,7 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 function authorityStamp(authority: TelclaudeMcpAuthority): TelclaudeMcpAuthorityStamp {
 	return {
 		actorId: authority.actorId,
+		...(authority.subjectUserId ? { subjectUserId: authority.subjectUserId } : {}),
 		profileId: authority.profileId,
 		domain: authority.domain,
 		memorySource: authority.memorySource,
@@ -631,6 +637,11 @@ function requiredTrimmed(value: string, field: string): string {
 		throw new Error(`Telclaude MCP authority ${field} is required`);
 	}
 	return trimmed;
+}
+
+function optionalTrimmed(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed || undefined;
 }
 
 function uniqueTrimmed(values: readonly string[]): string[] {

@@ -394,11 +394,15 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
 			assertProviderOperationPolicy(operation);
+			const body = providerFetchBody({
+				...operation,
+				subjectUserId: request.subjectUserId,
+			});
 			const response = await provider({
 				providerId: operation.providerId,
 				path: PROVIDER_PATH,
 				method: "POST",
-				body: JSON.stringify(providerFetchBody(operation)),
+				body: JSON.stringify(body),
 				userId: request.actorId,
 			});
 			if (response.status === "error") {
@@ -421,6 +425,7 @@ export function createTelclaudeLiveMcpRelayClients(
 				service: operation.service,
 				action: operation.action,
 				params: operation.params,
+				...(request.subjectUserId ? { subjectUserId: request.subjectUserId } : {}),
 				providerAccountRef: providerAccountRefFor(operation),
 				approvalRequestId: makeApprovalRequestId(),
 				approvalRevision: 1,
@@ -887,13 +892,14 @@ async function requestHumanApproval(
 function providerFetchBody(
 	request: Pick<
 		TelclaudeMcpProviderReadRequest | TelclaudeMcpProviderPrepareWriteRequest,
-		"service" | "action" | "params"
+		"service" | "action" | "params" | "subjectUserId"
 	>,
-): { service: string; action: string; params: Record<string, unknown> } {
+): { service: string; action: string; params: Record<string, unknown>; subjectUserId?: string } {
 	return {
 		service: request.service,
 		action: request.action,
 		params: request.params,
+		...(request.subjectUserId ? { subjectUserId: request.subjectUserId } : {}),
 	};
 }
 

@@ -103,6 +103,7 @@ export type HermesRuntimeMcpAuthorityActivation = {
 
 export type HermesPrivateMcpAuthorityOptions = {
 	readonly domain?: TelclaudeMcpDomain;
+	readonly subjectUserId?: string;
 	readonly memorySource?: MemorySource;
 	readonly writableNamespace?: string;
 	readonly providerScopes?: readonly string[];
@@ -452,8 +453,11 @@ function buildPrivateMcpAuthority(
 ): TelclaudeMcpAuthority {
 	const domain = options?.domain ?? "private";
 	const memorySource = options?.memorySource ?? defaultMemorySource(domain, request.profileId);
+	const subjectUserId =
+		optionalTrimmed(options?.subjectUserId) ?? optionalTrimmed(request.identity.userId);
 	return {
 		actorId: runtimeActorId(request),
+		...(subjectUserId ? { subjectUserId } : {}),
 		profileId: request.profileId,
 		domain,
 		memorySource,
@@ -474,6 +478,11 @@ function defaultMemorySource(domain: TelclaudeMcpDomain, profileId: string): Mem
 function runtimeActorId(request: HermesPrivateRuntimeRequest): string {
 	const identity = request.identity;
 	return String(identity.actorId ?? identity.userId ?? identity.chatId ?? request.sessionKey);
+}
+
+function optionalTrimmed(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed || undefined;
 }
 
 export function buildHermesCliProbeInvocation(input: {

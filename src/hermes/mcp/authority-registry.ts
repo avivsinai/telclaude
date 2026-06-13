@@ -205,8 +205,10 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 	if (memorySourceError) {
 		throw new Error(memorySourceError);
 	}
+	const subjectUserId = optionalTrimmed(authority.subjectUserId);
 	return {
 		actorId: requiredTrimmed(authority.actorId, "actorId"),
+		...(subjectUserId ? { subjectUserId } : {}),
 		profileId: requiredTrimmed(authority.profileId, "profileId"),
 		domain: authority.domain,
 		memorySource: authority.memorySource,
@@ -307,6 +309,11 @@ function requiredTrimmed(value: string, field: string): string {
 		throw new Error(`MCP authority ${field} is required`);
 	}
 	return trimmed;
+}
+
+function optionalTrimmed(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed || undefined;
 }
 
 function normalizeTurnConversationRef(value: string): string {

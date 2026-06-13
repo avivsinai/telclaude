@@ -53,6 +53,7 @@ export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly service: string;
 	readonly action: string;
 	readonly params: Record<string, unknown>;
+	readonly subjectUserId?: string;
 	readonly providerAccountRef: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
@@ -118,6 +119,7 @@ export type TelclaudeMcpProviderSideEffectPrepareInput = {
 	readonly service: string;
 	readonly action: string;
 	readonly params?: Record<string, unknown>;
+	readonly subjectUserId?: string;
 	readonly providerAccountRef: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
@@ -167,6 +169,7 @@ export type TelclaudeMcpProviderApprovalBinding = {
 	readonly providerId: string;
 	readonly service: string;
 	readonly action: string;
+	readonly subjectUserId?: string;
 	readonly providerAccountRef: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
@@ -459,6 +462,9 @@ function prepareProviderRecord(
 		service: requiredTrimmed(input.service, "service"),
 		action: requiredTrimmed(input.action, "action"),
 		params: cloneJsonObject(input.params ?? {}, "params"),
+		...(input.subjectUserId
+			? { subjectUserId: requiredTrimmed(input.subjectUserId, "subjectUserId") }
+			: {}),
 		providerAccountRef: requiredTrimmed(input.providerAccountRef, "providerAccountRef"),
 		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
 		approvalRevision: normalizeRevision(input.approvalRevision),
@@ -536,6 +542,7 @@ function hashProviderParams(record: ProviderBindingFields): string {
 		service: record.service,
 		action: record.action,
 		params: record.params,
+		subjectUserId: record.subjectUserId ?? null,
 		providerAccountRef: record.providerAccountRef,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
@@ -554,6 +561,7 @@ function hashProviderBody(record: ProviderBindingFields): string {
 		providerId: record.providerId,
 		service: record.service,
 		action: record.action,
+		subjectUserId: record.subjectUserId ?? null,
 		providerAccountRef: record.providerAccountRef,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
@@ -622,6 +630,7 @@ function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecor
 		providerId: record.providerId,
 		service: record.service,
 		action: record.action,
+		subjectUserId: record.subjectUserId ?? null,
 		providerAccountRef: record.providerAccountRef,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
@@ -672,6 +681,7 @@ function approvalBinding(
 			providerId: record.providerId,
 			service: record.service,
 			action: record.action,
+			...(record.subjectUserId ? { subjectUserId: record.subjectUserId } : {}),
 			providerAccountRef: record.providerAccountRef,
 			approvalRequestId: record.approvalRequestId,
 			approvalRevision: record.approvalRevision,
@@ -975,6 +985,7 @@ type ProviderBindingFields = Pick<
 	| "service"
 	| "action"
 	| "params"
+	| "subjectUserId"
 	| "providerAccountRef"
 	| "approvalRequestId"
 	| "approvalRevision"

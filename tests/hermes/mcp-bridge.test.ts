@@ -238,6 +238,46 @@ describe("Telclaude MCP bridge foundation", () => {
 		).rejects.toThrow("provider scope denied: bank");
 	});
 
+	it("stamps relay-owned provider subject and rejects model-supplied subject identity", async () => {
+		const calls: unknown[] = [];
+		const bridge = createTelclaudeMcpBridge(
+			baseAuthority({ providerScopes: ["clalit"], subjectUserId: "admin" }),
+			{
+				...baseDependencies(),
+				providerRead: async (request) => {
+					calls.push(request);
+					return { prescriptions: [] };
+				},
+			},
+		);
+
+		await expect(
+			bridge.tc_provider_read({
+				service: "clalit",
+				action: "prescriptions",
+				params: {},
+			}),
+		).resolves.toEqual({ prescriptions: [] });
+
+		expect(calls).toEqual([
+			expect.objectContaining({
+				actorId: "operator",
+				subjectUserId: "admin",
+				providerId: "clalit",
+				service: "clalit",
+				action: "prescriptions",
+			}),
+		]);
+		await expect(
+			bridge.tc_provider_read({
+				service: "clalit",
+				action: "prescriptions",
+				params: {},
+				subjectUserId: "spoofed",
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field: subjectUserId");
+	});
+
 	it("keeps provider and outbound execute immutable", async () => {
 		const calls: unknown[] = [];
 		const bridge = createTelclaudeMcpBridge(baseAuthority({ outboundChannels: ["whatsapp"] }), {

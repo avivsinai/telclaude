@@ -38,7 +38,7 @@ export async function generateGoogleProviderSidecarApprovalToken(
 			service,
 			action: requiredTrimmed(request.action, "action"),
 			params: request.params,
-			subjectUserId: normalizeSubjectUserId(options.subjectUserId),
+			subjectUserId: normalizeSubjectUserId(request.subjectUserId ?? options.subjectUserId),
 			approvalNonce: requiredTrimmed(request.approvalNonce, "approvalNonce"),
 		},
 		options.vaultClient,
