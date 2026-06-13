@@ -97,6 +97,14 @@ describe("applySecretInputChunk", () => {
 		expect(state.value).not.toContain("[");
 	});
 
+	it("drops a ~-terminated CSI sequence without eating the next character", () => {
+		// Delete key is ESC[3~ — the final byte is "~" (0x7e), not a letter. A
+		// letter-only terminator would swallow the following "c" (abd, not abcd).
+		const state = applySecretInputChunk(fresh(), `ab${ESC}[3~cd`);
+		expect(state.value).toBe("abcd");
+		expect(state.value).not.toContain("~");
+	});
+
 	it("accumulates across multiple data events", () => {
 		const state = fresh();
 		applySecretInputChunk(state, PASTE_START);

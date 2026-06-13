@@ -38,7 +38,8 @@ const BRACKETED_PASTE_END = "[201~";
  * - cancels on Ctrl+C (``);
  * - applies backspace (``/`\b`) per character;
  * - drops bracketed-paste markers and any other ESC-led control sequence
- *   (skipping from `ESC` to the next ASCII letter, inclusive);
+ *   (a CSI/SS3 run skips parameter bytes then one final byte in 0x40-0x7e,
+ *   e.g. the `~` ending `ESC[3~`; other ESC runs drop the next byte);
  * - appends only printable characters (code point >= 32).
  *
  * Pure and synchronous so it can be unit-tested without a TTY.
@@ -59,11 +60,24 @@ export function applySecretInputChunk(state: SecretInputState, chunk: string): S
 				i += BRACKETED_PASTE_END.length - 1;
 				continue;
 			}
-			// Generic ESC sequence: skip up to and including the next ASCII letter
-			// (the sequence terminator), or to the end of the chunk if none.
+			// Generic ESC sequence (arrow keys, Delete/Home/Fn, etc.). A CSI (ESC[)
+			// or SS3 (ESCO) run consumes parameter/intermediate bytes then ONE final
+			// byte in 0x40-0x7e — which includes the "~" that ends sequences like
+			// ESC[3~ (Delete). Terminating only on an ASCII letter would swallow the
+			// next real character after a ~-terminated sequence. Any other ESC run
+			// drops the single following byte. Bracketed-paste markers are handled above.
 			let j = i + 1;
-			while (j < chunk.length && !/[A-Za-z]/.test(chunk[j])) j++;
-			i = j; // loop's i++ lands past the terminator letter
+			if (chunk[j] === "[" || chunk[j] === "O") {
+				j++;
+				while (j < chunk.length) {
+					const code = chunk.charCodeAt(j);
+					j++;
+					if (code >= 0x40 && code <= 0x7e) break; // CSI/SS3 final byte
+				}
+			} else if (j < chunk.length) {
+				j++; // two-byte ESC sequence
+			}
+			i = j - 1; // loop's i++ resumes at the byte after the sequence
 			continue;
 		}
 
