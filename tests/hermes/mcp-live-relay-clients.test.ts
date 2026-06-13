@@ -108,6 +108,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 					service: "google",
 					action: "gmail.search",
 					params: { q: "from:clinic" },
+					subjectUserId: "admin",
 				}),
 			),
 		).resolves.toEqual({ messages: [{ id: "m1" }] });
@@ -120,6 +121,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 					service: "gmail",
 					action: "search",
 					params: { q: "from:clinic" },
+					subjectUserId: "admin",
 				}),
 				userId: "operator",
 			},
@@ -159,6 +161,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 				service: "bank",
 				action: "transfer.execute",
 				params: { amount: 100, currency: "ILS" },
+				subjectUserId: "admin",
 				idempotencyKey: "idem-provider",
 			}),
 		)) as { actionRef: string; approvalRequestId: string };
@@ -173,6 +176,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			service: "bank",
 			action: "transfer.execute",
 			params: { amount: 100, currency: "ILS" },
+			subjectUserId: "admin",
 			idempotencyKey: "idem-provider",
 		});
 

@@ -40,6 +40,7 @@ export type TelclaudeMcpProviderSidecarApprovalTokenRequest = {
 	readonly service: string;
 	readonly action: string;
 	readonly params: Record<string, unknown>;
+	readonly subjectUserId?: string;
 	readonly actorUserId: string;
 	readonly approvalNonce: string;
 };
@@ -638,6 +639,7 @@ async function executeProviderSidecar(
 			service: body.service,
 			action: body.action,
 			params: body.params,
+			subjectUserId: body.subjectUserId,
 			actorUserId: record.actorId,
 			approvalNonce: record.approvalRequestId,
 		});
@@ -680,11 +682,13 @@ function providerFetchBody(record: TelclaudeMcpProviderSideEffectRecord): {
 	service: string;
 	action: string;
 	params: Record<string, unknown>;
+	subjectUserId?: string;
 } {
 	return {
 		service: record.service,
 		action: record.action,
 		params: record.params,
+		...(record.subjectUserId ? { subjectUserId: record.subjectUserId } : {}),
 	};
 }
 

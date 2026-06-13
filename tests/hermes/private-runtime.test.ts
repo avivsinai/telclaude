@@ -193,6 +193,7 @@ describe("Hermes private runtime seam", () => {
 					ok: true,
 					authority: {
 						actorId: "456",
+						subjectUserId: "operator",
 						profileId: "ops",
 						domain: "private",
 						memorySource: "telegram:ops",

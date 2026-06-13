@@ -725,6 +725,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				service: "gmail",
 				action: "create_draft",
 				params: { to: "a@example.com", subject: "hello", body: "hello" },
+				subjectUserId: "admin",
 				providerAccountRef: "google:gmail:primary",
 			}),
 		);
@@ -780,6 +781,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 						service: "gmail",
 						action: "create_draft",
 						params: { to: "a@example.com", subject: "hello", body: "hello" },
+						subjectUserId: "admin",
 					}),
 					userId: "operator",
 					approvalToken: expect.stringMatching(/^v1\./),
