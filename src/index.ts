@@ -42,6 +42,7 @@ import { registerSendAttachmentCommand } from "./commands/send-attachment.js";
 import { registerSendFileCommand } from "./commands/send-file.js";
 import { registerSendLocalFileCommand } from "./commands/send-local-file.js";
 import { registerSessionsCommand } from "./commands/sessions.js";
+import { registerSetupBraveCommand } from "./commands/setup-brave.js";
 import { registerSetupGitCommand } from "./commands/setup-git.js";
 import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupGoogleCommand } from "./commands/setup-google.js";
@@ -103,6 +104,7 @@ registerOAuthCommand(auth);
 // --- secrets ---
 const secrets = program.command("secrets").description("Manage API keys and credentials");
 registerSetupOpenAICommand(secrets);
+registerSetupBraveCommand(secrets);
 registerSetupGitCommand(secrets);
 registerSetupGitHubAppCommand(secrets);
 registerSetupGoogleCommand(secrets);
