@@ -53,6 +53,19 @@ describe("WhatsApp bridge Docker topology", () => {
 		expect(buildScript).toContain("--profile whatsapp build");
 	});
 
+	it("keeps the WhatsApp bridge runtime image scoped to the bridge closure", () => {
+		const dockerfile = readDockerFile("docker/Dockerfile.whatsapp-bridge");
+
+		expect(dockerfile).toContain("/bridge-runtime/package.json");
+		expect(dockerfile).toContain("/bridge-dist/whatsapp-bridge");
+		expect(dockerfile).toContain("/bridge-dist/crypto");
+		expect(dockerfile).toContain("await import('@whiskeysockets/baileys')");
+		expect(dockerfile).not.toContain("COPY --from=builder --chown=node:node /build/dist ./dist");
+		expect(dockerfile).not.toContain(
+			"COPY --from=builder --chown=node:node /build/node_modules ./node_modules",
+		);
+	});
+
 	it.each([
 		"docker/docker-compose.yml",
 		"docker/docker-compose.deploy.yml",
