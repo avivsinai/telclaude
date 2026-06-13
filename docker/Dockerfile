@@ -66,6 +66,11 @@ RUN pnpm prune --prod --ignore-scripts \
     && rm -rf node_modules/.pnpm/@img+sharp-libvips-linuxmusl* \
     && rm -rf node_modules/.pnpm/@img+sharp-linuxmusl*
 
+# pnpm prune can relink native packages after install scripts ran. Rebuild the
+# runtime SQLite binding after pruning and fail the image build if it is absent.
+RUN pnpm rebuild better-sqlite3 \
+    && node -e "require('better-sqlite3'); console.log('better-sqlite3 OK')"
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 2: Claude CLI
 # Install Claude Code CLI in a separate stage
@@ -171,6 +176,10 @@ COPY --chown=node:node docs/soul.md ./docs/soul.md
 COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
 COPY --chown=node:node docs/architecture.md ./docs/architecture.md
 COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
+
+# Prove the copied production tree can load the native SQLite binding in the
+# final runtime image, not only in the builder stage.
+RUN node -e "require('better-sqlite3'); console.log('better-sqlite3 runtime OK')"
 
 # Copy firewall initialization scripts and entrypoint wrapper
 COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
