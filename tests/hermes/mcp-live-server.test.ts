@@ -294,6 +294,24 @@ describe("Telclaude live MCP relay-side server", () => {
 		});
 	});
 
+	it("wraps tool results in an MCP CallToolResult content envelope", async () => {
+		const harness = createHarness(cleanup);
+		const response = await harness.server.handleJsonRpc(
+			toolCall("tc_provider_read", { service: "bank", action: "balances.list" }),
+			harness.privateContext,
+		);
+		if ("error" in response) throw new Error(response.error.message);
+		// The upstream Hermes MCP client validates CallToolResult and requires
+		// `content`; a bare payload trips "content Field required" and bricks the
+		// whole relay server after a few rejections.
+		const result = response.result as {
+			content: { type: string; text: string }[];
+			structuredContent?: Record<string, unknown>;
+		};
+		expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ balances: [] }) }]);
+		expect(result.structuredContent).toEqual({ balances: [] });
+	});
+
 	it("denies cross-domain memory, out-of-scope provider, and legacy outbound attempts", async () => {
 		const harness = createHarness(cleanup);
 
@@ -945,7 +963,28 @@ function resultOf<T = unknown>(response: TelclaudeLiveMcpJsonRpcResponse): T {
 	if ("error" in response) {
 		throw new Error(response.error.message);
 	}
-	return response.result as T;
+	// tools/call results are MCP CallToolResults: assert the required content
+	// envelope is present, then return the structured payload for payload-level
+	// assertions. A bare payload (the pre-fix shape) would fail the upstream
+	// Hermes client's CallToolResult validation.
+	const result = response.result;
+	if (isCallToolResult(result)) {
+		expect(Array.isArray(result.content)).toBe(true);
+		expect(result.content.length).toBeGreaterThan(0);
+		return (result.structuredContent ?? {}) as T;
+	}
+	return result as T;
+}
+
+function isCallToolResult(
+	value: unknown,
+): value is { content: unknown[]; structuredContent?: Record<string, unknown> } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"content" in value &&
+		Array.isArray((value as { content: unknown }).content)
+	);
 }
 
 function connection(

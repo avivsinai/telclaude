@@ -254,7 +254,7 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 					call.name,
 					stripClientAuthorityEnvelope(call.args),
 				);
-				return jsonResult(id, result);
+				return jsonResult(id, toCallToolResult(result));
 			} catch (error) {
 				return jsonError(id, -32001, errorMessage(error));
 			}
@@ -439,6 +439,24 @@ function emptySurfaceForMethod(
 
 function jsonResult(id: JsonRpcId | undefined, result: unknown): TelclaudeLiveMcpJsonRpcResponse {
 	return { jsonrpc: "2.0", ...(id !== undefined ? { id } : {}), result };
+}
+
+/**
+ * Wrap a bridge tool result in an MCP `CallToolResult`. The MCP spec requires a
+ * tools/call result to carry a `content` array; the upstream Hermes MCP client
+ * (pydantic) rejects a bare payload with "content Field required" and, after a
+ * few rejections, marks the whole relay server unreachable. We expose the data
+ * both as a JSON text block (model-visible) and as `structuredContent`.
+ */
+function toCallToolResult(result: unknown): {
+	readonly content: readonly { readonly type: "text"; readonly text: string }[];
+	readonly structuredContent?: Record<string, unknown>;
+} {
+	const text = typeof result === "string" ? result : JSON.stringify(result ?? {});
+	return {
+		content: [{ type: "text", text }],
+		...(isRecord(result) ? { structuredContent: result } : {}),
+	};
 }
 
 function jsonError(
