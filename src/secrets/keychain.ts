@@ -1,16 +1,17 @@
 /**
- * Secure secrets storage using OS keychain.
+ * Secure secrets storage.
  *
- * Supports multiple storage backends:
- * - keytar (OS keychain) - macOS Keychain, Linux libsecret, Windows Credential Vault
- * - encrypted file - for Docker/headless deployments
+ * Backends:
+ * - vault (the relay credential vault) - the store of record when its socket is
+ *   reachable; wraps a base provider it falls back to on RPC failure.
+ * - keytar (OS keychain) - base provider for native dev (macOS Keychain, Linux
+ *   libsecret, Windows Credential Vault).
+ * - noop - base provider when keytar is unavailable (e.g. Docker), so the vault
+ *   runs in effectively vault-only mode.
  *
  * Used for storing API keys and other sensitive credentials.
  */
 
-import { join } from "node:path";
-
-import { EncryptedFileStore } from "../crypto/encrypted-file-store.js";
 import { KeytarStore } from "../crypto/keytar-store.js";
 import { getChildLogger } from "../logging.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
@@ -64,41 +65,6 @@ class KeytarProvider implements SecretsStorageProvider {
 
 	async has(key: string): Promise<boolean> {
 		return this.keytarStore.has(key);
-	}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Encrypted File Provider (Docker-compatible)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class EncryptedFileProvider implements SecretsStorageProvider {
-	readonly name = "encrypted-file";
-	private fileStore: EncryptedFileStore;
-
-	constructor(filePath: string, encryptionKey: string) {
-		this.fileStore = new EncryptedFileStore(filePath, encryptionKey);
-		logger.debug({ filePath, provider: this.name }, "initialized encrypted file provider");
-	}
-
-	async store(key: string, value: string): Promise<void> {
-		this.fileStore.store(key, value);
-		logger.debug({ key, provider: this.name }, "stored secret");
-	}
-
-	async get(key: string): Promise<string | null> {
-		return this.fileStore.get(key);
-	}
-
-	async delete(key: string): Promise<boolean> {
-		const deleted = this.fileStore.delete(key);
-		if (deleted) {
-			logger.info({ key, provider: this.name }, "deleted secret");
-		}
-		return deleted;
-	}
-
-	async has(key: string): Promise<boolean> {
-		return this.fileStore.has(key);
 	}
 }
 
@@ -226,9 +192,11 @@ let cachedProvider: SecretsStorageProvider | null = null;
 /**
  * Get the secrets storage provider.
  *
- * Selection order:
- * 1. SECRETS_STORAGE_BACKEND env var ("keytar" or "file")
- * 2. Auto-detect: file if SECRETS_ENCRYPTION_KEY is set, otherwise keytar
+ * The vault is the store of record. The base provider it wraps (and falls back
+ * to on vault RPC failure) is the OS keychain via keytar when available, or a
+ * no-op provider otherwise — so a relay without keytar (e.g. Docker) runs in
+ * effectively vault-only mode. When the vault is unavailable, keytar is used
+ * directly; if neither is available, secret reads return null and writes throw.
  */
 async function getStorageProvider(): Promise<SecretsStorageProvider> {
 	if (cachedProvider) return cachedProvider;
@@ -236,69 +204,18 @@ async function getStorageProvider(): Promise<SecretsStorageProvider> {
 	let baseProvider: SecretsStorageProvider | null = null;
 	let baseProviderError: unknown;
 
-	const buildBaseProvider = async (): Promise<SecretsStorageProvider> => {
-		const backend = process.env.SECRETS_STORAGE_BACKEND?.toLowerCase();
-		const encryptionKey = process.env.SECRETS_ENCRYPTION_KEY;
-
-		let useFile = false;
-
-		if (backend === "file") {
-			useFile = true;
-		} else if (backend === "keytar") {
-			useFile = false;
-		} else if (encryptionKey) {
-			useFile = true;
-		}
-
-		if (useFile) {
-			if (!encryptionKey) {
-				throw new Error(
-					"SECRETS_ENCRYPTION_KEY environment variable is required for file-based storage. " +
-						"Generate a strong key: openssl rand -base64 32",
-				);
-			}
-
-			const dataDir =
-				process.env.TELCLAUDE_DATA_DIR || join(process.env.HOME || "/tmp", ".telclaude");
-			const filePath = process.env.SECRETS_FILE || join(dataDir, "secrets.json");
-
-			return new EncryptedFileProvider(filePath, encryptionKey);
-		}
-
-		try {
-			const provider = new KeytarProvider();
-			await provider.has("__test__");
-			return provider;
-		} catch (err) {
-			logger.warn(
-				{ error: String(err) },
-				"keytar not available, falling back to encrypted file storage",
-			);
-
-			if (!encryptionKey) {
-				throw new Error(
-					"keytar is not available and SECRETS_ENCRYPTION_KEY is not set. " +
-						"Either install libsecret-1-dev (Linux) or set SECRETS_ENCRYPTION_KEY for file-based storage.",
-				);
-			}
-
-			const dataDir =
-				process.env.TELCLAUDE_DATA_DIR || join(process.env.HOME || "/tmp", ".telclaude");
-			const filePath = process.env.SECRETS_FILE || join(dataDir, "secrets.json");
-
-			return new EncryptedFileProvider(filePath, encryptionKey);
-		}
-	};
-
 	try {
-		baseProvider = await buildBaseProvider();
+		const provider = new KeytarProvider();
+		await provider.has("__test__");
+		baseProvider = provider;
 	} catch (err) {
 		baseProviderError = err;
+		logger.debug({ error: String(err) }, "keytar not available; relying on vault");
 	}
 
-	// Wrap with vault provider if vault is available. If we can't initialize a base provider
-	// (common in Docker where keytar is unavailable and SECRETS_ENCRYPTION_KEY is unset),
-	// run in vault-only mode.
+	// Wrap with the vault provider when the vault is reachable. If keytar is
+	// unavailable (common in Docker), the vault wraps a no-op fallback and runs
+	// in effectively vault-only mode.
 	try {
 		if (await isVaultAvailable({ timeout: 1000 })) {
 			const fallback = baseProvider ?? new NoopProvider(baseProviderError);

@@ -61,10 +61,6 @@ services:
       # tokens for /codex work units; runtime workers never hold this secret.
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:-}
 
-      # Secrets encryption — enables keychain fallback (decrypts secrets.json for vault import)
-      # Defaults to TOTP key when SECRETS_ENCRYPTION_KEY is not explicitly set
-      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
-
       # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json

@@ -91,7 +91,7 @@ LABEL org.opencontainers.image.description="Secure Telegram-Claude bridge"
 LABEL org.opencontainers.image.source="https://github.com/avivsinai/telclaude"
 
 # Install runtime dependencies only
-# NOTE: keytar/libsecret/gnome-keyring NOT needed - Docker uses file storage via SECRETS_ENCRYPTION_KEY
+# NOTE: keytar/libsecret/gnome-keyring NOT needed - Docker stores secrets in the relay vault (vault-only mode)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # For better-sqlite3 runtime
     libsqlite3-0 \

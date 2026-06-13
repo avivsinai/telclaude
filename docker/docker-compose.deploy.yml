@@ -51,10 +51,6 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
-      # Secrets encryption — enables keychain fallback (decrypts secrets.json for vault import)
-      # Defaults to TOTP key when SECRETS_ENCRYPTION_KEY is not explicitly set
-      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
-
       # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json

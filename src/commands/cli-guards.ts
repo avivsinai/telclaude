@@ -37,14 +37,15 @@ export async function requireVault(): Promise<VaultClient> {
 }
 
 /**
- * Require secrets storage to be available (keychain or encrypted file).
+ * Require secrets storage to be available (vault or OS keychain).
  * Exits with code 1 if unavailable.
  */
 export async function requireSecretsStorage(): Promise<void> {
 	if (!(await isSecretsStorageAvailable())) {
 		console.error(
 			"Error: Secrets storage not available.\n" +
-				"On Linux, install libsecret-1-dev, or set SECRETS_ENCRYPTION_KEY for file storage.",
+				"Start the vault daemon (telclaude maintenance vault-daemon), " +
+				"or on Linux install libsecret-1-dev for OS keychain support.",
 		);
 		process.exit(1);
 	}
