@@ -617,9 +617,10 @@ describe("Telclaude live MCP relay-client adapters", () => {
 					},
 				},
 			});
-			const body = response.body as { result?: { actionRef?: string } };
+			// tools/call returns an MCP CallToolResult; the bridge payload is in structuredContent.
+			const body = response.body as { result?: { structuredContent?: { actionRef?: string } } };
 			expect(response.httpStatus).toBe(200);
-			expect(runtime.ledger?.get(body.result?.actionRef ?? "")).toMatchObject({
+			expect(runtime.ledger?.get(body.result?.structuredContent?.actionRef ?? "")).toMatchObject({
 				kind: "provider",
 				status: "prepared",
 				params: { amount: 10 },

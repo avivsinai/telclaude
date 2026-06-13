@@ -759,8 +759,13 @@ function expectedAuthorityDenial(
 }
 
 function ledgerDenialCode(observation: RpcObservation): string | null {
-	const result = rpcResult(observation);
-	if (!isRecord(result) || result.ok !== false || typeof result.code !== "string") return null;
+	// tools/call results are MCP CallToolResults: the bridge payload (ok/code)
+	// lives in structuredContent. Fall back to the bare result for forward-compat.
+	const raw = rpcResult(observation);
+	if (!isRecord(raw)) return null;
+	const structured = raw.structuredContent;
+	const result = isRecord(structured) ? structured : raw;
+	if (result.ok !== false || typeof result.code !== "string") return null;
 	return result.code === "effect_not_found" || result.code === "approval_required"
 		? result.code
 		: null;

@@ -522,21 +522,29 @@ function memError(
 	};
 }
 
-function memResultRowCount(observation: MemoryRpcObservation): number | undefined {
+// tools/call results are MCP CallToolResults: the memory payload lives in
+// `structuredContent`. Fall back to the bare result for forward-compat.
+function memResultPayload(observation: MemoryRpcObservation): Record<string, unknown> | undefined {
 	const body = observation.body;
 	if (typeof body !== "object" || body === null) return undefined;
 	const result = (body as { result?: unknown }).result;
 	if (typeof result !== "object" || result === null) return undefined;
-	const entries = (result as { entries?: unknown }).entries;
+	const structured = (result as { structuredContent?: unknown }).structuredContent;
+	const payload = typeof structured === "object" && structured !== null ? structured : result;
+	return payload as Record<string, unknown>;
+}
+
+function memResultRowCount(observation: MemoryRpcObservation): number | undefined {
+	const payload = memResultPayload(observation);
+	if (payload === undefined) return undefined;
+	const entries = payload.entries;
 	return Array.isArray(entries) ? entries.length : undefined;
 }
 
 function memResultEntryHashes(observation: MemoryRpcObservation): string[] | undefined {
-	const body = observation.body;
-	if (typeof body !== "object" || body === null) return undefined;
-	const result = (body as { result?: unknown }).result;
-	if (typeof result !== "object" || result === null) return undefined;
-	const entries = (result as { entries?: unknown }).entries;
+	const payload = memResultPayload(observation);
+	if (payload === undefined) return undefined;
+	const entries = payload.entries;
 	if (!Array.isArray(entries)) return undefined;
 	return entries.map(
 		(entry) =>
