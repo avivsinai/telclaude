@@ -9,4 +9,4 @@ cd "$(dirname "$0")/.."
 export GIT_COMMIT
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
-exec docker compose -f docker/docker-compose.yml build "$@"
+exec docker compose -f docker/docker-compose.yml --profile whatsapp build "$@"
