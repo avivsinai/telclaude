@@ -42,6 +42,12 @@ RUN pnpm rebuild
 # Prune dev dependencies
 RUN pnpm prune --prod --ignore-scripts
 
+# The Google sidecar uses the same better-sqlite3 runtime binding as the relay.
+# Rebuild after prune so pnpm cannot leave a production tree without the native
+# addon, then fail the image build if the binding cannot be loaded.
+RUN pnpm rebuild better-sqlite3 \
+    && node -e "require('better-sqlite3'); console.log('better-sqlite3 OK')"
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 2: Runtime (Minimal)
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -64,6 +70,8 @@ WORKDIR /app
 COPY --from=builder --chown=node:node /build/dist ./dist
 COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --from=builder --chown=node:node /build/package.json ./
+
+RUN node -e "require('better-sqlite3'); console.log('better-sqlite3 runtime OK')"
 
 # Environment
 ENV NODE_ENV=production
