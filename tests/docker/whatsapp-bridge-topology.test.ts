@@ -47,6 +47,12 @@ function networksSection(service: string | null): string {
 }
 
 describe("WhatsApp bridge Docker topology", () => {
+	it("includes the WhatsApp profile in the shared Docker build helper", () => {
+		const buildScript = readDockerFile("docker/build.sh");
+
+		expect(buildScript).toContain("--profile whatsapp build");
+	});
+
 	it.each([
 		"docker/docker-compose.yml",
 		"docker/docker-compose.deploy.yml",
