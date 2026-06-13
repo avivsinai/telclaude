@@ -5,9 +5,10 @@
  * untrusted external data; callers must redact and risk-wrap before any of it
  * enters a model prompt.
  *
- * API key resolution order:
- * 1. TELCLAUDE_BRAVE_SEARCH_API_KEY environment variable
- * 2. Keychain (SECRET_KEYS.BRAVE_SEARCH_API_KEY)
+ * API key resolution order (vault/keychain-first, matching the bot-token and
+ * every other credential):
+ * 1. Vault / keychain (SECRET_KEYS.BRAVE_SEARCH_API_KEY)
+ * 2. TELCLAUDE_BRAVE_SEARCH_API_KEY environment variable (documented fallback)
  */
 
 import { getChildLogger } from "../logging.js";
@@ -49,15 +50,17 @@ export type SearchWebOptions = {
 };
 
 async function resolveApiKey(): Promise<string | null> {
-	const fromEnv = process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY?.trim();
-	if (fromEnv) return fromEnv;
-
+	// Vault/keychain first — the durable store of record — with the env var as a
+	// bootstrap fallback only, matching bot-token precedence (src/env.ts).
 	try {
 		const fromKeychain = await getSecret(SECRET_KEYS.BRAVE_SEARCH_API_KEY);
 		if (fromKeychain) return fromKeychain;
 	} catch (err) {
 		logger.debug({ error: String(err) }, "keychain not available for Brave Search key");
 	}
+
+	const fromEnv = process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY?.trim();
+	if (fromEnv) return fromEnv;
 
 	return null;
 }

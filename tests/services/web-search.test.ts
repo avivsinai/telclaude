@@ -65,7 +65,7 @@ describe("web search service (Brave)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
-	it("queries Brave with the env API key and maps results", async () => {
+	it("uses the env API key as a fallback and maps results", async () => {
 		process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY = "brave-env-key";
 		const fetchImpl = mockFetch(
 			braveResponse([
@@ -97,7 +97,7 @@ describe("web search service (Brave)", () => {
 		expect(init.signal).toBeInstanceOf(AbortSignal);
 	});
 
-	it("falls back to the keychain key when the env var is unset", async () => {
+	it("uses the keychain key when the env var is unset", async () => {
 		keychainSecret.value = "brave-keychain-key";
 		const fetchImpl = mockFetch(braveResponse([]));
 
@@ -106,6 +106,19 @@ describe("web search service (Brave)", () => {
 		});
 
 		expect(result).toEqual({ provider: "brave", results: [] });
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		expect(new Headers(init.headers).get("x-subscription-token")).toBe("brave-keychain-key");
+	});
+
+	it("prefers the vault/keychain key over the env var", async () => {
+		// Vault/keychain-first: when both are present, the keychain wins and the
+		// env var is only a bootstrap fallback (matches bot-token precedence).
+		keychainSecret.value = "brave-keychain-key";
+		process.env.TELCLAUDE_BRAVE_SEARCH_API_KEY = "brave-env-key";
+		const fetchImpl = mockFetch(braveResponse([]));
+
+		await searchWeb("anything", { fetchImpl: fetchImpl as unknown as typeof fetch });
+
 		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
 		expect(new Headers(init.headers).get("x-subscription-token")).toBe("brave-keychain-key");
 	});

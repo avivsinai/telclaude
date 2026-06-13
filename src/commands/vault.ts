@@ -483,6 +483,8 @@ export function registerVaultCommand(program: Command): void {
 					vaultProtocol: Protocol;
 					vaultTarget: string;
 					label: string;
+					/** Bootstrap env var to read when the keychain has no value. */
+					envFallback?: string;
 				}> = [
 					{
 						keychainKey: SECRET_KEYS.OPENAI_API_KEY,
@@ -502,13 +504,22 @@ export function registerVaultCommand(program: Command): void {
 						vaultTarget: "moltbook-api-key",
 						label: "Moltbook API key",
 					},
+					{
+						keychainKey: SECRET_KEYS.BRAVE_SEARCH_API_KEY,
+						vaultProtocol: "secret",
+						vaultTarget: "brave-search-api-key",
+						label: "Brave Search API key",
+						envFallback: "TELCLAUDE_BRAVE_SEARCH_API_KEY",
+					},
 				];
 
 				let imported = 0;
 				let skipped = 0;
 
-				for (const { keychainKey, vaultProtocol, vaultTarget, label } of keychainMap) {
-					const value = await getKeychainSecret(keychainKey);
+				for (const { keychainKey, vaultProtocol, vaultTarget, label, envFallback } of keychainMap) {
+					const value =
+						(await getKeychainSecret(keychainKey)) ??
+						(envFallback ? process.env[envFallback]?.trim() || null : null);
 					if (!value) {
 						console.log(`  SKIP: ${label} (not in keychain)`);
 						skipped++;

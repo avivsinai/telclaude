@@ -9,6 +9,85 @@
 import * as readline from "node:readline";
 
 /**
+ * Mutable accumulator for raw-mode secret entry.
+ *
+ * `done` is set once a submit key (Enter/CR/EOF) is seen; `cancelled` is set on
+ * Ctrl+C. Once either flag is set the rest of the chunk is ignored.
+ */
+export interface SecretInputState {
+	value: string;
+	done?: boolean;
+	cancelled?: boolean;
+}
+
+const ESC = "";
+const BRACKETED_PASTE_START = "[200~";
+const BRACKETED_PASTE_END = "[201~";
+
+/**
+ * Apply one raw-mode stdin chunk to the secret-entry state, character by
+ * character.
+ *
+ * A single `data` event can carry many characters — most importantly on paste,
+ * where terminals may also wrap the payload in bracketed-paste markers
+ * (`ESC[200~ … ESC[201~`). Treating the whole buffer as one logical "key" (the
+ * previous bug) duplicated and corrupted pasted secrets — a 31-char key could
+ * arrive as 61 chars. This helper instead:
+ *
+ * - submits on Enter (`\n`/`\r`) or EOF (``), ignoring the rest of the chunk;
+ * - cancels on Ctrl+C (``);
+ * - applies backspace (``/`\b`) per character;
+ * - drops bracketed-paste markers and any other ESC-led control sequence
+ *   (skipping from `ESC` to the next ASCII letter, inclusive);
+ * - appends only printable characters (code point >= 32).
+ *
+ * Pure and synchronous so it can be unit-tested without a TTY.
+ */
+export function applySecretInputChunk(state: SecretInputState, chunk: string): SecretInputState {
+	if (state.done || state.cancelled) return state;
+
+	for (let i = 0; i < chunk.length; i++) {
+		const ch = chunk[i];
+
+		// Strip bracketed-paste markers and any other ESC-led control sequence.
+		if (ch === ESC) {
+			if (chunk.startsWith(BRACKETED_PASTE_START, i)) {
+				i += BRACKETED_PASTE_START.length - 1;
+				continue;
+			}
+			if (chunk.startsWith(BRACKETED_PASTE_END, i)) {
+				i += BRACKETED_PASTE_END.length - 1;
+				continue;
+			}
+			// Generic ESC sequence: skip up to and including the next ASCII letter
+			// (the sequence terminator), or to the end of the chunk if none.
+			let j = i + 1;
+			while (j < chunk.length && !/[A-Za-z]/.test(chunk[j])) j++;
+			i = j; // loop's i++ lands past the terminator letter
+			continue;
+		}
+
+		if (ch === "\n" || ch === "\r" || ch === "") {
+			state.done = true;
+			return state;
+		}
+		if (ch === "") {
+			state.cancelled = true;
+			return state;
+		}
+		if (ch === "" || ch === "\b") {
+			if (state.value.length > 0) state.value = state.value.slice(0, -1);
+			continue;
+		}
+		if (ch.charCodeAt(0) >= 32) {
+			state.value += ch;
+		}
+	}
+
+	return state;
+}
+
+/**
  * Prompt for visible text input.
  * Returns null on EOF or Ctrl+C.
  */
@@ -43,30 +122,26 @@ export async function promptSecret(prompt: string): Promise<string | null> {
 			process.stdout.write(prompt);
 			stdin.setRawMode(true);
 
-			let secret = "";
+			const state: SecretInputState = { value: "" };
 			stdin.resume();
 			const handler = (char: Buffer) => {
-				const c = char.toString();
-				if (c === "\n" || c === "\r" || c === "\u0004") {
+				const before = state.value.length;
+				applySecretInputChunk(state, char.toString());
+
+				// Reconcile the (cosmetic) asterisk echo with the new secret length.
+				const after = state.value.length;
+				if (after > before) {
+					process.stdout.write("*".repeat(after - before));
+				} else if (after < before) {
+					process.stdout.write("\b \b".repeat(before - after));
+				}
+
+				if (state.cancelled || state.done) {
 					stdin.setRawMode(wasRaw ?? false);
 					stdin.removeListener("data", handler);
 					stdin.pause();
 					process.stdout.write("\n");
-					resolve(secret.trim() || null);
-				} else if (c === "\u0003") {
-					stdin.setRawMode(wasRaw ?? false);
-					stdin.removeListener("data", handler);
-					stdin.pause();
-					process.stdout.write("\n");
-					resolve(null);
-				} else if (c === "\u007F" || c === "\b") {
-					if (secret.length > 0) {
-						secret = secret.slice(0, -1);
-						process.stdout.write("\b \b");
-					}
-				} else if (c.charCodeAt(0) >= 32) {
-					secret += c;
-					process.stdout.write("*");
+					resolve(state.cancelled ? null : state.value.trim() || null);
 				}
 			};
 			stdin.on("data", handler);
