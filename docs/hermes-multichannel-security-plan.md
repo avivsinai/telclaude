@@ -258,7 +258,7 @@ Tasks:
 4. Route outbound through `tc_outbound_prepare` and `tc_outbound_execute`.
 5. Approval prompt shows exact recipient/thread/body/attachments/hash/TTL/idempotency key.
 6. Add negative probes for wrong recipient, changed body, wrong conversation attachment, replayed idempotency key, missing sidecar, direct credential injection.
-7. Bridge contract: implement `POST /v1/whatsapp/send` and `GET /health`; verify relay-issued `x-telclaude-whatsapp-session-key` and `x-telclaude-whatsapp-request-digest` against the exact request body before sending; pin the bridge image by digest once published.
+7. Bridge contract: implement `POST /v1/whatsapp/send` and `GET /health`; verify relay-issued `x-telclaude-whatsapp-session-key`, `x-telclaude-whatsapp-request-digest`, expiry, and shared-secret HMAC against the exact request body before sending; pin the bridge image by digest once published.
 
 Exit criteria:
 

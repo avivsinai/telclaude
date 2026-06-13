@@ -199,6 +199,17 @@ pnpm dev hermes verify-live
 
 Treat `doctor` + `probes` + `verify-live` as the readiness gate: doctor fails closed unless the pinned feature-probe matrix and compatibility lockfile are present and green, `prove --upstream-clean` proves the checkout is unmodified upstream, and `verify-live` exercises the live contained runtime end to end.
 
+### Connector readiness
+
+Personal/family usability needs more than a contained runtime. The operational baseline is:
+
+- **Google provider:** `providers[].id="google"` with `gmail`, `calendar`, `drive`, and `contacts`, plus a matching `security.network.privateEndpoints` entry for `google-services:3002`. Hermes gets this only through relay-issued authority (`hermes.privateRuntime.providerScopes` or the bound profile's `providerScopes`). An unscoped authority still denies provider reads and writes.
+- **Provider writes:** Gmail draft creation, calendar mutations, Drive writes, and future write-capable providers must stay on the two-phase path: `tc_provider_prepare_write` -> human approval/TOTP -> `tc_provider_execute_write`. Do not add inline write shortcuts to connector setup.
+- **Web:** `web.fetch` is relay-served; arbitrary public browsing needs `TELCLAUDE_NETWORK_MODE=permissive` while metadata and RFC1918 destinations remain blocked. `web.search` additionally needs `TELCLAUDE_BRAVE_SEARCH_API_KEY` or the Brave key in the host keychain.
+- **Edge channels:** Telegram is the primary inbound operator surface. WhatsApp is the live edge transport through `whatsapp-bridge`; outbound sends require `TELCLAUDE_WHATSAPP_BRIDGE_SECRET` plus `TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS`, and inbound bridge events require `TELCLAUDE_WHATSAPP_INBOUND_SECRET` plus `TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES`. Keep real phone numbers in local `.env` / private deployment secrets only. Gmail/email access is the Google provider, not a standalone edge email connector.
+
+Run `pnpm dev doctor --json` and inspect the `Hermes Connectors` category for advisory readiness. These checks intentionally skip optional missing connectors instead of hard-failing minimal deployments; the runtime and MCP policy layers remain fail-closed when a scoped authority, provider, bridge, or approval token is absent.
+
 ### The contained runtime (Docker)
 
 In Docker the Hermes runtime is a second compose overlay, `docker/docker-compose.hermes.yml`, with the relay plus separate private/social runtime containers on separate internal-only bridge networks:

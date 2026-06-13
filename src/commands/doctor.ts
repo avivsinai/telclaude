@@ -23,6 +23,7 @@ import {
 	checkClaudeLogin,
 	checkConfigLoaded,
 	checkDockerContainers,
+	checkHermesConnectorReadiness,
 	checkNetworkConfig,
 	checkProviders,
 	checkSandbox,
@@ -96,6 +97,7 @@ export async function runDoctor(cwd: string = process.cwd()): Promise<DoctorRepo
 	checks.push(await checkTotpDaemon());
 	checks.push(...checkNetworkConfig(cfg));
 	checks.push(...(await checkProviders(cfg)));
+	checks.push(...(await checkHermesConnectorReadiness(cfg)));
 	checks.push(...(await checkSkills(cwd)));
 	checks.push(...(await checkSandbox()));
 	checks.push(...(await checkDockerContainers()));
