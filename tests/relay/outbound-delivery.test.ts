@@ -800,6 +800,40 @@ describe("outbound delivery dispatcher", () => {
 		expect(seen?.body).not.toContain("relay-issued-single-use-session");
 	});
 
+	it("does not expose sidecar internal failure details in delivery receipts", async () => {
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			sendToSidecar: async () => ({
+				ok: false,
+				code: "whatsapp_bridge_send_failed",
+				reason: "Error: vendor stack trace /tmp/private/path",
+				retryable: true,
+			}),
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(JSON.stringify(failures)).not.toContain("/tmp/private/path");
+	});
+
 	it("fails closed before HTTP sidecar I/O when the shared bridge secret is missing", async () => {
 		let sidecarCalls = 0;
 		const failures: unknown[] = [];

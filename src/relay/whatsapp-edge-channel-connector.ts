@@ -306,10 +306,14 @@ async function sendViaHttpSidecar(
 
 function mapSidecarResponse(response: WhatsAppSidecarSendResponse): ChannelSendOutcome {
 	if (!response.ok) {
+		const reason =
+			response.code === "whatsapp_bridge_send_failed"
+				? "WhatsApp bridge send failed."
+				: response.reason;
 		return {
 			ok: false,
 			code: response.code,
-			...(response.reason ? { reason: response.reason } : {}),
+			...(reason ? { reason } : {}),
 			retryable: response.retryable ?? false,
 		};
 	}

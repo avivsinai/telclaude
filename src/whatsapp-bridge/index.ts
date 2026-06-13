@@ -139,7 +139,7 @@ class WhatsAppBridgeRuntime {
 			return {
 				ok: false,
 				code: "whatsapp_bridge_send_failed",
-				reason: errorMessage(err),
+				reason: "WhatsApp bridge send failed.",
 				retryable: true,
 			};
 		}
