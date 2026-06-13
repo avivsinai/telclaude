@@ -302,6 +302,12 @@ This keeps the "good friend" continuity benefits of Claude's local memory system
 
 Telclaude can communicate with private REST APIs (sidecars) for services like health records, banking, or government portals.
 
+The default Docker stack includes the Google Services sidecar. The checked-in
+`telclaude.json.example` wires it as provider `google`, allowlists the
+`google-services:3002` private endpoint, and scopes Hermes to that provider via
+`hermes.privateRuntime.providerScopes`. Gmail, Calendar, Drive, and Contacts are
+provider actions; provider writes still use prepare -> approval/TOTP -> execute.
+
 **Setup:**
 
 1. **Configure the provider** in `telclaude.json`:
@@ -363,12 +369,32 @@ When enabled (`TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1`), the relay serves a relay-o
 
 ### Bring it up
 
+Base Hermes runtime:
+
 ```bash
 TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 TELCLAUDE_HERMES_MCP_RELAY_TOKEN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaude tc-hermes-contained tc-hermes-social
 ```
+
+Connector-enabled personal/family runtime, including the optional WhatsApp bridge
+container but without committing real phone numbers:
+
+```bash
+TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+TELCLAUDE_HERMES_MCP_RELAY_TOKEN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+docker compose -f docker-compose.yml -f docker-compose.hermes.yml --profile whatsapp up -d --build
+```
+
+Set `TELCLAUDE_NETWORK_MODE=permissive` for relay-served arbitrary public fetch.
+Set `TELCLAUDE_BRAVE_SEARCH_API_KEY` or the host keychain Brave secret for
+`tc_web_search`. Generate `TELCLAUDE_WHATSAPP_BRIDGE_SECRET` with
+`openssl rand -hex 32`, then set `TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS` and
+`TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES` only in local `.env` /
+deployment secrets. `telclaude dev doctor` reports the Hermes connector category
+as advisory readiness without failing a minimal deployment.
 
 ### Overlay environment variables
 

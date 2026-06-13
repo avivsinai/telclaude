@@ -21,10 +21,12 @@ import {
 	type OutboundConversationContext,
 } from "../../src/relay/outbound-delivery-dispatcher.js";
 import {
+	createWhatsAppBridgeAuthToken,
 	createWhatsAppEdgeChannelConnector,
 	digestWhatsAppSidecarSendRequest,
 	WHATSAPP_INBOUND_RISK_WRAP_REQUIRED,
 	WHATSAPP_SIDECAR_ALLOWED_HOST,
+	WHATSAPP_SIDECAR_AUTH_HEADER,
 	WHATSAPP_SIDECAR_MAX_MEDIA_BYTES,
 	WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER,
 	WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER,
@@ -35,6 +37,7 @@ import {
 const HEX64 = "a".repeat(64);
 const OPERATOR_WHATSAPP_RECIPIENT = "whatsapp:+15551234567";
 const OTHER_WHATSAPP_RECIPIENT = "whatsapp:+15557654321";
+const WHATSAPP_BRIDGE_SECRET = "test-whatsapp-bridge-secret";
 
 function preparedOutbound(overrides: Partial<PreparedOutbound> = {}): PreparedOutbound {
 	return PreparedOutboundSchema.parse({
@@ -649,6 +652,7 @@ describe("outbound delivery dispatcher", () => {
 		const connector = createWhatsAppEdgeChannelConnector({
 			sidecarUrl: "http://whatsapp-bridge:3004",
 			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			bridgeSecret: WHATSAPP_BRIDGE_SECRET,
 			now: () => 1717459200000,
 			fetch: async (url, init) => {
 				seen.push({
@@ -709,6 +713,14 @@ describe("outbound delivery dispatcher", () => {
 				}),
 			}),
 		);
+		expect(seen[0]?.headers[WHATSAPP_SIDECAR_AUTH_HEADER]).toBe(
+			createWhatsAppBridgeAuthToken({
+				secret: WHATSAPP_BRIDGE_SECRET,
+				sessionKey: seen[0]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER] ?? "",
+				requestDigest: seen[0]?.headers[WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER] ?? "",
+				expiresAt: seen[0]?.headers[WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER] ?? "",
+			}),
+		);
 		expect(seen[1]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER]).not.toBe(
 			seen[0]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER],
 		);
@@ -730,6 +742,7 @@ describe("outbound delivery dispatcher", () => {
 		const connector = createWhatsAppEdgeChannelConnector({
 			sidecarUrl: "http://whatsapp-bridge:3004",
 			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			bridgeSecret: WHATSAPP_BRIDGE_SECRET,
 			bridgeSessionFactory: async (request) => ({
 				sessionKey: "relay-issued-single-use-session",
 				requestDigest: digestWhatsAppSidecarSendRequest(request),
@@ -776,7 +789,89 @@ describe("outbound delivery dispatcher", () => {
 				}),
 			}),
 		);
+		expect(seen?.headers[WHATSAPP_SIDECAR_AUTH_HEADER]).toBe(
+			createWhatsAppBridgeAuthToken({
+				secret: WHATSAPP_BRIDGE_SECRET,
+				sessionKey: "relay-issued-single-use-session",
+				requestDigest: seen?.headers[WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER] ?? "",
+				expiresAt: seen?.headers[WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER] ?? "",
+			}),
+		);
 		expect(seen?.body).not.toContain("relay-issued-single-use-session");
+	});
+
+	it("does not expose sidecar internal failure details in delivery receipts", async () => {
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			sendToSidecar: async () => ({
+				ok: false,
+				code: "whatsapp_bridge_send_failed",
+				reason: "Error: vendor stack trace /tmp/private/path",
+				retryable: true,
+			}),
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(JSON.stringify(failures)).not.toContain("/tmp/private/path");
+	});
+
+	it("fails closed before HTTP sidecar I/O when the shared bridge secret is missing", async () => {
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "http://whatsapp-bridge:3004",
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			fetch: async () => {
+				sidecarCalls += 1;
+				throw new Error("sidecar must not be called without bridge secret");
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_bridge_secret_unconfigured",
+				retryable: false,
+			}),
+		]);
 	});
 
 	it("applies bridge-session binding to injected sidecar senders", async () => {
@@ -834,6 +929,7 @@ describe("outbound delivery dispatcher", () => {
 		const connector = createWhatsAppEdgeChannelConnector({
 			sidecarUrl: "http://whatsapp-bridge:3004",
 			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			bridgeSecret: WHATSAPP_BRIDGE_SECRET,
 			bridgeSessionFactory: async () => ({
 				sessionKey: "relay-issued-single-use-session",
 				requestDigest: `sha256:${"b".repeat(64)}`,

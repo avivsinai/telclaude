@@ -19,17 +19,17 @@
       // Private endpoints allow WebFetch to local network services
       // Required for external providers (sidecars)
       //
-      // Built-in sidecar: telclaude ships a Google Services container.
-      // Uncomment the entry below in your LOCAL copy if you want the agent
-      // to reach it. Keep host-specific sidecars such as israel-services in
-      // your local config only; do not commit them to the repo.
+      // Built-in sidecar: telclaude ships a Google Services container and the
+      // Docker compose stack starts it by default. Keep host-specific sidecars
+      // such as israel-services in your local config only; do not commit them
+      // to the repo.
       "privateEndpoints": [
-        // {
-        //   "label": "google-services",
-        //   "host": "google-services",
-        //   "ports": [3002],
-        //   "description": "Google services sidecar"
-        // },
+        {
+          "label": "google-services",
+          "host": "google-services",
+          "ports": [3002],
+          "description": "Google services sidecar"
+        },
         //
         // Example: Local sidecar on port 3001
         // {
@@ -59,15 +59,15 @@
 
   // External providers (sidecar services)
   // These are private REST APIs that telclaude can call via WebFetch.
-  // The built-in Google sidecar is shown first; private sidecars should stay
+  // The built-in Google sidecar is enabled first; private sidecars should stay
   // in your local config and/or docker-compose.override.yml, not tracked files.
   "providers": [
-    // {
-    //   "id": "google",
-    //   "baseUrl": "http://google-services:3002",
-    //   "services": ["gmail", "calendar", "drive", "contacts"],
-    //   "description": "Google services (Gmail, Calendar, Drive, Contacts)"
-    // },
+    {
+      "id": "google",
+      "baseUrl": "http://google-services:3002",
+      "services": ["gmail", "calendar", "drive", "contacts"],
+      "description": "Google services (Gmail, Calendar, Drive, Contacts)"
+    },
     //
     // Example: Citizen services sidecar
     // {
@@ -85,6 +85,24 @@
     //
     // OTP flow: When provider returns challenge_pending, user sends /otp <service> <code>
   ],
+
+  "hermes": {
+    "privateRuntime": {
+      // Provider access is granted by the relay-issued Hermes authority handle.
+      // The agent cannot self-assert access to unscoped providers.
+      "providerScopes": ["google"],
+      "capabilityScopes": [
+        "web.fetch",
+        "web.search",
+        "media.image",
+        "media.tts",
+        "skills.request"
+      ],
+      // WhatsApp is the live edge transport. Gmail/email access is through the
+      // Google provider above; mutations still go through prepare/approve/execute.
+      "outboundChannels": ["whatsapp"]
+    }
+  },
 
   "inbound": {
     "reply": {

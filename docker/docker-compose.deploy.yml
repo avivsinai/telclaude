@@ -7,6 +7,7 @@
 # Usage:
 #   1. Build images locally:
 #        docker build -t telclaude:latest -f docker/Dockerfile .
+#        docker build -t telclaude-whatsapp-bridge:latest -f docker/Dockerfile.whatsapp-bridge .
 #        docker build -t telclaude-totp:latest -f docker/Dockerfile.totp .
 #        docker build -t telclaude-vault:latest -f docker/Dockerfile.vault .
 #   2. Ship to target:
@@ -91,6 +92,7 @@ services:
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude}
       - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-http://whatsapp-bridge:3004}
+      - TELCLAUDE_WHATSAPP_BRIDGE_SECRET=${TELCLAUDE_WHATSAPP_BRIDGE_SECRET:-}
       - TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS=${TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS:-}
       # Signed WhatsApp inbound bridge events. The relay verifies this HMAC before CL-1.
       - TELCLAUDE_WHATSAPP_INBOUND_SECRET=${TELCLAUDE_WHATSAPP_INBOUND_SECRET:-}
@@ -185,12 +187,15 @@ services:
   # ─────────────────────────────────────────────────────────────────────────────
   whatsapp-bridge:
     profiles: ["whatsapp"]
-    image: ${TELCLAUDE_WHATSAPP_BRIDGE_IMAGE:-ghcr.io/avivsinai/telclaude-whatsapp-bridge:latest}
+    image: ${TELCLAUDE_WHATSAPP_BRIDGE_IMAGE:-telclaude-whatsapp-bridge:latest}
     container_name: telclaude-whatsapp-bridge
 
     environment:
       - WHATSAPP_BRIDGE_PORT=3004
       - WHATSAPP_BRIDGE_DATA_DIR=/data
+      - TELCLAUDE_RELAY_INBOUND_URL=http://telclaude:8790/v1/whatsapp/inbound
+      - TELCLAUDE_WHATSAPP_BRIDGE_SECRET=${TELCLAUDE_WHATSAPP_BRIDGE_SECRET:-}
+      - TELCLAUDE_WHATSAPP_INBOUND_SECRET=${TELCLAUDE_WHATSAPP_INBOUND_SECRET:-}
       - NODE_ENV=production
 
     volumes:

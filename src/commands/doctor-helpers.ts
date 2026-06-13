@@ -18,6 +18,16 @@ import { collectAgentRuntimeStatuses } from "../agent-runtime/status.js";
 import type { TelclaudeConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
+import {
+	TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV,
+	TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV,
+	TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV,
+	WHATSAPP_SIDECAR_ALLOWED_HOST,
+} from "../relay/whatsapp-edge-channel-connector.js";
+import {
+	TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES_ENV,
+	TELCLAUDE_WHATSAPP_INBOUND_SECRET_ENV,
+} from "../relay/whatsapp-inbound-http.js";
 import { getAllDraftSkillRoots, getAllSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "doctor-helpers" });
@@ -618,6 +628,384 @@ export async function checkProviders(cfg: TelclaudeConfig): Promise<CheckResult[
 	}
 
 	return checks;
+}
+
+export interface HermesConnectorReadinessOptions {
+	readonly env?: Partial<Record<string, string | undefined>>;
+	readonly webSearchConfigured?: boolean | (() => boolean | Promise<boolean>);
+}
+
+/**
+ * Advisory readiness for the practical Hermes connector surface. These checks
+ * intentionally do not fail a minimal deployment: connector omission should be
+ * visible, while the security posture remains fail-closed at the relay/MCP
+ * authority layer.
+ */
+export async function checkHermesConnectorReadiness(
+	cfg: TelclaudeConfig,
+	options: HermesConnectorReadinessOptions = {},
+): Promise<CheckResult[]> {
+	const env = options.env ?? process.env;
+	const checks: CheckResult[] = [];
+	const providerScopes = new Set(cfg.hermes?.privateRuntime?.providerScopes ?? []);
+	const capabilityScopes = new Set(cfg.hermes?.privateRuntime?.capabilityScopes ?? []);
+	const outboundChannels = new Set(cfg.hermes?.privateRuntime?.outboundChannels ?? []);
+	const providers = cfg.providers ?? [];
+
+	checks.push(...checkHermesGoogleReadiness(cfg, providerScopes, providers));
+	checks.push(await checkHermesWebFetchReadiness(capabilityScopes, env));
+	checks.push(await checkHermesWebSearchReadiness(capabilityScopes, options));
+	checks.push(...checkHermesWhatsAppReadiness(outboundChannels, env));
+
+	return checks;
+}
+
+function checkHermesGoogleReadiness(
+	cfg: TelclaudeConfig,
+	providerScopes: ReadonlySet<string>,
+	providers: NonNullable<TelclaudeConfig["providers"]>,
+): CheckResult[] {
+	const category = "Hermes Connectors";
+	if (!providerScopes.has("google")) {
+		return [
+			skip(
+				"hermes.connectors.google.scope",
+				category,
+				"Google provider not scoped for Hermes private runtime",
+				'Set hermes.privateRuntime.providerScopes to include google, or bind a profile with providerScopes: ["google"].',
+			),
+		];
+	}
+
+	const checks: CheckResult[] = [
+		pass(
+			"hermes.connectors.google.scope",
+			category,
+			"Google provider scoped through Hermes authority",
+		),
+	];
+	const google = providers.find((provider) => provider.id === "google");
+	if (!google) {
+		checks.push(
+			warn(
+				"hermes.connectors.google.provider",
+				category,
+				"Google scope granted but provider is not configured",
+				"Provider authority remains fail-closed until providers[] contains id=google.",
+				"telclaude providers setup google --base-url http://google-services:3002",
+			),
+		);
+		return checks;
+	}
+
+	checks.push(
+		pass(
+			"hermes.connectors.google.provider",
+			category,
+			"Google provider configured",
+			`services=${google.services.join(",") || "(none)"}`,
+		),
+	);
+
+	const requiredServices = ["gmail", "calendar", "drive", "contacts"];
+	const missingServices = requiredServices.filter((service) => !google.services.includes(service));
+	if (missingServices.length > 0) {
+		checks.push(
+			warn(
+				"hermes.connectors.google.services",
+				category,
+				`Google provider missing service(s): ${missingServices.join(", ")}`,
+				"Reads and approval-gated writes are available only for advertised provider services.",
+			),
+		);
+	} else {
+		checks.push(
+			pass(
+				"hermes.connectors.google.services",
+				category,
+				"Google Gmail/Calendar/Drive/Contacts services advertised",
+			),
+		);
+	}
+
+	const endpointCheck = providerHasPrivateEndpoint(cfg, google.baseUrl);
+	if (!endpointCheck.ok) {
+		checks.push(
+			warn(
+				"hermes.connectors.google.private-endpoint",
+				category,
+				"Google provider baseUrl is not in privateEndpoints",
+				endpointCheck.detail,
+				"Add google-services to security.network.privateEndpoints.",
+			),
+		);
+	} else {
+		checks.push(
+			pass(
+				"hermes.connectors.google.private-endpoint",
+				category,
+				"Google provider has matching private endpoint allowlist",
+			),
+		);
+	}
+
+	return checks;
+}
+
+function providerHasPrivateEndpoint(
+	cfg: TelclaudeConfig,
+	baseUrl: string,
+): { readonly ok: true } | { readonly ok: false; readonly detail: string } {
+	let parsed: URL;
+	try {
+		parsed = new URL(baseUrl);
+	} catch {
+		return { ok: false, detail: `Invalid provider baseUrl: ${baseUrl}` };
+	}
+	const port = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+	const endpoints = cfg.security?.network?.privateEndpoints ?? [];
+	for (const endpoint of endpoints) {
+		if (endpoint.host !== parsed.hostname) continue;
+		const ports = endpoint.ports ?? [80, 443];
+		if (ports.includes(port)) return { ok: true };
+	}
+	return {
+		ok: false,
+		detail: `No private endpoint matched host=${parsed.hostname} port=${port}.`,
+	};
+}
+
+async function checkHermesWebFetchReadiness(
+	capabilityScopes: ReadonlySet<string>,
+	env: Partial<Record<string, string | undefined>>,
+): Promise<CheckResult> {
+	const category = "Hermes Connectors";
+	if (!capabilityScopes.has("web.fetch")) {
+		return skip(
+			"hermes.connectors.web.fetch",
+			category,
+			"web.fetch capability not scoped for Hermes private runtime",
+		);
+	}
+	const networkMode = env.TELCLAUDE_NETWORK_MODE?.trim() || "restricted";
+	if (networkMode === "permissive" || networkMode === "open") {
+		return pass(
+			"hermes.connectors.web.fetch",
+			category,
+			`public web fetch available through relay egress mode=${networkMode}`,
+		);
+	}
+	return skip(
+		"hermes.connectors.web.fetch",
+		category,
+		"web.fetch scoped but arbitrary public browsing is not enabled",
+		"Set TELCLAUDE_NETWORK_MODE=permissive for relay-served public fetch. RFC1918 and metadata endpoints remain blocked.",
+	);
+}
+
+async function checkHermesWebSearchReadiness(
+	capabilityScopes: ReadonlySet<string>,
+	options: HermesConnectorReadinessOptions,
+): Promise<CheckResult> {
+	const category = "Hermes Connectors";
+	if (!capabilityScopes.has("web.search")) {
+		return skip(
+			"hermes.connectors.web.search",
+			category,
+			"web.search capability not scoped for Hermes private runtime",
+		);
+	}
+
+	const configured = await resolveWebSearchConfigured(options);
+	if (configured) {
+		return pass(
+			"hermes.connectors.web.search",
+			category,
+			"web search configured through relay-owned Brave credentials",
+		);
+	}
+	return skip(
+		"hermes.connectors.web.search",
+		category,
+		"web.search scoped but Brave Search credentials are unavailable",
+		"Set TELCLAUDE_BRAVE_SEARCH_API_KEY or store the Brave key in the host keychain.",
+	);
+}
+
+async function resolveWebSearchConfigured(
+	options: HermesConnectorReadinessOptions,
+): Promise<boolean> {
+	const override = options.webSearchConfigured;
+	if (typeof override === "boolean") return override;
+	if (typeof override === "function") return await override();
+	try {
+		const { isWebSearchConfigured } = await import("../services/web-search.js");
+		return await isWebSearchConfigured();
+	} catch (err) {
+		logger.debug({ error: String(err) }, "web search readiness check failed");
+		return false;
+	}
+}
+
+function checkHermesWhatsAppReadiness(
+	outboundChannels: ReadonlySet<string>,
+	env: Partial<Record<string, string | undefined>>,
+): CheckResult[] {
+	const category = "Hermes Connectors";
+	if (!outboundChannels.has("whatsapp")) {
+		return [
+			skip(
+				"hermes.connectors.whatsapp.scope",
+				category,
+				"WhatsApp outbound channel not scoped for Hermes private runtime",
+			),
+		];
+	}
+
+	const checks: CheckResult[] = [
+		pass(
+			"hermes.connectors.whatsapp.scope",
+			category,
+			"WhatsApp outbound channel scoped through Hermes authority",
+		),
+	];
+	const sidecarUrl = env[TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV]?.trim();
+	if (!sidecarUrl) {
+		checks.push(
+			skip(
+				"hermes.connectors.whatsapp.sidecar",
+				category,
+				"WhatsApp sidecar URL not set in this environment",
+				"Docker compose injects http://whatsapp-bridge:3004; native runs must set TELCLAUDE_WHATSAPP_SIDECAR_URL.",
+			),
+		);
+	} else {
+		checks.push(checkWhatsAppSidecarUrl(sidecarUrl));
+	}
+	const bridgeSecret = env[TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV]?.trim();
+	if (!sidecarUrl) {
+		checks.push(
+			skip(
+				"hermes.connectors.whatsapp.bridge-auth",
+				category,
+				"WhatsApp bridge auth not checked because sidecar URL is unset",
+			),
+		);
+	} else if (!bridgeSecret) {
+		checks.push(
+			warn(
+				"hermes.connectors.whatsapp.bridge-auth",
+				category,
+				"WhatsApp sidecar URL set without shared bridge secret",
+				`Set ${TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV}; outbound bridge calls fail closed without it.`,
+			),
+		);
+	} else {
+		checks.push(
+			pass(
+				"hermes.connectors.whatsapp.bridge-auth",
+				category,
+				"WhatsApp bridge shared-secret auth configured",
+			),
+		);
+	}
+
+	const allowedRecipients = csvEnv(env[TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV]);
+	if (allowedRecipients.length === 0) {
+		checks.push(
+			skip(
+				"hermes.connectors.whatsapp.outbound-allowlist",
+				category,
+				"WhatsApp outbound recipient allowlist is empty",
+				"Outbound sends stay fail-closed until TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS is set to operator-owned E.164 addresses.",
+			),
+		);
+	} else {
+		checks.push(
+			pass(
+				"hermes.connectors.whatsapp.outbound-allowlist",
+				category,
+				`${allowedRecipients.length} WhatsApp outbound recipient(s) allowlisted`,
+			),
+		);
+	}
+
+	const inboundSecret = env[TELCLAUDE_WHATSAPP_INBOUND_SECRET_ENV]?.trim();
+	const inboundAddresses = csvEnv(env[TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES_ENV]);
+	if (!inboundSecret && inboundAddresses.length === 0) {
+		checks.push(
+			skip(
+				"hermes.connectors.whatsapp.inbound",
+				category,
+				"WhatsApp inbound bridge not configured",
+				"Set TELCLAUDE_WHATSAPP_INBOUND_SECRET and operator addresses when enabling the bridge.",
+			),
+		);
+	} else if (!inboundSecret) {
+		checks.push(
+			warn(
+				"hermes.connectors.whatsapp.inbound",
+				category,
+				"WhatsApp inbound addresses set without HMAC secret",
+				"Relay endpoint will reject inbound bridge events until TELCLAUDE_WHATSAPP_INBOUND_SECRET is set.",
+			),
+		);
+	} else if (inboundAddresses.length === 0) {
+		checks.push(
+			skip(
+				"hermes.connectors.whatsapp.inbound",
+				category,
+				"WhatsApp inbound HMAC secret set; waiting for operator phone addresses",
+				"TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES must be set before inbound events dispatch to Hermes.",
+			),
+		);
+	} else {
+		checks.push(
+			pass(
+				"hermes.connectors.whatsapp.inbound",
+				category,
+				`${inboundAddresses.length} WhatsApp inbound operator address(es) linked`,
+			),
+		);
+	}
+
+	return checks;
+}
+
+function checkWhatsAppSidecarUrl(sidecarUrl: string): CheckResult {
+	const category = "Hermes Connectors";
+	let parsed: URL;
+	try {
+		parsed = new URL(sidecarUrl);
+	} catch {
+		return warn(
+			"hermes.connectors.whatsapp.sidecar",
+			category,
+			"WhatsApp sidecar URL is invalid",
+			`Value of ${TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV} could not be parsed as a URL.`,
+		);
+	}
+	if (parsed.hostname !== WHATSAPP_SIDECAR_ALLOWED_HOST) {
+		return warn(
+			"hermes.connectors.whatsapp.sidecar",
+			category,
+			"WhatsApp sidecar must use the isolated bridge hostname",
+			`Expected host ${WHATSAPP_SIDECAR_ALLOWED_HOST}, got ${parsed.hostname}.`,
+		);
+	}
+	return pass(
+		"hermes.connectors.whatsapp.sidecar",
+		category,
+		"WhatsApp sidecar URL targets isolated bridge hostname",
+		sidecarUrl,
+	);
+}
+
+function csvEnv(value: string | undefined): string[] {
+	return (value ?? "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter(Boolean);
 }
 
 /**

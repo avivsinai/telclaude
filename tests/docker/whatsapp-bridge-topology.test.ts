@@ -8,6 +8,8 @@ const whatsappSidecarUrlEnv =
 	"{TELCLAUDE_WHATSAPP_SIDECAR_URL:-http://whatsapp-bridge:3004}";
 const whatsappAllowedRecipientsEnv =
 	"TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS=$" + "{TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS:-}";
+const whatsappBridgeSecretEnv =
+	"TELCLAUDE_WHATSAPP_BRIDGE_SECRET=$" + "{TELCLAUDE_WHATSAPP_BRIDGE_SECRET:-}";
 const internalHostsEnvPattern = /TELCLAUDE_INTERNAL_HOSTS=\$\{TELCLAUDE_INTERNAL_HOSTS:-([^}]*)\}/;
 
 function readDockerFile(relativePath: string): string {
@@ -59,12 +61,19 @@ describe("WhatsApp bridge Docker topology", () => {
 
 		expect(relay).toContain("TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude");
 		expect(relay).toContain(whatsappSidecarUrlEnv);
+		expect(relay).toContain(whatsappBridgeSecretEnv);
 		expect(relay).toContain(whatsappAllowedRecipientsEnv);
 		expect(relayNetworks).toContain("- relay-whatsapp-net");
 		expect(relayNetworks).not.toContain("- whatsapp-egress");
 		expect(bridge).toContain('profiles: ["whatsapp"]');
+		if (relativePath === "docker/docker-compose.yml") {
+			expect(bridge).toContain("docker/Dockerfile.whatsapp-bridge");
+		} else {
+			expect(bridge).toContain("telclaude-whatsapp-bridge:latest");
+		}
 		expect(bridge).toContain("healthcheck:");
 		expect(bridge).toContain("http://localhost:3004/health");
+		expect(bridge).toContain(whatsappBridgeSecretEnv);
 		expect(bridgeNetworks).toContain("- relay-whatsapp-net");
 		expect(bridgeNetworks).toContain("- whatsapp-egress");
 		expect(bridgeNetworks).not.toContain("- relay-egress");

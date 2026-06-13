@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { QUARANTINE_MAX_BYTES } from "./attachment-quarantine-store.js";
 import type {
@@ -13,10 +13,12 @@ export const WHATSAPP_INBOUND_RISK_WRAP_REQUIRED =
 	"WhatsApp inbound listener requires CL-1 risk wrapping before edge.ingest";
 export const TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV = "TELCLAUDE_WHATSAPP_SIDECAR_URL";
 export const TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV = "TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS";
+export const TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV = "TELCLAUDE_WHATSAPP_BRIDGE_SECRET";
 export const WHATSAPP_SIDECAR_ALLOWED_HOST = "whatsapp-bridge";
 export const WHATSAPP_SIDECAR_SESSION_KEY_HEADER = "x-telclaude-whatsapp-session-key";
 export const WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER = "x-telclaude-whatsapp-request-digest";
 export const WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER = "x-telclaude-whatsapp-session-expires-at";
+export const WHATSAPP_SIDECAR_AUTH_HEADER = "x-telclaude-whatsapp-bridge-auth";
 export const DEFAULT_WHATSAPP_BRIDGE_SESSION_TTL_MS = 60_000;
 
 export type WhatsAppSidecarAttachment = {
@@ -82,6 +84,7 @@ type FetchLike = (
 export type WhatsAppEdgeChannelConnectorOptions = {
 	readonly sidecarUrl?: string;
 	readonly allowedRecipientAddressRefs?: readonly string[];
+	readonly bridgeSecret?: string;
 	readonly bridgeSessionFactory?: WhatsAppBridgeSessionFactory;
 	readonly sendToSidecar?: WhatsAppSidecarSender;
 	readonly fetch?: FetchLike;
@@ -144,7 +147,13 @@ export function createWhatsAppEdgeChannelConnector(
 			}
 			const session = await createBoundWhatsAppBridgeSession(bridgeSessionFactory, request.request);
 			if (!session.ok) return session;
-			return sendViaHttpSidecar(fetchImpl, sidecarUrl.url, session.session, request.request);
+			return sendViaHttpSidecar(
+				fetchImpl,
+				sidecarUrl.url,
+				session.session,
+				request.request,
+				options.bridgeSecret,
+			);
 		},
 		async startListener() {
 			throw new Error(WHATSAPP_INBOUND_RISK_WRAP_REQUIRED);
@@ -155,16 +164,20 @@ export function createWhatsAppEdgeChannelConnector(
 export function whatsappSidecarOptionsFromEnv(
 	env: Partial<
 		Record<
-			typeof TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV | typeof TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV,
+			| typeof TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV
+			| typeof TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV
+			| typeof TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV,
 			string | undefined
 		>
 	> = process.env,
 ): WhatsAppEdgeChannelConnectorOptions {
 	const sidecarUrl = env[TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV]?.trim();
 	const allowedRecipientAddressRefs = csvEnv(env[TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV]);
+	const bridgeSecret = env[TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV]?.trim();
 	return {
 		...(sidecarUrl ? { sidecarUrl } : {}),
 		...(allowedRecipientAddressRefs.length ? { allowedRecipientAddressRefs } : {}),
+		...(bridgeSecret ? { bridgeSecret } : {}),
 	};
 }
 
@@ -227,9 +240,25 @@ async function sendViaHttpSidecar(
 	sidecarUrl: URL,
 	session: WhatsAppBridgeSessionMaterial,
 	request: WhatsAppSidecarSendRequest,
+	bridgeSecret: string | undefined,
 ): Promise<ChannelSendOutcome> {
 	const checkedSession = validateWhatsAppBridgeSessionMaterial(session, request);
 	if (!checkedSession.ok) return checkedSession;
+	if (!bridgeSecret?.trim()) {
+		return {
+			ok: false,
+			code: "whatsapp_bridge_secret_unconfigured",
+			reason: `${TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV} is required for WhatsApp sidecar delivery`,
+			retryable: false,
+		};
+	}
+	const expiresAt = new Date(session.expiresAtMs).toISOString();
+	const authToken = createWhatsAppBridgeAuthToken({
+		secret: bridgeSecret,
+		sessionKey: checkedSession.session.sessionKey,
+		requestDigest: checkedSession.session.requestDigest,
+		expiresAt,
+	});
 	let response: Awaited<ReturnType<FetchLike>>;
 	try {
 		response = await fetchImpl(sidecarUrl, {
@@ -240,7 +269,8 @@ async function sendViaHttpSidecar(
 				"x-relay-proxy": "true",
 				[WHATSAPP_SIDECAR_SESSION_KEY_HEADER]: checkedSession.session.sessionKey,
 				[WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER]: checkedSession.session.requestDigest,
-				[WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER]: new Date(session.expiresAtMs).toISOString(),
+				[WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER]: expiresAt,
+				[WHATSAPP_SIDECAR_AUTH_HEADER]: authToken,
 			},
 			body: JSON.stringify(request),
 		});
@@ -276,10 +306,14 @@ async function sendViaHttpSidecar(
 
 function mapSidecarResponse(response: WhatsAppSidecarSendResponse): ChannelSendOutcome {
 	if (!response.ok) {
+		const reason =
+			response.code === "whatsapp_bridge_send_failed"
+				? "WhatsApp bridge send failed."
+				: response.reason;
 		return {
 			ok: false,
 			code: response.code,
-			...(response.reason ? { reason: response.reason } : {}),
+			...(reason ? { reason } : {}),
 			retryable: response.retryable ?? false,
 		};
 	}
@@ -465,6 +499,24 @@ export function createWhatsAppBridgeSessionMaterial(
 export function digestWhatsAppSidecarSendRequest(request: WhatsAppSidecarSendRequest): string {
 	const canonical = JSON.stringify(sortKeysDeep(request));
 	const digest = createHash("sha256").update(canonical).digest("hex");
+	return `sha256:${digest}`;
+}
+
+export function createWhatsAppBridgeAuthToken(input: {
+	readonly secret: string;
+	readonly sessionKey: string;
+	readonly requestDigest: string;
+	readonly expiresAt: string;
+}): `sha256:${string}` {
+	const secret = input.secret.trim();
+	const payload = JSON.stringify(
+		sortKeysDeep({
+			sessionKey: input.sessionKey,
+			requestDigest: input.requestDigest,
+			expiresAt: input.expiresAt,
+		}),
+	);
+	const digest = createHmac("sha256", secret).update(payload).digest("hex");
 	return `sha256:${digest}`;
 }
 

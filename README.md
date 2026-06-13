@@ -116,6 +116,15 @@ Note: Docker uses a shared **skill catalog** (`/home/telclaude-skill-catalog`) a
 
 The relay also compiles private Telegram memory into a working-set cache under `/home/telclaude-skills/projects/<project-slug>/memory/MEMORY.md`. That file is not the source of truth.
 
+For a connector-enabled Hermes run, copy the Docker examples, keep real phone numbers only in local `.env` / private config, and start the Hermes overlay plus the optional WhatsApp profile:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hermes.yml --profile whatsapp up -d --build
+docker compose exec telclaude telclaude dev doctor
+```
+
+`docker/telclaude.json.example` enables the built-in Google provider and scopes Hermes to it through `hermes.privateRuntime.providerScopes`. Gmail, Calendar, Drive, and Contacts are provider actions; Gmail "email" access is not a separate edge email transport. Writes still use the provider prepare -> human approval/TOTP -> execute flow. Public fetch needs `TELCLAUDE_NETWORK_MODE=permissive`; public search also needs `TELCLAUDE_BRAVE_SEARCH_API_KEY` or the host keychain secret. WhatsApp remains fail-closed until `TELCLAUDE_WHATSAPP_BRIDGE_SECRET`, `TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS`, and inbound operator addresses are set locally.
+
 ## Quick start (local)
 1) Clone and install
 ```bash
@@ -294,7 +303,7 @@ Metadata endpoints (169.254.169.254) and link-local addresses remain blocked reg
 ## External providers (sidecars)
 Telclaude integrates with private REST API sidecars via relay-proxied requests. Agents never call provider endpoints directly (enforced at both application and firewall layers).
 
-**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude providers setup google --base-url http://google-services:3002`.
+**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. The Docker example already configures `providers[].id=google`, the `google-services` private endpoint, and `hermes.privateRuntime.providerScopes=["google"]`. Native setup: `telclaude providers setup google --base-url http://google-services:3002`.
 
 **Configuration:**
 - Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).
@@ -405,6 +414,7 @@ All commands live under the `telclaude hermes` group; most accept `--json`. Prob
 | `telclaude hermes verify-live` | Run the live canary across the contained runtime, live MCP, and providers |
 | `telclaude hermes private-runtime status` | Show the relay-observed private-runtime state |
 | `telclaude hermes live-mcp probe-tokens` | Issue served-MCP containment probe tokens through the relay admin socket |
+| `telclaude dev doctor` | Includes advisory Hermes connector readiness for Google, web fetch/search, and WhatsApp |
 
 ### Media & messaging
 | Command | Description |

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildReport,
 	checkConfigLoaded,
+	checkHermesConnectorReadiness,
 	checkNetworkConfig,
 	findInstalledSkills,
 	summarize,
@@ -237,6 +238,163 @@ describe("checkNetworkConfig", () => {
 		const results = checkNetworkConfig(cfg);
 		expect(results.find((r) => r.name === "network.mode")?.status).toBe("pass");
 		expect(results.find((r) => r.name === "network.privateEndpoints")?.status).toBe("pass");
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// checkHermesConnectorReadiness
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("checkHermesConnectorReadiness", () => {
+	it("skips optional connector readiness on a minimal config", async () => {
+		const results = await checkHermesConnectorReadiness(makeMinimalConfig(), {
+			env: {},
+			webSearchConfigured: false,
+		});
+
+		expect(results.length).toBeGreaterThan(0);
+		expect(results.every((result) => result.status === "skip")).toBe(true);
+	});
+
+	it("passes Google/web/WhatsApp readiness when the operator scopes and configures them", async () => {
+		const cfg = makeMinimalConfig({
+			security: {
+				network: {
+					privateEndpoints: [
+						{
+							label: "google-services",
+							host: "google-services",
+							ports: [3002],
+						},
+					],
+				},
+			},
+			providers: [
+				{
+					id: "google",
+					baseUrl: "http://google-services:3002",
+					services: ["gmail", "calendar", "drive", "contacts"],
+				},
+			],
+			hermes: {
+				privateRuntime: {
+					providerScopes: ["google"],
+					capabilityScopes: ["web.fetch", "web.search"],
+					outboundChannels: ["whatsapp"],
+				},
+			},
+		});
+
+		const results = await checkHermesConnectorReadiness(cfg, {
+			env: {
+				TELCLAUDE_NETWORK_MODE: "permissive",
+				TELCLAUDE_WHATSAPP_SIDECAR_URL: "http://whatsapp-bridge:3004",
+				TELCLAUDE_WHATSAPP_BRIDGE_SECRET: "test-whatsapp-bridge-secret",
+				TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS: "whatsapp:+15551234567",
+				TELCLAUDE_WHATSAPP_INBOUND_SECRET: "test-secret",
+				TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES: "whatsapp:+15551234567",
+			},
+			webSearchConfigured: true,
+		});
+
+		expect(results.find((r) => r.name === "hermes.connectors.google.provider")?.status).toBe(
+			"pass",
+		);
+		expect(
+			results.find((r) => r.name === "hermes.connectors.google.private-endpoint")?.status,
+		).toBe("pass");
+		expect(results.find((r) => r.name === "hermes.connectors.web.fetch")?.status).toBe("pass");
+		expect(results.find((r) => r.name === "hermes.connectors.web.search")?.status).toBe("pass");
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.sidecar")?.status).toBe(
+			"pass",
+		);
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.bridge-auth")?.status).toBe(
+			"pass",
+		);
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.inbound")?.status).toBe(
+			"pass",
+		);
+	});
+
+	it("warns when Hermes is granted Google scope but no Google provider exists", async () => {
+		const cfg = makeMinimalConfig({
+			hermes: {
+				privateRuntime: {
+					providerScopes: ["google"],
+					capabilityScopes: [],
+					outboundChannels: [],
+				},
+			},
+		});
+
+		const results = await checkHermesConnectorReadiness(cfg, {
+			env: {},
+			webSearchConfigured: false,
+		});
+
+		expect(results.find((r) => r.name === "hermes.connectors.google.provider")?.status).toBe(
+			"warn",
+		);
+		expect(results.some((r) => r.status === "fail")).toBe(false);
+	});
+
+	it("allows WhatsApp bridge staging without real phone numbers", async () => {
+		const cfg = makeMinimalConfig({
+			hermes: {
+				privateRuntime: {
+					providerScopes: [],
+					capabilityScopes: [],
+					outboundChannels: ["whatsapp"],
+				},
+			},
+		});
+
+		const results = await checkHermesConnectorReadiness(cfg, {
+			env: {
+				TELCLAUDE_WHATSAPP_SIDECAR_URL: "http://whatsapp-bridge:3004",
+				TELCLAUDE_WHATSAPP_BRIDGE_SECRET: "test-whatsapp-bridge-secret",
+				TELCLAUDE_WHATSAPP_INBOUND_SECRET: "test-secret",
+			},
+			webSearchConfigured: false,
+		});
+
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.sidecar")?.status).toBe(
+			"pass",
+		);
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.bridge-auth")?.status).toBe(
+			"pass",
+		);
+		expect(
+			results.find((r) => r.name === "hermes.connectors.whatsapp.outbound-allowlist")?.status,
+		).toBe("skip");
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.inbound")?.status).toBe(
+			"skip",
+		);
+		expect(results.some((r) => r.status === "fail")).toBe(false);
+	});
+
+	it("warns when WhatsApp sidecar is staged without the shared bridge secret", async () => {
+		const cfg = makeMinimalConfig({
+			hermes: {
+				privateRuntime: {
+					providerScopes: [],
+					capabilityScopes: [],
+					outboundChannels: ["whatsapp"],
+				},
+			},
+		});
+
+		const results = await checkHermesConnectorReadiness(cfg, {
+			env: {
+				TELCLAUDE_WHATSAPP_SIDECAR_URL: "http://whatsapp-bridge:3004",
+			},
+			webSearchConfigured: false,
+		});
+
+		expect(results.find((r) => r.name === "hermes.connectors.whatsapp.bridge-auth")?.status).toBe(
+			"warn",
+		);
+		expect(results.some((r) => r.status === "fail")).toBe(false);
 	});
 });
 
