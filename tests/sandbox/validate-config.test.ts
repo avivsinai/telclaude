@@ -412,6 +412,17 @@ TELCLAUDE_LOG_LEVEL=info
 			expect(step).toContain(`printf 'export ${key}=%s\\n' "$${variable}"`);
 			expect(step).toContain(`printf '${key}=%s\\n' "$${variable}"`);
 		}
+		for (const [key, variable] of [
+			["TELCLAUDE_WHATSAPP_BRIDGE_SECRET", "whatsapp_bridge_secret"],
+			["TELCLAUDE_WHATSAPP_INBOUND_SECRET", "whatsapp_inbound_secret"],
+		] as const) {
+			expect(step).toContain(`${variable}="$(read_deploy_env ${key} || true)"`);
+			expect(step).toContain(`[ -n "$${variable}" ] || ${variable}="$(openssl rand -hex 32)"`);
+			expect(step).toContain(`printf 'export ${key}=%q\\n' "$${variable}"`);
+			expect(step).toContain(`printf '${key}=%s\\n' "$${variable}"`);
+		}
+		expect(shellPattern).toContain("TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)");
+		expect(composePattern).toContain("TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)");
 		expect(step).not.toContain("LIVE_MCP_ENABLED=0");
 		expect(step).not.toContain("192.0.2.10");
 		expect(step).not.toContain("192.0.3.10");
@@ -419,6 +430,27 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(step).not.toContain("172.30.93.10");
 		expect(step).not.toContain("172.30.92.11");
 		expect(step).not.toContain("172.30.93.11");
+	});
+
+	it("starts the William WhatsApp bridge profile and health-gates the sidecar", () => {
+		const workflow = fs.readFileSync(
+			path.resolve(process.cwd(), ".github/workflows/ci.yml"),
+			"utf8",
+		);
+		const hookStep = workflowStep(workflow, "Install William post-deploy health gate");
+		const deployStep = workflowStep(workflow, "Build and deploy");
+
+		expect(hookStep).toContain("compose_profiles=(--profile whatsapp)");
+		expect(hookStep).toContain("telclaude-whatsapp-bridge");
+		expect(hookStep).toContain('docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps');
+		expect(deployStep).toContain("compose_profiles=(--profile whatsapp)");
+		expect(deployStep).toContain("telclaude-whatsapp-bridge");
+		expect(deployStep).toContain(
+			'docker compose "${compose_files[@]}" "${compose_profiles[@]}" down --remove-orphans',
+		);
+		expect(deployStep).toContain(
+			'docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480',
+		);
 	});
 
 	it("keeps the standalone Hermes CLI proof runner off host-gateway smoke paths", () => {

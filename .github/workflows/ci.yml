@@ -117,6 +117,8 @@ jobs:
           operator_agent_public_key="$(read_deploy_env OPERATOR_RPC_AGENT_PUBLIC_KEY || true)"
           operator_relay_private_key="$(read_deploy_env OPERATOR_RPC_RELAY_PRIVATE_KEY || true)"
           operator_relay_public_key="$(read_deploy_env OPERATOR_RPC_RELAY_PUBLIC_KEY || true)"
+          whatsapp_bridge_secret="$(read_deploy_env TELCLAUDE_WHATSAPP_BRIDGE_SECRET || true)"
+          whatsapp_inbound_secret="$(read_deploy_env TELCLAUDE_WHATSAPP_INBOUND_SECRET || true)"
           if [ -z "$operator_agent_private_key" ] || [ -z "$operator_agent_public_key" ] || [ -z "$operator_relay_private_key" ] || [ -z "$operator_relay_public_key" ]; then
             while IFS='=' read -r key value; do
               case "$key" in
@@ -130,7 +132,9 @@ jobs:
               generate_ed25519_pair OPERATOR_RELAY
             )
           fi
-          for secret in "$TELCLAUDE_HERMES_API_SERVER_KEY" "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY" "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN" "$operator_agent_private_key" "$operator_agent_public_key" "$operator_relay_private_key" "$operator_relay_public_key"; do
+          [ -n "$whatsapp_bridge_secret" ] || whatsapp_bridge_secret="$(openssl rand -hex 32)"
+          [ -n "$whatsapp_inbound_secret" ] || whatsapp_inbound_secret="$(openssl rand -hex 32)"
+          for secret in "$TELCLAUDE_HERMES_API_SERVER_KEY" "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY" "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN" "$operator_agent_private_key" "$operator_agent_public_key" "$operator_relay_private_key" "$operator_relay_public_key" "$whatsapp_bridge_secret" "$whatsapp_inbound_secret"; do
             [ -n "$secret" ] && echo "::add-mask::${secret}"
           done
           hermes_private_subnet='172.30.92.0/24'
@@ -145,8 +149,8 @@ jobs:
           hermes_live_mcp_admin_enabled=1
           hermes_live_mcp_additional_binds="${hermes_social_relay_ip}@telclaude-hermes-social"
           hermes_live_mcp_allowed_peers="${hermes_contained_ip},${hermes_social_ip}"
-          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
-          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
+          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
+          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
           grep -Ev "$shell_key_pattern" "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
@@ -165,6 +169,8 @@ jobs:
             printf 'export TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=%s\n' "$hermes_live_mcp_additional_binds"
             printf 'export TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=%s\n' "$hermes_live_mcp_allowed_peers"
             printf 'export TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP=%s\n' "$hermes_social_ip"
+            printf 'export TELCLAUDE_WHATSAPP_BRIDGE_SECRET=%q\n' "$whatsapp_bridge_secret"
+            printf 'export TELCLAUDE_WHATSAPP_INBOUND_SECRET=%q\n' "$whatsapp_inbound_secret"
             printf 'export OPERATOR_RPC_AGENT_PRIVATE_KEY=%q\n' "$operator_agent_private_key"
             printf 'export OPERATOR_RPC_AGENT_PUBLIC_KEY=%q\n' "$operator_agent_public_key"
             printf 'export OPERATOR_RPC_RELAY_PRIVATE_KEY=%q\n' "$operator_relay_private_key"
@@ -188,6 +194,8 @@ jobs:
             printf 'TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=%s\n' "$hermes_live_mcp_additional_binds"
             printf 'TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=%s\n' "$hermes_live_mcp_allowed_peers"
             printf 'TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP=%s\n' "$hermes_social_ip"
+            printf 'TELCLAUDE_WHATSAPP_BRIDGE_SECRET=%s\n' "$whatsapp_bridge_secret"
+            printf 'TELCLAUDE_WHATSAPP_INBOUND_SECRET=%s\n' "$whatsapp_inbound_secret"
             printf 'OPERATOR_RPC_AGENT_PUBLIC_KEY=%s\n' "$operator_agent_public_key"
             printf 'OPERATOR_RPC_RELAY_PRIVATE_KEY=%s\n' "$operator_relay_private_key"
           } > "$compose_env_file"
@@ -230,11 +238,13 @@ jobs:
 
           cd "$docker_dir"
           compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
+          compose_profiles=(--profile whatsapp)
           containers=(
             telclaude
             telclaude-google-services
             telclaude-totp
             telclaude-vault
+            telclaude-whatsapp-bridge
             tc-hermes-contained
             tc-hermes-social
           )
@@ -263,7 +273,7 @@ jobs:
 
             if [ "$SECONDS" -ge "$deadline" ]; then
               echo "healthy=0 not_ready=${not_ready[*]} deployed_sha=$deployed_sha origin_sha=$origin_sha"
-              docker compose "${compose_files[@]}" ps || true
+              docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps || true
               for container in "${containers[@]}"; do
                 echo "::group::${container} state"
                 docker inspect --format '{{json .State}}' "$container" 2>&1 || true
@@ -294,6 +304,7 @@ jobs:
           fi
           cd docker
           compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
+          compose_profiles=(--profile whatsapp)
           redact_deploy_logs() {
             sed -E \
               -e 's/(B[e]arer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
@@ -308,8 +319,8 @@ jobs:
             docker logs --tail=160 "$container" 2>&1 | redact_deploy_logs || true
             echo "::endgroup::"
           }
-          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" ps || true; for container in telclaude tc-hermes-contained tc-hermes-social; do dump_container_diagnostics "$container"; done; docker network ls || true; fi; exit "$status"' EXIT
-          docker compose "${compose_files[@]}" down --remove-orphans || true
+          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps || true; for container in telclaude telclaude-whatsapp-bridge tc-hermes-contained tc-hermes-social; do dump_container_diagnostics "$container"; done; docker network ls || true; fi; exit "$status"' EXIT
+          docker compose "${compose_files[@]}" "${compose_profiles[@]}" down --remove-orphans || true
           docker rm -f tc-hermes-contained tc-hermes-social telclaude-agent telclaude-agent-social >/dev/null 2>&1 || true
           for network in telclaude-hermes-private telclaude-hermes-social docker_hermes-private-net docker_hermes-social-net telclaude-hermes-relay telclaude-agent-relay telclaude-agent-egress telclaude-social-relay telclaude-social-egress; do
             docker network rm "$network" >/dev/null 2>&1 || true
@@ -321,4 +332,4 @@ jobs:
               *192.0.2.0/24*|*192.0.3.0/24*|*172.30.92.0/24*|*172.30.93.0/24*) docker network rm "$network_id" >/dev/null 2>&1 || true ;;
             esac
           done < <(docker network ls -q)
-          docker compose "${compose_files[@]}" up -d --remove-orphans --wait --wait-timeout 480
+          docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480
