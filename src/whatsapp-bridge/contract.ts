@@ -6,7 +6,7 @@ import {
 	WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER,
 	WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER,
 	WHATSAPP_SIDECAR_SESSION_KEY_HEADER,
-} from "../relay/whatsapp-edge-channel-connector.js";
+} from "./auth.js";
 
 export const WHATSAPP_BRIDGE_SEND_PATH = "/v1/whatsapp/send";
 export const WHATSAPP_BRIDGE_HEALTH_PATH = "/health";

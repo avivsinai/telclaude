@@ -1,11 +1,26 @@
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import {
+	createWhatsAppBridgeAuthToken,
+	WHATSAPP_SIDECAR_AUTH_HEADER,
+	WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER,
+	WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER,
+	WHATSAPP_SIDECAR_SESSION_KEY_HEADER,
+} from "../whatsapp-bridge/auth.js";
 import { QUARANTINE_MAX_BYTES } from "./attachment-quarantine-store.js";
 import type {
 	ChannelSendOutcome,
 	EdgeChannelConnector,
 	OutboundDeliveryContext,
 } from "./edge-channel-connector.js";
+
+export {
+	createWhatsAppBridgeAuthToken,
+	WHATSAPP_SIDECAR_AUTH_HEADER,
+	WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER,
+	WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER,
+	WHATSAPP_SIDECAR_SESSION_KEY_HEADER,
+} from "../whatsapp-bridge/auth.js";
 
 export const WHATSAPP_SIDECAR_SEND_SCHEMA_VERSION = "telclaude.edge.whatsapp.send.v1";
 export const WHATSAPP_SIDECAR_MAX_MEDIA_BYTES = QUARANTINE_MAX_BYTES;
@@ -15,10 +30,6 @@ export const TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV = "TELCLAUDE_WHATSAPP_SIDECAR_UR
 export const TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV = "TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS";
 export const TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV = "TELCLAUDE_WHATSAPP_BRIDGE_SECRET";
 export const WHATSAPP_SIDECAR_ALLOWED_HOST = "whatsapp-bridge";
-export const WHATSAPP_SIDECAR_SESSION_KEY_HEADER = "x-telclaude-whatsapp-session-key";
-export const WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER = "x-telclaude-whatsapp-request-digest";
-export const WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER = "x-telclaude-whatsapp-session-expires-at";
-export const WHATSAPP_SIDECAR_AUTH_HEADER = "x-telclaude-whatsapp-bridge-auth";
 export const DEFAULT_WHATSAPP_BRIDGE_SESSION_TTL_MS = 60_000;
 
 export type WhatsAppSidecarAttachment = {
@@ -499,24 +510,6 @@ export function createWhatsAppBridgeSessionMaterial(
 export function digestWhatsAppSidecarSendRequest(request: WhatsAppSidecarSendRequest): string {
 	const canonical = JSON.stringify(sortKeysDeep(request));
 	const digest = createHash("sha256").update(canonical).digest("hex");
-	return `sha256:${digest}`;
-}
-
-export function createWhatsAppBridgeAuthToken(input: {
-	readonly secret: string;
-	readonly sessionKey: string;
-	readonly requestDigest: string;
-	readonly expiresAt: string;
-}): `sha256:${string}` {
-	const secret = input.secret.trim();
-	const payload = JSON.stringify(
-		sortKeysDeep({
-			sessionKey: input.sessionKey,
-			requestDigest: input.requestDigest,
-			expiresAt: input.expiresAt,
-		}),
-	);
-	const digest = createHmac("sha256", secret).update(payload).digest("hex");
 	return `sha256:${digest}`;
 }
 
