@@ -48,9 +48,20 @@ import {
 	type HealthCheckResult,
 	type ProviderHealthResponse,
 } from "../providers/provider-health.js";
+import {
+	type ProviderEnrollmentPollResult,
+	type ProviderEnrollmentStartResult,
+	pollProviderSessionEnrollment,
+	startProviderSessionEnrollment,
+} from "../relay/provider-enrollment.js";
 import { revokeSessionAllowlist } from "../security/approvals.js";
-import { isAdmin } from "../security/linking.js";
+import { getIdentityLink, isAdmin } from "../security/linking.js";
 import { getUserPermissionTier } from "../security/permissions.js";
+import {
+	freshTotpStepUpVerification,
+	getTOTPSessionForChat,
+	stepUpMetadataForTOTPSession,
+} from "../security/totp-session.js";
 import {
 	sendBackgroundJobCard,
 	sendBackgroundJobListCard,
@@ -87,6 +98,12 @@ import { createTypingControllerFromCallback } from "./typing.js";
 import { createWizardPrompter, WizardCancelledError, WizardTimeoutError } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "telegram-control-command-actions" });
+const PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL = "Check provider status and relay logs.";
+const PROVIDER_ENROLLMENT_TOKEN_BEARING_URL_PARAM_PATTERN =
+	/(^|[_-])(access|auth|bearer|challenge|session|singleuse|single_use|one[_-]?time)?[_-]?(token|jwt|signature|sig|secret|code)$/i;
+const PROVIDER_ENROLLMENT_INTERACTIVE_URL_PATH_PATTERN =
+	/(challenge|interactive|interact|novnc|vnc|browser)/i;
+const URL_SUBSTRING_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 
 export type CommandUiResult = {
 	callbackText: string;
@@ -227,6 +244,281 @@ function formatProviderRemovalMessage(result: ProviderRemovalResult): string {
 		lines.push("Provider runtime state cleared.");
 	}
 	return lines.join("\n");
+}
+
+type ProviderSessionEnrollmentCommandOptions = {
+	chatId: number;
+	threadId?: number;
+	service: string;
+	actorUserId: string;
+	subjectUserId?: string;
+	poll?: boolean;
+	pollIntervalMs?: number;
+};
+
+export async function startProviderSessionEnrollmentCommand(
+	api: Api,
+	opts: ProviderSessionEnrollmentCommandOptions,
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		const message = "Only admin can enroll provider sessions.";
+		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+		return { callbackText: message, callbackAlert: true };
+	}
+
+	const service = opts.service.trim();
+	const actorUserId = opts.actorUserId.trim();
+	const subjectUserId =
+		opts.subjectUserId?.trim() || getIdentityLink(opts.chatId)?.localUserId || "";
+	if (!service || !actorUserId) {
+		const message = "Usage: /providers enroll <service>";
+		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+		return { callbackText: message, callbackAlert: true };
+	}
+	if (!subjectUserId) {
+		const message =
+			"This chat is not linked to a local user. Use `telclaude identity deep-link <user-id>` first.";
+		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+		return { callbackText: message, callbackAlert: true };
+	}
+
+	const stepUp = await resolveFreshProviderEnrollmentStepUp(opts.chatId, actorUserId);
+	if (!stepUp.ok) {
+		const message =
+			"Fresh 2FA verification is required before provider enrollment. Send /auth verify <code>, then retry the enrollment.";
+		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+		return { callbackText: message, callbackAlert: true };
+	}
+
+	let result: ProviderEnrollmentStartResult;
+	try {
+		result = await startProviderSessionEnrollment({
+			service,
+			actorUserId,
+			subjectUserId,
+		});
+	} catch (err) {
+		logger.warn(
+			{ error: sanitizeProviderEnrollmentVisibleError(err), service },
+			"provider enrollment start failed",
+		);
+		const message = `Enrollment failed for '${service}'. Check provider status and relay HMAC configuration.`;
+		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+		return { callbackText: message, callbackAlert: true };
+	}
+
+	if (result.status !== "enroll_pending") {
+		const message =
+			result.status === "busy"
+				? `Enrollment is already active for another session. Retry shortly.`
+				: `Enrollment failed for '${service}': ${sanitizeProviderEnrollmentVisibleError(
+						result.error,
+					)}`;
+		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+		return { callbackText: message, callbackAlert: result.status === "busy" };
+	}
+
+	const enrollmentMessage = await api.sendMessage(
+		opts.chatId,
+		[
+			`Secure enrollment started for ${service}.`,
+			"Open the browser button below and complete login in the provider portal.",
+			"The relay will poll until the session is captured, fails, or expires.",
+			`Expires: ${new Date(result.expiresAt).toISOString()}`,
+		].join("\n"),
+		{
+			...threadOptions(opts.threadId),
+			reply_markup: {
+				inline_keyboard: [[{ text: "Open secure browser", url: result.interactUrl }]],
+			},
+		},
+	);
+
+	if (opts.poll !== false) {
+		void pollProviderEnrollmentUntilTerminal(api, opts, result, enrollmentMessage.message_id);
+	}
+
+	return { callbackText: `Enrollment started for ${service}.` };
+}
+
+async function resolveFreshProviderEnrollmentStepUp(
+	chatId: number,
+	actorUserId: string,
+): Promise<{ ok: true } | { ok: false }> {
+	const session = getTOTPSessionForChat(chatId);
+	if (!session) {
+		return { ok: false };
+	}
+	// The current metadata source makes this primarily a freshness gate today;
+	// keep requiredActorId wired so a future persisted actor binding cannot drift open.
+	const result = await freshTotpStepUpVerification.verify({
+		metadata: stepUpMetadataForTOTPSession({
+			actorId: actorUserId,
+			session,
+		}),
+		requiredActorId: actorUserId,
+	});
+	return result.ok ? { ok: true } : { ok: false };
+}
+
+async function pollProviderEnrollmentUntilTerminal(
+	api: Api,
+	opts: ProviderSessionEnrollmentCommandOptions,
+	enrollment: Extract<ProviderEnrollmentStartResult, { status: "enroll_pending" }>,
+	enrollmentMessageId: number | undefined,
+): Promise<void> {
+	const service = opts.service.trim();
+	const intervalMs = opts.pollIntervalMs ?? 5_000;
+	try {
+		while (Date.now() <= enrollment.expiresAt + intervalMs) {
+			await delay(intervalMs);
+			const result = await pollProviderSessionEnrollment({
+				service,
+				pollPath: enrollment.pollPath,
+				actorUserId: opts.actorUserId,
+			});
+			if (result.status === "pending") {
+				continue;
+			}
+			await sendProviderEnrollmentTerminalStatus(api, opts, result, enrollmentMessageId);
+			return;
+		}
+		await sendProviderEnrollmentTerminalStatus(
+			api,
+			opts,
+			{ status: "expired" },
+			enrollmentMessageId,
+		);
+	} catch (err) {
+		logger.warn(
+			{ error: sanitizeProviderEnrollmentVisibleError(err), service },
+			"provider enrollment poll failed",
+		);
+		await sendProviderEnrollmentTerminalStatus(
+			api,
+			opts,
+			{
+				status: "error",
+				error: getProviderEnrollmentErrorText(err),
+			},
+			enrollmentMessageId,
+		);
+	}
+}
+
+async function sendProviderEnrollmentTerminalStatus(
+	api: Api,
+	opts: ProviderSessionEnrollmentCommandOptions,
+	result: Exclude<ProviderEnrollmentPollResult, { status: "pending" }>,
+	enrollmentMessageId: number | undefined,
+): Promise<void> {
+	const service = opts.service.trim();
+	let message: string;
+	switch (result.status) {
+		case "ok":
+			message = `Enrollment complete for ${result.summary.service}. Session captured for ${result.summary.owner}.`;
+			break;
+		case "failed":
+			message = `Enrollment failed for ${service}: ${sanitizeProviderEnrollmentVisibleError(
+				result.error,
+			)}`;
+			break;
+		case "expired":
+			message = `Enrollment expired for ${service}. Start a new enrollment when ready.`;
+			break;
+		case "error":
+			message = `Enrollment status check failed for ${service}: ${sanitizeProviderEnrollmentVisibleError(
+				result.error,
+			)}`;
+			break;
+		default: {
+			const exhaustive: never = result;
+			throw new Error(`Unhandled enrollment result: ${String(exhaustive)}`);
+		}
+	}
+	await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+	await clearProviderEnrollmentInlineKeyboard(api, opts, enrollmentMessageId);
+}
+
+async function clearProviderEnrollmentInlineKeyboard(
+	api: Api,
+	opts: ProviderSessionEnrollmentCommandOptions,
+	enrollmentMessageId: number | undefined,
+): Promise<void> {
+	if (enrollmentMessageId === undefined) return;
+	try {
+		await api.editMessageReplyMarkup(opts.chatId, enrollmentMessageId, {
+			reply_markup: undefined,
+		});
+	} catch (err) {
+		logger.warn(
+			{ error: String(err), service: opts.service.trim(), enrollmentMessageId },
+			"failed to clear provider enrollment inline keyboard",
+		);
+	}
+}
+
+function sanitizeProviderEnrollmentVisibleError(value: unknown): string {
+	const text = getProviderEnrollmentErrorText(value);
+	if (!text.trim()) {
+		return PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL;
+	}
+	return containsTokenBearingProviderEnrollmentUrl(text)
+		? PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL
+		: text.trim();
+}
+
+function getProviderEnrollmentErrorText(value: unknown): string {
+	if (value instanceof Error) {
+		return value.message;
+	}
+	return typeof value === "string" ? value : String(value);
+}
+
+function containsTokenBearingProviderEnrollmentUrl(value: string): boolean {
+	if (isTokenBearingProviderEnrollmentUrl(value)) {
+		return true;
+	}
+	for (const match of value.matchAll(URL_SUBSTRING_PATTERN)) {
+		if (isTokenBearingProviderEnrollmentUrl(trimUrlCandidate(match[0]))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function trimUrlCandidate(value: string): string {
+	return value.replace(/[),.;:!?]+$/g, "");
+}
+
+function isTokenBearingProviderEnrollmentUrl(value: string): boolean {
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return false;
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		return false;
+	}
+
+	const hasTokenParam = Array.from(parsed.searchParams.keys()).some((key) =>
+		PROVIDER_ENROLLMENT_TOKEN_BEARING_URL_PARAM_PATTERN.test(key),
+	);
+	if (hasTokenParam) {
+		return true;
+	}
+	if (!PROVIDER_ENROLLMENT_INTERACTIVE_URL_PATH_PATTERN.test(parsed.pathname)) {
+		return false;
+	}
+	return parsed.pathname.split("/").some((segment) => /^[A-Za-z0-9_-]{16,}$/.test(segment));
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		const timeout = setTimeout(resolve, ms);
+		timeout.unref?.();
+	});
 }
 
 export async function setHomeTargetCommand(
@@ -1810,6 +2102,25 @@ function summarizeHealthDetail(result: HealthCheckResult): string | undefined {
 	return undefined;
 }
 
+function authExpiredConnectorIds(result: HealthCheckResult): string[] {
+	return Object.entries(result.response?.connectors ?? {})
+		.filter(([, info]) => info.status === "auth_expired")
+		.map(([name]) => name);
+}
+
+function resolveProviderEnrollmentService(
+	provider: NonNullable<TelclaudeConfig["providers"]>[number],
+	result: HealthCheckResult,
+): string | undefined {
+	if (provider.id !== "israel-services") {
+		return undefined;
+	}
+	const authExpired = authExpiredConnectorIds(result).find((service) =>
+		provider.services.includes(service),
+	);
+	return authExpired ?? (provider.services.length === 1 ? provider.services[0] : undefined);
+}
+
 async function buildProviderListEntries(cfg: TelclaudeConfig): Promise<ProviderListEntry[]> {
 	// Use the cfg.providers declared list — that's the live deployment shape.
 	// Merge catalog metadata so descriptions and setup commands are richer.
@@ -1834,6 +2145,7 @@ async function buildProviderListEntries(cfg: TelclaudeConfig): Promise<ProviderL
 				setupCommand: meta?.setupCommand,
 				remediationKey: providerRemediationKey(check, health),
 				baseUrl: provider.baseUrl,
+				enrollmentService: resolveProviderEnrollmentService(provider, check),
 			};
 			return entry;
 		}),

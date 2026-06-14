@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listJobs } from "../../src/background/index.js";
 import { getMostRecentPendingPlanApproval } from "../../src/security/approvals.js";
-import { resetDatabase } from "../../src/storage/db.js";
+import { getDb, resetDatabase } from "../../src/storage/db.js";
 
 // Hoisted mutable stubs
 const replies: string[] = [];
@@ -26,6 +26,10 @@ const buildTelegramMemoryBundleImpl = vi.hoisted(() =>
 	})),
 );
 const captureTelegramTurnMemoryImpl = vi.hoisted(() => vi.fn());
+const hasTOTPImpl = vi.hoisted(() => vi.fn(async () => ({ hasTOTP: false })));
+const verifyTOTPImpl = vi.hoisted(() => vi.fn(async () => false));
+const disableTOTPImpl = vi.hoisted(() => vi.fn(async () => false));
+const isTOTPDaemonAvailableImpl = vi.hoisted(() => vi.fn(async () => true));
 const loggerImpl = vi.hoisted(() => ({
 	info: vi.fn(),
 	warn: vi.fn(),
@@ -104,6 +108,13 @@ vi.mock("../../src/memory/telegram-capture.js", () => ({
 		captureTelegramTurnMemoryImpl(...args),
 }));
 
+vi.mock("../../src/security/totp.js", () => ({
+	hasTOTP: (...args: unknown[]) => hasTOTPImpl(...args),
+	verifyTOTP: (...args: unknown[]) => verifyTOTPImpl(...args),
+	disableTOTP: (...args: unknown[]) => disableTOTPImpl(...args),
+	isTOTPDaemonAvailable: (...args: unknown[]) => isTOTPDaemonAvailableImpl(...args),
+}));
+
 vi.mock("../../src/telegram/system-context.js", () => ({
 	buildSystemInfoContext: () => null,
 }));
@@ -116,6 +127,7 @@ import { createRelayConversationStore } from "../../src/hermes/relay-conversatio
 import { __test as autoReplyTest } from "../../src/telegram/auto-reply.js";
 import { registerAllCardRenderers } from "../../src/telegram/cards/renderers/index.js";
 import { matchTelegramControlCommand } from "../../src/telegram/control-commands.js";
+import { createWizardPrompter } from "../../src/telegram/wizard/index.js";
 
 const makeMsg = () => ({
 	chatId: 123,
@@ -126,6 +138,14 @@ const makeMsg = () => ({
 		replies.push(text);
 	}),
 });
+
+async function waitFor(condition: () => boolean): Promise<void> {
+	for (let i = 0; i < 50; i++) {
+		if (condition()) return;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error("Timed out waiting for condition");
+}
 
 const baseCtx = () => ({
 	msg: makeMsg(),
@@ -158,9 +178,15 @@ describe("auto-reply executeAndReply", () => {
 		vi.resetModules();
 		buildTelegramMemoryBundleImpl.mockClear();
 		captureTelegramTurnMemoryImpl.mockClear();
+		hasTOTPImpl.mockReset();
+		hasTOTPImpl.mockResolvedValue({ hasTOTP: false });
+		verifyTOTPImpl.mockReset();
+		verifyTOTPImpl.mockResolvedValue(false);
+		disableTOTPImpl.mockReset();
+		disableTOTPImpl.mockResolvedValue(false);
+		isTOTPDaemonAvailableImpl.mockReset();
+		isTOTPDaemonAvailableImpl.mockResolvedValue(true);
 		activeProfileState.profileId = null;
-		// Re-import to get fresh database
-		const { resetDatabase } = await import("../../src/storage/db.js");
 		resetDatabase();
 	});
 
@@ -176,6 +202,10 @@ describe("auto-reply executeAndReply", () => {
 		deleteSessionImpl.mockReset();
 		getChatModelPreferenceImpl.mockReset();
 		getChatModelPreferenceImpl.mockReturnValue(null);
+		hasTOTPImpl.mockReset();
+		verifyTOTPImpl.mockReset();
+		disableTOTPImpl.mockReset();
+		isTOTPDaemonAvailableImpl.mockReset();
 		activeProfileState.profileId = null;
 		loggerImpl.info.mockReset();
 		loggerImpl.warn.mockReset();
@@ -364,7 +394,9 @@ describe("auto-reply executeAndReply", () => {
 			systemPromptAppend?: string;
 		};
 		expect(options.systemPromptAppend).toContain("Granted provider scopes: bank, google");
-		expect(options.systemPromptAppend).toContain("Granted capability scopes: web.fetch, web.search");
+		expect(options.systemPromptAppend).toContain(
+			"Granted capability scopes: web.fetch, web.search",
+		);
 		expect(options.systemPromptAppend).toContain("Do not call provider hostnames");
 		expect(options.systemPromptAppend).toContain("supersedes any legacy external-provider");
 	});
@@ -633,6 +665,42 @@ describe("auto-reply executeAndReply", () => {
 });
 
 describe("auto-reply control commands", () => {
+	let controlTempDir: string;
+
+	beforeEach(() => {
+		controlTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-control-"));
+		process.env.TELCLAUDE_DATA_DIR = controlTempDir;
+		resetDatabase();
+		hasTOTPImpl.mockReset();
+		hasTOTPImpl.mockResolvedValue({ hasTOTP: false });
+		verifyTOTPImpl.mockReset();
+		verifyTOTPImpl.mockResolvedValue(false);
+		disableTOTPImpl.mockReset();
+		disableTOTPImpl.mockResolvedValue(false);
+		isTOTPDaemonAvailableImpl.mockReset();
+		isTOTPDaemonAvailableImpl.mockResolvedValue(true);
+	});
+
+	afterEach(() => {
+		replies.length = 0;
+		sessionStore.length = 0;
+		executeHermesQueryImpl.mockReset();
+		hasTOTPImpl.mockReset();
+		verifyTOTPImpl.mockReset();
+		disableTOTPImpl.mockReset();
+		isTOTPDaemonAvailableImpl.mockReset();
+		loggerImpl.info.mockReset();
+		loggerImpl.warn.mockReset();
+		loggerImpl.error.mockReset();
+		loggerImpl.debug.mockReset();
+		fs.rmSync(controlTempDir, { recursive: true, force: true });
+		if (ORIGINAL_DATA_DIR === undefined) {
+			delete process.env.TELCLAUDE_DATA_DIR;
+		} else {
+			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
+	});
+
 	it("rejects /link in group chats", async () => {
 		const msg = {
 			chatId: 999,
@@ -663,6 +731,117 @@ describe("auto-reply control commands", () => {
 
 		expect(autoReplyTest.resolveCommandBody(msg)).toBe("/approve\u200B 123456");
 		expect(autoReplyTest.resolveProcessingBody(msg)).toBe("/approve 123456");
+	});
+
+	it("routes active wizard text before the TOTP auth gate can persist it", async () => {
+		const api = {
+			sendMessage: vi.fn(async () => ({ message_id: 10 })),
+			editMessageText: vi.fn(async () => {}),
+			deleteMessage: vi.fn(async () => {}),
+		};
+		const wizard = createWizardPrompter({
+			api: api as never,
+			actorId: 555,
+			chatId: 123,
+			threadId: 9,
+			timeoutMs: 1_000,
+		});
+		const textPromise = wizard.text({ message: "Enter the one-time provider code:" });
+		await waitFor(() => api.sendMessage.mock.calls.length > 0);
+		await Promise.resolve();
+
+		const consumed = await autoReplyTest.routeWizardTextBeforeAuthGate(
+			{
+				...makeMsg(),
+				id: "42",
+				body: "provider-secret-code",
+				senderId: 555,
+				messageThreadId: 9,
+			},
+			api as never,
+			"provider-secret-code",
+			null,
+		);
+
+		expect(consumed).toBe(true);
+		await expect(textPromise).resolves.toBe("provider-secret-code");
+		expect(api.deleteMessage).toHaveBeenCalledWith(123, 42);
+	});
+
+	it("does not persist non-6-digit provider OTP text when TOTP is expired and a wizard is active", async () => {
+		const otpCode = "AB12-CD34";
+		const chatId = 456;
+		const threadId = 10;
+		const actorId = 777;
+		const db = getDb();
+		const now = Date.now();
+		db.prepare(
+			`INSERT INTO identity_links (chat_id, local_user_id, linked_at, linked_by)
+			 VALUES (?, ?, ?, ?)`,
+		).run(999, "admin", now, "test");
+		db.prepare(
+			`INSERT INTO identity_links (chat_id, local_user_id, linked_at, linked_by)
+			 VALUES (?, ?, ?, ?)`,
+		).run(chatId, "operator", now, "test");
+		db.prepare(
+			`INSERT INTO totp_sessions (local_user_id, verified_at, expires_at)
+			 VALUES (?, ?, ?)`,
+		).run("operator", now - 600_000, now - 60_000);
+		hasTOTPImpl.mockResolvedValue({ hasTOTP: true });
+
+		const api = {
+			sendMessage: vi.fn(async () => ({ message_id: 10 })),
+			editMessageText: vi.fn(async () => {}),
+			deleteMessage: vi.fn(async () => {}),
+		};
+		const wizard = createWizardPrompter({
+			api: api as never,
+			actorId,
+			chatId,
+			threadId,
+			timeoutMs: 1_000,
+		});
+		const textPromise = wizard.text({ message: "Enter the one-time provider code:" });
+		await waitFor(() => api.sendMessage.mock.calls.length > 0);
+		await Promise.resolve();
+
+		await autoReplyTest.handleInboundMessage(
+			{
+				...makeMsg(),
+				chatId,
+				id: "77",
+				body: otpCode,
+				senderId: actorId,
+				messageThreadId: threadId,
+			},
+			{ api } as never,
+			{ security: {}, inbound: { reply: { enabled: true } } } as never,
+			{} as never,
+			{} as never,
+			{ log: vi.fn(async () => {}) } as never,
+			new Set<string>(),
+			"simple",
+		);
+
+		await expect(textPromise).resolves.toBe(otpCode);
+		const pendingRows = db
+			.prepare("SELECT body FROM pending_totp_messages WHERE body LIKE ?")
+			.all(`%${otpCode}%`);
+		const logText = [
+			...loggerImpl.info.mock.calls,
+			...loggerImpl.warn.mock.calls,
+			...loggerImpl.error.mock.calls,
+			...loggerImpl.debug.mock.calls,
+		]
+			.map((call) => JSON.stringify(call))
+			.join("\n");
+
+		expect(api.deleteMessage).toHaveBeenCalledWith(chatId, 77);
+		expect(pendingRows).toEqual([]);
+		expect(hasTOTPImpl).not.toHaveBeenCalled();
+		expect(executeHermesQueryImpl).not.toHaveBeenCalled();
+		expect(captureTelegramTurnMemoryImpl).not.toHaveBeenCalled();
+		expect(logText).not.toContain(otpCode);
 	});
 
 	it("dispatches /codex as a background job without entering the Claude session", async () => {

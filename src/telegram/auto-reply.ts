@@ -120,6 +120,7 @@ import {
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
 	setHomeTargetCommand,
+	startProviderSessionEnrollmentCommand,
 	startSkillsNewWizard,
 	startSocialAskWizard,
 	stopActiveWorkCommand,
@@ -429,6 +430,47 @@ function resolveCommandBody(msg: TelegramInboundMessage): string {
 
 function resolveProcessingBody(msg: TelegramInboundMessage): string {
 	return msg.normalizedBody ?? msg.body;
+}
+
+async function routeWizardTextBeforeAuthGate(
+	msg: TelegramInboundMessage,
+	api: Api,
+	trimmedBody: string,
+	controlCommandMatch: TelegramCommandMatch | null,
+): Promise<boolean> {
+	if (controlCommandMatch || isKnownDomainCommand(trimmedBody)) {
+		return false;
+	}
+
+	const consumed = routeWizardTextMessage(msg.chatId, trimmedBody, {
+		actorId: msg.senderId,
+		threadId: msg.messageThreadId,
+	});
+	if (!consumed) {
+		return false;
+	}
+
+	await deleteInboundWizardTextMessage(api, msg);
+	return true;
+}
+
+async function deleteInboundWizardTextMessage(
+	api: Api,
+	msg: TelegramInboundMessage,
+): Promise<void> {
+	const messageId = Number.parseInt(msg.id, 10);
+	if (!Number.isSafeInteger(messageId) || messageId <= 0) {
+		return;
+	}
+
+	try {
+		await api.deleteMessage(msg.chatId, messageId);
+	} catch (err) {
+		logger.debug(
+			{ chatId: msg.chatId, messageId, error: String(err) },
+			"wizard text delete failed",
+		);
+	}
 }
 
 type TelegramControlCommandContext = {
@@ -1120,6 +1162,28 @@ async function dispatchTelegramControlCommand(
 				actorScope: `user:${msg.senderId ?? msg.chatId}`,
 				threadId: msg.messageThreadId,
 				cfg,
+			});
+			return true;
+		}
+		case "providers:enroll": {
+			const service = match.args[0]?.trim();
+			if (!service) {
+				await msg.reply("Usage: /providers enroll <service>");
+				return true;
+			}
+			const link = getIdentityLink(msg.chatId);
+			if (!link) {
+				await msg.reply(
+					"This chat is not linked to a local user. Use `telclaude identity deep-link <user-id>` first.",
+				);
+				return true;
+			}
+			await startProviderSessionEnrollmentCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				service,
+				actorUserId: String(msg.senderId ?? msg.chatId),
+				subjectUserId: link.localUserId,
 			});
 			return true;
 		}
@@ -1853,10 +1917,12 @@ export const __test = {
 	dispatchTelegramControlCommand,
 	executeAndReply,
 	executePlanPhase,
+	handleInboundMessage,
 	handleLinkCommand,
 	handleProfileSwitchCommand,
 	resolveCommandBody,
 	resolveProcessingBody,
+	routeWizardTextBeforeAuthGate,
 	shouldShowPlanPreview,
 };
 
@@ -2276,6 +2342,13 @@ async function handleInboundMessage(
 	// Commands exempt from auth gate (needed for TOTP setup)
 	const isAuthExemptCommand = isTelegramAuthExemptCommand(trimmedBody, commandMatchOpts);
 
+	if (
+		await routeWizardTextBeforeAuthGate(msg, _bot.api, trimmedBody, controlCommandMatch ?? null)
+	) {
+		logger.debug({ chatId: msg.chatId }, "message consumed by active wizard text prompt");
+		return;
+	}
+
 	if (!isAuthExemptCommand) {
 		const authGateResult = await checkTOTPAuthGate(msg.chatId, msg.body, {
 			chatId: msg.chatId,
@@ -2374,20 +2447,6 @@ async function handleInboundMessage(
 	if (!controlCommandMatch && isKnownDomainCommand(trimmedBody)) {
 		const domain = trimmedBody.slice(1).split(/[\s@]/)[0]?.toLowerCase();
 		await msg.reply(`Unknown subcommand. Try /help ${domain} or /${domain} for the default view.`);
-		return;
-	}
-
-	// ══════════════════════════════════════════════════════════════════════════
-	// WIZARD TEXT ROUTING - Intercept text messages for active wizard prompts
-	// ══════════════════════════════════════════════════════════════════════════
-
-	if (
-		routeWizardTextMessage(msg.chatId, trimmedBody, {
-			actorId: msg.senderId,
-			threadId: msg.messageThreadId,
-		})
-	) {
-		logger.debug({ chatId: msg.chatId }, "message consumed by active wizard text prompt");
 		return;
 	}
 

@@ -19,6 +19,11 @@ import type { TelclaudeConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import {
+	PROVIDER_SIDECAR_HMAC_DEFAULT_VAULT_TARGET,
+	PROVIDER_SIDECAR_HMAC_SECRET_ENV,
+	PROVIDER_SIDECAR_HMAC_VAULT_TARGET_ENV,
+} from "../relay/provider-sidecar-auth.js";
+import {
 	TELCLAUDE_WHATSAPP_ALLOWED_RECIPIENTS_ENV,
 	TELCLAUDE_WHATSAPP_BRIDGE_SECRET_ENV,
 	TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV,
@@ -31,6 +36,7 @@ import {
 import { getAllDraftSkillRoots, getAllSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "doctor-helpers" });
+const SIDECAR_REQUIRE_RELAY_HMAC_ENV = "SIDECAR_REQUIRE_RELAY_HMAC";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -633,6 +639,7 @@ export async function checkProviders(cfg: TelclaudeConfig): Promise<CheckResult[
 export interface HermesConnectorReadinessOptions {
 	readonly env?: Partial<Record<string, string | undefined>>;
 	readonly webSearchConfigured?: boolean | (() => boolean | Promise<boolean>);
+	readonly providerSidecarHmacConfigured?: boolean | (() => boolean | Promise<boolean>);
 }
 
 /**
@@ -656,6 +663,7 @@ export async function checkHermesConnectorReadiness(
 	checks.push(await checkHermesWebFetchReadiness(capabilityScopes, env));
 	checks.push(await checkHermesWebSearchReadiness(capabilityScopes, options));
 	checks.push(...checkHermesWhatsAppReadiness(outboundChannels, env));
+	checks.push(await checkHermesIsraelServicesHmacReadiness(providers, env, options));
 
 	return checks;
 }
@@ -970,6 +978,89 @@ function checkHermesWhatsAppReadiness(
 	}
 
 	return checks;
+}
+
+async function checkHermesIsraelServicesHmacReadiness(
+	providers: NonNullable<TelclaudeConfig["providers"]>,
+	env: Partial<Record<string, string | undefined>>,
+	options: HermesConnectorReadinessOptions,
+): Promise<CheckResult> {
+	const category = "Hermes Connectors";
+	if (!providers.some((provider) => provider.id === "israel-services")) {
+		return skip(
+			"hermes.connectors.israel-services.hmac",
+			category,
+			"Israel services provider not configured",
+		);
+	}
+
+	if (await resolveProviderSidecarHmacConfigured(env, options)) {
+		return pass(
+			"hermes.connectors.israel-services.hmac",
+			category,
+			"Israel services relay HMAC signing secret configured",
+		);
+	}
+
+	const vaultTarget =
+		env[PROVIDER_SIDECAR_HMAC_VAULT_TARGET_ENV]?.trim() ||
+		PROVIDER_SIDECAR_HMAC_DEFAULT_VAULT_TARGET;
+	const detail = `Set ${PROVIDER_SIDECAR_HMAC_SECRET_ENV} with at least 32 bytes or store the secret in vault target ${vaultTarget}. Run a signed canary before setting ${SIDECAR_REQUIRE_RELAY_HMAC_ENV}=1.`;
+	if (isTruthyEnv(env[SIDECAR_REQUIRE_RELAY_HMAC_ENV])) {
+		return fail(
+			"hermes.connectors.israel-services.hmac",
+			category,
+			"Israel services sidecar HMAC enforcement is enabled but relay signing is not configured",
+			`${SIDECAR_REQUIRE_RELAY_HMAC_ENV}=1 requires relay signing first. ${detail}`,
+			`telclaude vault add secret ${vaultTarget}`,
+		);
+	}
+	return warn(
+		"hermes.connectors.israel-services.hmac",
+		category,
+		"Israel services provider configured without relay HMAC signing secret",
+		detail,
+		`telclaude vault add secret ${vaultTarget}`,
+	);
+}
+
+async function resolveProviderSidecarHmacConfigured(
+	env: Partial<Record<string, string | undefined>>,
+	options: HermesConnectorReadinessOptions,
+): Promise<boolean> {
+	const override = options.providerSidecarHmacConfigured;
+	if (typeof override === "boolean") return override;
+	if (typeof override === "function") return await override();
+
+	if (isUsableProviderSidecarHmacSecret(env[PROVIDER_SIDECAR_HMAC_SECRET_ENV])) {
+		return true;
+	}
+
+	const vaultTarget =
+		env[PROVIDER_SIDECAR_HMAC_VAULT_TARGET_ENV]?.trim() ||
+		PROVIDER_SIDECAR_HMAC_DEFAULT_VAULT_TARGET;
+	try {
+		const { getVaultClient } = await import("../vault-daemon/client.js");
+		const response = await getVaultClient().getSecret(vaultTarget, { timeout: 2_000 });
+		return (
+			response.ok &&
+			response.type === "get-secret" &&
+			isUsableProviderSidecarHmacSecret(response.value)
+		);
+	} catch (err) {
+		logger.debug({ error: String(err), vaultTarget }, "provider sidecar HMAC doctor check failed");
+		return false;
+	}
+}
+
+function isUsableProviderSidecarHmacSecret(value: string | undefined): boolean {
+	const trimmed = value?.trim();
+	return !!trimmed && Buffer.byteLength(trimmed, "utf8") >= 32;
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+	const normalized = value?.trim().toLowerCase();
+	return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function checkWhatsAppSidecarUrl(sidecarUrl: string): CheckResult {

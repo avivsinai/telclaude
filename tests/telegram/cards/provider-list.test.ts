@@ -1,4 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const canActorManageProvidersMock = vi.hoisted(() => vi.fn(() => true));
+const startProviderSessionEnrollmentCommandMock = vi.hoisted(() => vi.fn(async () => ({})));
+
+vi.mock("../../../src/telegram/control-command-actions.js", () => ({
+	canActorManageProviders: canActorManageProvidersMock,
+	startProviderAddWizard: vi.fn(),
+	startProviderEditWizard: vi.fn(),
+	startProviderRemoveWizard: vi.fn(),
+	startProviderSessionEnrollmentCommand: startProviderSessionEnrollmentCommandMock,
+}));
 
 import { providerListRenderer } from "../../../src/telegram/cards/renderers/provider-list.js";
 import { CardKind } from "../../../src/telegram/cards/types.js";
@@ -22,6 +33,11 @@ function baseCard() {
 }
 
 describe("provider list card", () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+		canActorManageProvidersMock.mockReturnValue(true);
+	});
+
 	it("renders list view with health icons", () => {
 		const card = {
 			...baseCard(),
@@ -105,6 +121,76 @@ describe("provider list card", () => {
 		const labels = kbFlat.map((b) => ("text" in b ? b.text : ""));
 		expect(labels.filter((l) => l.includes("Edit")).length).toBe(1);
 		expect(labels.filter((l) => l.includes("Remove")).length).toBe(1);
+	});
+
+	it("renders a one-tap re-auth action for auth-expired session providers", () => {
+		const card = {
+			...baseCard(),
+			state: {
+				kind: CardKind.ProviderList,
+				title: "Providers",
+				providers: [
+					{
+						id: "israel-services",
+						label: "Israel Services",
+						health: "auth_expired" as const,
+						enrollmentService: "clalit",
+					},
+				],
+				selectedProviderId: "israel-services",
+				page: 0,
+				view: "detail" as const,
+				canMutate: true,
+			},
+		} as any;
+
+		const render = providerListRenderer.render(card);
+		const kbFlat = render.keyboard?.inline_keyboard?.flat() ?? [];
+		const labels = kbFlat.map((b) => ("text" in b ? b.text : ""));
+		expect(labels.filter((l) => l.includes("Re-auth")).length).toBe(1);
+	});
+
+	it("starts session enrollment from the auth-expired re-auth action", async () => {
+		const api = {};
+		const card = {
+			...baseCard(),
+			threadId: 19,
+			state: {
+				kind: CardKind.ProviderList,
+				title: "Providers",
+				providers: [
+					{
+						id: "israel-services",
+						label: "Israel Services",
+						health: "auth_expired" as const,
+						enrollmentService: "clalit",
+					},
+				],
+				selectedProviderId: "israel-services",
+				page: 0,
+				view: "detail" as const,
+				canMutate: true,
+			},
+		} as any;
+
+		const result = await providerListRenderer.execute({
+			action: { type: "enroll" },
+			card,
+			ctx: { from: { id: 101 }, api } as any,
+		});
+
+		expect(result.callbackText).toBe("Starting re-auth for clalit");
+		expect(result.callbackAlert).toBeUndefined();
+		expect(result.afterCommit).toBeTypeOf("function");
+
+		await result.afterCommit?.();
+
+		expect(startProviderSessionEnrollmentCommandMock).toHaveBeenCalledWith(api, {
+			actorUserId: "101",
+			chatId: 777,
+			threadId: 19,
+			service: "clalit",
+		});
 	});
 
 	it("renders central remediation commands for provider health failures", () => {
@@ -212,7 +298,8 @@ describe("provider list card", () => {
 	});
 
 	it("rejects provider mutation actions at handler time for non-admin viewers", async () => {
-		for (const action of ["add", "edit", "remove"] as const) {
+		canActorManageProvidersMock.mockReturnValue(false);
+		for (const action of ["add", "edit", "remove", "enroll"] as const) {
 			const card = {
 				...baseCard(),
 				state: {
@@ -223,6 +310,7 @@ describe("provider list card", () => {
 							id: "google",
 							label: "Google Services",
 							health: "ok" as const,
+							enrollmentService: "clalit",
 						},
 					],
 					selectedProviderId: action === "add" ? undefined : "google",
@@ -244,7 +332,9 @@ describe("provider list card", () => {
 					? "Only admin can add providers."
 					: action === "edit"
 						? "Only admin can edit providers."
-						: "Only admin can remove providers.",
+						: action === "remove"
+							? "Only admin can remove providers."
+							: "Only admin can re-auth providers.",
 			);
 		}
 	});
