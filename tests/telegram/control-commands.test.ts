@@ -59,6 +59,12 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/codex review the diff")?.command.id).toBe("codex");
 			expect(matchTelegramControlCommand("/help commands")?.command.id).toBe("help:commands");
 			expect(matchTelegramControlCommand("/curator")?.command.id).toBe("curator");
+			expect(matchTelegramControlCommand("/providers enroll clalit")?.command.id).toBe(
+				"providers:enroll",
+			);
+			expect(matchTelegramControlCommand("/provider enroll clalit")?.command.id).toBe(
+				"providers:enroll",
+			);
 		});
 
 		it("passes remaining args correctly for subcommands", () => {
@@ -69,6 +75,10 @@ describe("telegram control command registry", () => {
 			const verifyMatch = matchTelegramControlCommand("/auth verify 123456");
 			expect(verifyMatch?.command.id).toBe("auth:verify");
 			expect(verifyMatch?.args).toEqual(["123456"]);
+
+			const providerEnrollMatch = matchTelegramControlCommand("/provider enroll clalit");
+			expect(providerEnrollMatch?.command.id).toBe("providers:enroll");
+			expect(providerEnrollMatch?.args).toEqual(["clalit"]);
 		});
 
 		it("returns null for unknown subcommands in strict domains", () => {

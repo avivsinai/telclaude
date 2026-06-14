@@ -291,6 +291,8 @@ export type ProviderListEntry = {
 	remediationKey?: string;
 	/** Base URL for health tap-through. */
 	baseUrl?: string;
+	/** Provider service id to pass to /credentials/enroll-session for re-auth. */
+	enrollmentService?: string;
 };
 
 export type ProviderListView = "list" | "detail";
@@ -541,6 +543,7 @@ export type ProviderListCardAction =
 	| PickerSelectAction
 	| { type: "add" }
 	| { type: "edit" }
+	| { type: "enroll" }
 	| { type: "remove" }
 	| { type: "page-next" }
 	| { type: "page-prev" }

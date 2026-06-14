@@ -96,6 +96,10 @@ services:
       - TELCLAUDE_WHATSAPP_INBOUND_PROFILE_ID=${TELCLAUDE_WHATSAPP_INBOUND_PROFILE_ID:-default}
       - TELCLAUDE_WHATSAPP_INBOUND_ACTOR_ID=${TELCLAUDE_WHATSAPP_INBOUND_ACTOR_ID:-}
       - TELCLAUDE_WHATSAPP_INBOUND_DISPLAY_NAME=${TELCLAUDE_WHATSAPP_INBOUND_DISPLAY_NAME:-}
+      # Israel services sidecar relay HMAC signing secret — RELAY ONLY. The
+      # matching sidecar key is ISRAEL_SIDECAR_HMAC_KEY and is not mounted here.
+      - TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY=${TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY:-}
+      - TELCLAUDE_ISRAEL_SIDECAR_HMAC_VAULT_TARGET=${TELCLAUDE_ISRAEL_SIDECAR_HMAC_VAULT_TARGET:-israel-services/relay-hmac/v1}
       # Relay egress policy: restricted (domain allowlist) or permissive (all public
       # egress; metadata/RFC1918 stay kernel-blocked). tc_web_fetch executes in the
       # relay, so the free-GET web capability requires permissive.

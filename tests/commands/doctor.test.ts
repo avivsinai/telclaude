@@ -396,6 +396,59 @@ describe("checkHermesConnectorReadiness", () => {
 		);
 		expect(results.some((r) => r.status === "fail")).toBe(false);
 	});
+
+	it("fails Israel services relay HMAC readiness when sidecar enforcement is on without signing", async () => {
+		const cfg = makeMinimalConfig({
+			providers: [
+				{
+					id: "israel-services",
+					baseUrl: "http://israel-services:3003",
+					services: ["clalit", "poalim"],
+				},
+			],
+		});
+
+		const missing = await checkHermesConnectorReadiness(cfg, {
+			env: { SIDECAR_REQUIRE_RELAY_HMAC: "1" },
+			webSearchConfigured: false,
+			providerSidecarHmacConfigured: false,
+		});
+		const missingCheck = missing.find((r) => r.name === "hermes.connectors.israel-services.hmac");
+		expect(missingCheck?.status).toBe("fail");
+		expect(missingCheck?.detail).toMatch(/SIDECAR_REQUIRE_RELAY_HMAC=1/);
+
+		const configured = await checkHermesConnectorReadiness(cfg, {
+			env: { SIDECAR_REQUIRE_RELAY_HMAC: "1" },
+			webSearchConfigured: false,
+			providerSidecarHmacConfigured: true,
+		});
+		expect(
+			configured.find((r) => r.name === "hermes.connectors.israel-services.hmac")?.status,
+		).toBe("pass");
+		expect(configured.some((r) => r.status === "fail")).toBe(false);
+	});
+
+	it("warns Israel services relay HMAC readiness before enforcement is flipped", async () => {
+		const cfg = makeMinimalConfig({
+			providers: [
+				{
+					id: "israel-services",
+					baseUrl: "http://israel-services:3003",
+					services: ["clalit", "poalim"],
+				},
+			],
+		});
+
+		const results = await checkHermesConnectorReadiness(cfg, {
+			env: {},
+			webSearchConfigured: false,
+			providerSidecarHmacConfigured: false,
+		});
+
+		const check = results.find((r) => r.name === "hermes.connectors.israel-services.hmac");
+		expect(check?.status).toBe("warn");
+		expect(check?.detail).toMatch(/signed canary/);
+	});
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

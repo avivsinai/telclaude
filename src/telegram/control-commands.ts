@@ -64,6 +64,7 @@ export type TelegramCommandId =
 	| "model"
 	| "model:reset"
 	| "providers"
+	| "providers:enroll"
 	| "curator"
 	// Fast-path shortcuts (no domain prefix)
 	| "sethome"
@@ -760,6 +761,7 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		id: "providers",
 		name: "providers",
 		domain: "providers",
+		aliases: ["provider"],
 		domainDefault: true,
 		category: "Providers",
 		description: "List configured external providers with live health status.",
@@ -769,6 +771,18 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		readOnly: true,
 		rateLimited: true,
 		menuDescription: "External providers",
+	},
+	{
+		id: "providers:enroll",
+		name: "providers",
+		domain: "providers",
+		subcommand: "enroll",
+		category: "Providers",
+		description: "Open a relay-rendered, session-only provider enrollment browser.",
+		usage: "/providers enroll <service>",
+		examples: ["/providers enroll clalit", "/provider enroll poalim"],
+		keywords: ["provider enroll", "service login", "credential enrollment", "session capture"],
+		rateLimited: true,
 	},
 	// ── /sethome shortcut (W3) ───────────────────────────────────────
 	{
@@ -963,13 +977,25 @@ const COMMAND_BY_ID = new Map(
  */
 const DOMAIN_COMMANDS = new Map<string, TelegramControlCommandDefinition[]>();
 const DOMAIN_DEFAULTS = new Map<string, TelegramControlCommandDefinition>();
+const DOMAIN_ROOT_ALIASES = new Map<string, string[]>();
+for (const command of TELEGRAM_CONTROL_COMMANDS) {
+	if (command.domain && command.domainDefault && command.aliases?.length) {
+		DOMAIN_ROOT_ALIASES.set(command.domain, command.aliases);
+	}
+}
 for (const command of TELEGRAM_CONTROL_COMMANDS) {
 	if (!command.domain) continue;
-	const list = DOMAIN_COMMANDS.get(command.domain) ?? [];
-	list.push(command);
-	DOMAIN_COMMANDS.set(command.domain, list);
+	const domainTokens = [command.domain, ...(DOMAIN_ROOT_ALIASES.get(command.domain) ?? [])];
+	for (const domainToken of domainTokens) {
+		const list = DOMAIN_COMMANDS.get(domainToken) ?? [];
+		list.push(command);
+		DOMAIN_COMMANDS.set(domainToken, list);
+	}
 	if (command.domainDefault) {
 		DOMAIN_DEFAULTS.set(command.domain, command);
+		for (const alias of command.aliases ?? []) {
+			DOMAIN_DEFAULTS.set(alias, command);
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ import {
 	startProviderAddWizard,
 	startProviderEditWizard,
 	startProviderRemoveWizard,
+	startProviderSessionEnrollmentCommand,
 } from "../../control-command-actions.js";
 import { getRemediation, type RemediationKey } from "../../remediation-commands.js";
 import type {
@@ -162,6 +163,9 @@ function renderDetailView(card: CardInstance<K>): CardRenderResult {
 
 	const kb = keyboard();
 	if (s.canMutate) {
+		if (entry.health === "auth_expired" && entry.enrollmentService) {
+			kb.text("\uD83D\uDD10 Re-auth", btn(card, "enroll")).row();
+		}
 		kb.text("\u270F\uFE0F Edit", btn(card, "edit"))
 			.text("\uD83D\uDDD1\uFE0F Remove", btn(card, "remove"))
 			.row();
@@ -260,6 +264,31 @@ export const providerListRenderer: CardRenderer<K> = {
 							chatId: card.chatId,
 							threadId: card.threadId,
 							providerId: entry.id,
+						});
+					},
+				};
+			}
+
+			case "enroll": {
+				if (!s.canMutate || !canActorManageProviders(card.chatId)) {
+					return { callbackText: "Only admin can re-auth providers.", callbackAlert: true };
+				}
+				const entry = resolveSelected(s);
+				if (!entry?.enrollmentService) {
+					return {
+						callbackText: "No enrollment flow is available for this provider.",
+						callbackAlert: true,
+					};
+				}
+				return {
+					callbackText: `Starting re-auth for ${entry.enrollmentService}`,
+					rerender: false,
+					afterCommit: async () => {
+						await startProviderSessionEnrollmentCommand(context.ctx.api, {
+							actorUserId: String(context.ctx.from.id),
+							chatId: card.chatId,
+							threadId: card.threadId,
+							service: entry.enrollmentService as string,
 						});
 					},
 				};
