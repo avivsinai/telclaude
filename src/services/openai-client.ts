@@ -6,7 +6,10 @@
  * 1. Keychain (via `telclaude secrets setup-openai`)
  * 2. OPENAI_API_KEY environment variable
  * 3. openai.apiKey in config file
- * 4. Credential proxy (TELCLAUDE_CREDENTIAL_PROXY_URL — no direct key needed)
+ * 4. Vault `http:api.openai.com` bearer credential — reuse the same OpenAI key already
+ *    provisioned for the credential proxy, so it serves transcription/TTS/image too.
+ *    Relay-only (gated on vault reachability); the contained agent has no vault access.
+ * 5. Credential proxy (TELCLAUDE_CREDENTIAL_PROXY_URL — no direct key needed)
  *
  * Proxy support:
  * When HTTP_PROXY or HTTPS_PROXY is set (e.g., inside sandbox), the client
@@ -20,6 +23,7 @@ import { type Dispatcher, ProxyAgent } from "undici";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getSecret, SECRET_KEYS } from "../secrets/index.js";
+import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 
 const logger = getChildLogger({ module: "openai-client" });
 
@@ -83,7 +87,25 @@ async function getApiKey(): Promise<string | null> {
 		return cachedApiKey;
 	}
 
-	// 4. Credential proxy mode (agent → relay proxy, no direct key needed)
+	// 4. Vault HTTP credential for api.openai.com. Reuse the SAME OpenAI key already provisioned
+	//    for the credential proxy / direct HTTP calls, so transcription/TTS/image work without a
+	//    separate `openai-api-key` secret. Relay-only: gated on vault reachability — the contained
+	//    agent has no vault socket, so it falls through to the credential proxy below (no key leak).
+	try {
+		if (await isVaultAvailable()) {
+			const resp = await getVaultClient().get("http", "api.openai.com");
+			if (resp.ok && resp.entry?.credential?.type === "bearer" && resp.entry.credential.token) {
+				cachedApiKey = resp.entry.credential.token;
+				keySourceChecked = true;
+				logger.debug("using OpenAI API key from vault http:api.openai.com credential");
+				return cachedApiKey;
+			}
+		}
+	} catch (err) {
+		logger.debug({ error: String(err) }, "vault http:api.openai.com unavailable for OpenAI key");
+	}
+
+	// 5. Credential proxy mode (agent → relay proxy, no direct key needed)
 	if (process.env.TELCLAUDE_CREDENTIAL_PROXY_URL) {
 		usingCredentialProxy = true;
 		cachedApiKey = "credential-proxy";
