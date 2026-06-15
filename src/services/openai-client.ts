@@ -23,9 +23,10 @@ import { type Dispatcher, ProxyAgent } from "undici";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getSecret, SECRET_KEYS } from "../secrets/index.js";
-import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
+import { VaultClient } from "../vault-daemon/client.js";
 
 const logger = getChildLogger({ module: "openai-client" });
+const OPENAI_VAULT_TIMEOUT_MS = 2000;
 
 /**
  * Redact credentials from a proxy URL for safe logging.
@@ -92,8 +93,9 @@ async function getApiKey(): Promise<string | null> {
 	//    separate `openai-api-key` secret. Relay-only: gated on vault reachability — the contained
 	//    agent has no vault socket, so it falls through to the credential proxy below (no key leak).
 	try {
-		if (await isVaultAvailable()) {
-			const resp = await getVaultClient().get("http", "api.openai.com");
+		const vaultClient = new VaultClient({ timeout: OPENAI_VAULT_TIMEOUT_MS });
+		if (await vaultClient.ping()) {
+			const resp = await vaultClient.get("http", "api.openai.com");
 			if (resp.ok && resp.entry?.credential?.type === "bearer" && resp.entry.credential.token) {
 				cachedApiKey = resp.entry.credential.token;
 				keySourceChecked = true;

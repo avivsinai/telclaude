@@ -4,10 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listJobs } from "../../src/background/index.js";
 import { getMostRecentPendingPlanApproval } from "../../src/security/approvals.js";
+import { createAttachmentRef } from "../../src/storage/attachment-refs.js";
 import { getDb, resetDatabase } from "../../src/storage/db.js";
 
 // Hoisted mutable stubs
 const replies: string[] = [];
+const sentMedia: Array<{ type: string; source: string }> = [];
 const sessionStore: Array<{ key: string; entry: unknown }> = [];
 
 const executeHermesQueryImpl = vi.hoisted(() => vi.fn());
@@ -137,6 +139,9 @@ const makeMsg = () => ({
 	reply: vi.fn(async (text: string) => {
 		replies.push(text);
 	}),
+	sendMedia: vi.fn(async (media: { type: string; source: string }) => {
+		sentMedia.push(media);
+	}),
 });
 
 async function waitFor(condition: () => boolean): Promise<void> {
@@ -168,6 +173,8 @@ const baseCtx = () => ({
 });
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
+const ORIGINAL_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
+const ORIGINAL_RELAY_PRIVATE_KEY = process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY;
 
 describe("auto-reply executeAndReply", () => {
 	let tempDir: string;
@@ -175,6 +182,8 @@ describe("auto-reply executeAndReply", () => {
 	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-"));
 		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		process.env.TELCLAUDE_MEDIA_OUTBOX_DIR = path.join(tempDir, "media-outbox");
+		process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY = "test-relay-private-key";
 		vi.resetModules();
 		buildTelegramMemoryBundleImpl.mockClear();
 		captureTelegramTurnMemoryImpl.mockClear();
@@ -192,6 +201,7 @@ describe("auto-reply executeAndReply", () => {
 
 	afterEach(() => {
 		replies.length = 0;
+		sentMedia.length = 0;
 		sessionStore.length = 0;
 		redactors.length = 0;
 		executeHermesQueryImpl.mockReset();
@@ -216,6 +226,16 @@ describe("auto-reply executeAndReply", () => {
 			delete process.env.TELCLAUDE_DATA_DIR;
 		} else {
 			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
+		if (ORIGINAL_MEDIA_OUTBOX_DIR === undefined) {
+			delete process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
+		} else {
+			process.env.TELCLAUDE_MEDIA_OUTBOX_DIR = ORIGINAL_MEDIA_OUTBOX_DIR;
+		}
+		if (ORIGINAL_RELAY_PRIVATE_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY;
+		} else {
+			process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY = ORIGINAL_RELAY_PRIVATE_KEY;
 		}
 	});
 
@@ -246,6 +266,67 @@ describe("auto-reply executeAndReply", () => {
 		expect(ctx.auditLogger.log).toHaveBeenCalledWith(
 			expect.objectContaining({ outcome: "success", costUsd: 0.1 }),
 		);
+	});
+
+	it("sends Hermes TTS attachment refs as Telegram voice without leaking the ref as text", async () => {
+		const linkedUserId = "linked-voice-user";
+		const db = getDb();
+		db.prepare(
+			`INSERT INTO identity_links (chat_id, local_user_id, linked_at, linked_by)
+			 VALUES (?, ?, ?, ?)`,
+		).run(123, linkedUserId, Date.now(), "test");
+
+		const voiceDir = path.join(tempDir, "media-outbox", "voice");
+		fs.mkdirSync(voiceDir, { recursive: true });
+		const voicePath = path.join(voiceDir, "reply.ogg");
+		fs.writeFileSync(voicePath, Buffer.from("fake-ogg"));
+		const attachment = createAttachmentRef({
+			actorUserId: linkedUserId,
+			providerId: "tc_tts:private",
+			filepath: voicePath,
+			filename: path.basename(voicePath),
+			mimeType: "audio/ogg",
+			size: fs.statSync(voicePath).size,
+		});
+
+		executeHermesQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: JSON.stringify({
+							attachmentRef: attachment.ref,
+							sizeBytes: attachment.size,
+							format: "ogg",
+							voice: "alloy",
+							estimatedDurationSeconds: 1,
+							expiresAt: attachment.expiresAt,
+						}),
+						success: true,
+						error: undefined,
+						costUsd: 0.1,
+						numTurns: 1,
+						durationMs: 5,
+					},
+				};
+			})(),
+		);
+
+		const ctx = {
+			...baseCtx(),
+			msg: {
+				...makeMsg(),
+				senderId: 555,
+			},
+		};
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		const resolvedVoicePath = fs.realpathSync(voicePath);
+		expect(replies).toEqual([]);
+		expect(sentMedia).toEqual([{ type: "voice", source: resolvedVoicePath }]);
+		expect(ctx.msg.reply).not.toHaveBeenCalled();
+		expect(ctx.msg.sendMedia).toHaveBeenCalledWith({ type: "voice", source: resolvedVoicePath });
+		expect(sessionStore[0].entry.systemSent).toBe(true);
 	});
 
 	it("uses fallback redaction when no streaming chunks are returned", async () => {

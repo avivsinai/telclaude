@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getMediaOutboxDirSync } from "../media/store.js";
+import { validateAttachmentRef } from "../storage/attachment-refs.js";
 import type { TelegramMediaType } from "./types.js";
 
 /**
@@ -124,7 +125,12 @@ const ALL_MEDIA_EXTENSIONS =
 export type DetectedMedia = {
 	path: string;
 	type: TelegramMediaType;
+	sourceRef?: string;
 };
+
+const ATTACHMENT_REF_PATTERN = /\b(att_[a-f0-9]{8}\.\d+\.[a-f0-9]{16})\b/gi;
+const GENERATED_MEDIA_ATTACHMENT_PROVIDER_PATTERN =
+	/^(?:tc_image_generate|tc_tts):(?:private|social|household|public|specialist)$/;
 
 /**
  * Check if a path is under one of the allowed media roots.
@@ -245,6 +251,56 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
 		if (!type) continue;
 
 		results.push({ path: realPath, type });
+	}
+
+	return results;
+}
+
+/**
+ * Extract relay-owned generated media attachment refs from Hermes output.
+ *
+ * Hermes never receives filesystem paths for generated media. It only receives
+ * signed attachment refs, so the relay validates the ref against the current
+ * actor and resolves the path internally before sending the media to Telegram.
+ */
+export function extractGeneratedMediaAttachmentRefs(
+	text: string,
+	actorUserId: string,
+): DetectedMedia[] {
+	const results: DetectedMedia[] = [];
+	const seen = new Set<string>();
+
+	for (const match of text.matchAll(ATTACHMENT_REF_PATTERN)) {
+		const ref = match[1];
+		if (!ref || seen.has(ref)) continue;
+		seen.add(ref);
+
+		let validated: ReturnType<typeof validateAttachmentRef>;
+		try {
+			validated = validateAttachmentRef(ref, { actorUserId });
+		} catch {
+			continue;
+		}
+		if (!validated.valid) continue;
+		if (!GENERATED_MEDIA_ATTACHMENT_PROVIDER_PATTERN.test(validated.attachment.providerId)) {
+			continue;
+		}
+
+		const realPath = safeResolvePath(validated.attachment.filepath);
+		if (!realPath) continue;
+
+		let stats: fs.Stats;
+		try {
+			stats = fs.lstatSync(realPath);
+		} catch {
+			continue;
+		}
+		if (stats.isSymbolicLink() || !stats.isFile()) continue;
+
+		const type = inferMediaType(realPath);
+		if (!type) continue;
+
+		results.push({ path: realPath, type, sourceRef: ref });
 	}
 
 	return results;

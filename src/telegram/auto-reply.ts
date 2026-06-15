@@ -139,7 +139,12 @@ import {
 } from "./conversational-cron.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
 import { resolveTelegramIntent } from "./intent-router.js";
-import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
+import {
+	type DetectedMedia,
+	extractGeneratedMediaAttachmentRefs,
+	extractGeneratedMediaPaths,
+	isMediaOnlyResponse,
+} from "./media-detection.js";
 import {
 	buildMemoryCaptureText,
 	buildMultimodalPrompt,
@@ -214,6 +219,35 @@ function resolveExecutableModelForChat(
  */
 function makeRecentSentKey(chatId: number, body: string): string {
 	return `${chatId}:${body}`;
+}
+
+const ATTACHMENT_REF_METADATA_KEYS = new Set([
+	"attachmentRef",
+	"sizeBytes",
+	"format",
+	"voice",
+	"estimatedDurationSeconds",
+	"expiresAt",
+]);
+
+function isAttachmentRefMetadataOnlyResponse(response: string, ref: string): boolean {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(response.trim());
+	} catch {
+		return false;
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+
+	const record = parsed as Record<string, unknown>;
+	if (record.attachmentRef !== ref) return false;
+	return Object.keys(record).every((key) => ATTACHMENT_REF_METADATA_KEYS.has(key));
+}
+
+function isGeneratedVoiceOnlyResponse(response: string, media: DetectedMedia): boolean {
+	const marker = media.sourceRef ?? media.path;
+	if (isMediaOnlyResponse(response, marker)) return true;
+	return Boolean(media.sourceRef && isAttachmentRefMetadataOnlyResponse(response, media.sourceRef));
 }
 
 // Rate limiting for control commands (prevent brute-force on /approve)
@@ -1779,7 +1813,10 @@ async function executeWithSession(
 					// - Skill teaches Claude to generate media and include path in response
 					// - Relay detects the path and sends the file to the user
 					// See: .claude/skills/image-generator/SKILL.md
-					const generatedMedia = extractGeneratedMediaPaths(finalResponse, process.cwd());
+					const generatedMedia = [
+						...extractGeneratedMediaPaths(finalResponse, process.cwd()),
+						...extractGeneratedMediaAttachmentRefs(finalResponse, userId),
+					];
 
 					// Check if this is a "voice-only" response (just a file path, no real content)
 					// This enables natural voice replies - when responding with voice,
@@ -1788,7 +1825,7 @@ async function executeWithSession(
 					const isVoiceOnlyResponse =
 						generatedMedia.length === 1 &&
 						generatedMedia[0].type === "voice" &&
-						isMediaOnlyResponse(finalResponse, generatedMedia[0].path);
+						isGeneratedVoiceOnlyResponse(finalResponse, generatedMedia[0]);
 
 					// Add to recentlySent BEFORE sending to prevent echo race condition
 					const recentKey = makeRecentSentKey(msg.chatId, finalResponse);
