@@ -18,7 +18,11 @@ vi.mock("../../src/logging.js", () => ({
 	getChildLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
 }));
 
-import { clearOpenAICache, getOpenAIKey } from "../../src/services/openai-client.js";
+import {
+	clearOpenAICache,
+	getCachedOpenAIKey,
+	getOpenAIKey,
+} from "../../src/services/openai-client.js";
 
 function bearerEntry(token: string) {
 	return {
@@ -70,5 +74,21 @@ describe("openai-client getOpenAIKey — shared vault http credential", () => {
 		isVaultAvailableMock.mockResolvedValue(true);
 		vaultGetMock.mockResolvedValue({ type: "get", ok: false, error: "not_found" });
 		expect(await getOpenAIKey()).toBeNull();
+	});
+
+	it("surfaces the vault bearer through getCachedOpenAIKey() for relay-local consumers (e.g. summarize)", async () => {
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultGetMock.mockResolvedValue(bearerEntry("sk-from-vault-http"));
+		await getOpenAIKey();
+		// Relay-side: the resolved vault key is a real string, usable in-process by summarize-core.
+		expect(getCachedOpenAIKey()).toBe("sk-from-vault-http");
+	});
+
+	it("never surfaces the credential-proxy placeholder through getCachedOpenAIKey() (contained agent)", async () => {
+		isVaultAvailableMock.mockResolvedValue(false);
+		process.env.TELCLAUDE_CREDENTIAL_PROXY_URL = "http://relay:8792";
+		await getOpenAIKey();
+		// Contained agent: proxy mode must keep getCachedOpenAIKey() null so no key/placeholder leaks to env.
+		expect(getCachedOpenAIKey()).toBeNull();
 	});
 });
