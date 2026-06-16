@@ -66,6 +66,10 @@ services:
       - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      # Deployed commit for the startup banner. Runtime env is authoritative —
+      # resolveRevision() checks it first, so it is immune to the Docker layer
+      # cache that can leave the baked .revision stale. Set by CI from GITHUB_SHA.
+      - TELCLAUDE_REVISION=${TELCLAUDE_REVISION:-}
       # Relay keeps its own auth/profile state, but skills live in the shared catalog.
       - CLAUDE_CONFIG_DIR=/home/telclaude-auth
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
