@@ -8,6 +8,11 @@ node_modules/
 
 # Build artifacts
 dist/
+# Host-side revision stamp: a build artifact that must NOT leak into the context.
+# If copied in, a stale value survives (Dockerfile only writes .revision when it is
+# missing/unknown), so the baked revision goes stale. Excluding it lets the build
+# stamp the real GIT_COMMIT into a clean slate. .revision is gitignored.
+.revision
 
 # Git
 .git/
