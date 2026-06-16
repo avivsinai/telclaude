@@ -1813,9 +1813,10 @@ async function executeWithSession(
 					// - Skill teaches Claude to generate media and include path in response
 					// - Relay detects the path and sends the file to the user
 					// See: .claude/skills/image-generator/SKILL.md
+					const authorityActorId = String(msg.senderId ?? msg.chatId);
 					const generatedMedia = [
 						...extractGeneratedMediaPaths(finalResponse, process.cwd()),
-						...extractGeneratedMediaAttachmentRefs(finalResponse, userId),
+						...extractGeneratedMediaAttachmentRefs(finalResponse, authorityActorId),
 					];
 
 					// Check if this is a "voice-only" response (just a file path, no real content)
