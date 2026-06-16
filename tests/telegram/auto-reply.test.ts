@@ -269,7 +269,8 @@ describe("auto-reply executeAndReply", () => {
 	});
 
 	it("sends Hermes TTS attachment refs as Telegram voice without leaking the ref as text", async () => {
-		const linkedUserId = "linked-voice-user";
+		const linkedUserId = "admin";
+		const senderId = 453371121;
 		const db = getDb();
 		db.prepare(
 			`INSERT INTO identity_links (chat_id, local_user_id, linked_at, linked_by)
@@ -281,7 +282,7 @@ describe("auto-reply executeAndReply", () => {
 		const voicePath = path.join(voiceDir, "reply.ogg");
 		fs.writeFileSync(voicePath, Buffer.from("fake-ogg"));
 		const attachment = createAttachmentRef({
-			actorUserId: linkedUserId,
+			actorUserId: String(senderId),
 			providerId: "tc_tts:private",
 			filepath: voicePath,
 			filename: path.basename(voicePath),
@@ -316,7 +317,7 @@ describe("auto-reply executeAndReply", () => {
 			...baseCtx(),
 			msg: {
 				...makeMsg(),
-				senderId: 555,
+				senderId,
 			},
 		};
 		await autoReplyTest.executeAndReply(ctx as never);
