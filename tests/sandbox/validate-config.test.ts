@@ -466,6 +466,37 @@ TELCLAUDE_LOG_LEVEL=info
 		);
 	});
 
+	it("runs official Hermes verify-live runtime gates from the William deploy context", () => {
+		const workflow = fs.readFileSync(
+			path.resolve(process.cwd(), ".github/workflows/ci.yml"),
+			"utf8",
+		);
+		const setupStep = workflowStep(workflow, "Setup Node.js for deploy verification");
+		const installStep = workflowStep(workflow, "Install deploy verification dependencies");
+		const buildStep = workflowStep(workflow, "Build and deploy");
+		const verifyStep = workflowStep(workflow, "Verify live Hermes runtime gates");
+
+		expect(setupStep).toContain("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
+		expect(setupStep).toContain("node-version: 22");
+		expect(installStep).toContain("corepack enable");
+		expect(installStep).toContain(
+			'package_manager="$(node -p "require(\'./package.json\').packageManager")"',
+		);
+		expect(installStep).toContain('corepack prepare "$package_manager" --activate');
+		expect(installStep).toContain("pnpm install --frozen-lockfile");
+		expect(verifyStep).toContain(
+			"pnpm --silent dev hermes verify-live --json --skip-mcp --skip-turn --timeout-ms 120000",
+		);
+		expect(verifyStep).toContain("verify_live_runtime_status=");
+		expect(verifyStep).toContain("telclaude.hermes.verify-live.v1");
+		expect(verifyStep).toContain("findVerifyLiveReport");
+		expect(verifyStep).toContain("verify-live report JSON with expected schemaVersion was not found");
+		expect(verifyStep).toContain("verify-live runtime output");
+		expect(verifyStep).not.toContain("--skip-runtime-toolset");
+		expect(verifyStep).not.toContain("--skip-runtime-skill-manage");
+		expect(workflow.indexOf(buildStep)).toBeLessThan(workflow.indexOf(verifyStep));
+	});
+
 	it("keeps the standalone Hermes CLI proof runner off host-gateway smoke paths", () => {
 		const scriptPath = path.resolve(process.cwd(), "scripts/hermes-contained-cli-probe.sh");
 		const script = fs.readFileSync(scriptPath, "utf8");

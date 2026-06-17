@@ -71,6 +71,20 @@ jobs:
       - name: Pull latest
         run: git -C ~/telclaude fetch origin +refs/heads/main:refs/remotes/origin/main && git -C ~/telclaude reset --hard origin/main
 
+      - name: Setup Node.js for deploy verification
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: 22
+
+      - name: Install deploy verification dependencies
+        run: |
+          set -euo pipefail
+          cd ~/telclaude
+          corepack enable
+          package_manager="$(node -p "require('./package.json').packageManager")"
+          corepack prepare "$package_manager" --activate
+          pnpm install --frozen-lockfile
+
       - name: Generate Hermes deploy keys
         run: |
           private_key="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
@@ -343,3 +357,86 @@ jobs:
             esac
           done < <(docker network ls -q)
           docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480
+
+      - name: Verify live Hermes runtime gates
+        run: |
+          set -euo pipefail
+          cd ~/telclaude
+          report_path="$(mktemp)"
+          trap 'rm -f "$report_path"' EXIT
+          verify_exit=0
+          pnpm --silent dev hermes verify-live --json --skip-mcp --skip-turn --timeout-ms 120000 > "$report_path" || verify_exit=$?
+          redact_verify_live_report() {
+            sed -E \
+              -e 's/(B[e]arer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
+              -e 's/((KEY|TOKEN|SECRET|PRIVATE_KEY)=)[^[:space:]]+/\1[REDACTED]/g'
+          }
+          parse_exit=0
+          node - "$report_path" <<'NODE' || parse_exit=$?
+          const fs = require("fs");
+          const reportPath = process.argv[2];
+          const EXPECTED_SCHEMA_VERSION = "telclaude.hermes.verify-live.v1";
+          const raw = fs.readFileSync(reportPath, "utf8");
+
+          function parseCandidateJson(candidate) {
+            try {
+              return JSON.parse(candidate);
+            } catch {
+              return undefined;
+            }
+          }
+
+          function findVerifyLiveReport(text) {
+            const parsed = parseCandidateJson(text);
+            if (parsed?.schemaVersion === EXPECTED_SCHEMA_VERSION) return parsed;
+
+            for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+              let depth = 0;
+              let inString = false;
+              let escaped = false;
+              for (let index = start; index < text.length; index += 1) {
+                const char = text[index];
+                if (inString) {
+                  if (escaped) {
+                    escaped = false;
+                  } else if (char === "\\") {
+                    escaped = true;
+                  } else if (char === "\"") {
+                    inString = false;
+                  }
+                  continue;
+                }
+                if (char === "\"") {
+                  inString = true;
+                } else if (char === "{") {
+                  depth += 1;
+                } else if (char === "}") {
+                  depth -= 1;
+                  if (depth === 0) {
+                    const candidate = parseCandidateJson(text.slice(start, index + 1));
+                    if (candidate?.schemaVersion === EXPECTED_SCHEMA_VERSION) return candidate;
+                    break;
+                  }
+                }
+              }
+            }
+            throw new Error("verify-live report JSON with expected schemaVersion was not found");
+          }
+
+          const report = findVerifyLiveReport(raw);
+          const checks = Array.isArray(report.checks) ? report.checks : [];
+          const summary = checks.map((check) => `${check.id}:${check.status}`).join(" ");
+          console.log(`verify_live_runtime_status=${report.status} checks=${summary}`);
+          for (const check of checks) {
+            console.log(`${check.status.toUpperCase().padEnd(4)} ${check.id} - ${check.detail}`);
+          }
+          if (report.status !== "pass") {
+            process.exitCode = 1;
+          }
+          NODE
+          echo "::group::verify-live runtime output"
+          redact_verify_live_report < "$report_path" || true
+          echo "::endgroup::"
+          if [ "$verify_exit" -ne 0 ] || [ "$parse_exit" -ne 0 ]; then
+            exit 1
+          fi
