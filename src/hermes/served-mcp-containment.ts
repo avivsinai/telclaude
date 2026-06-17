@@ -1,3 +1,21 @@
+// Served-MCP ENDPOINT containment probe.
+//
+// SCOPE: this proves the relay's live MCP *server* (the `telclaudeRelay`
+// endpoint) is contained — it exposes only the `tc_*` served tool surface,
+// strips client-supplied authority/connection/provenance, re-resolves authority
+// server-side from the opaque peer-bound handle, and fails closed on forged
+// authority, wrong connection, off-domain peer, or unauthenticated callers.
+//
+// NOT IN SCOPE: this says nothing about the contained runtime's *own* native
+// tool surface. Scoping only the MCP server's tool list never disables Hermes's
+// native toolsets (terminal, file, code_execution, browser, cronjob, memory,
+// web, …), which remain additive to the served tools unless the runtime config
+// explicitly allowlists them. The agent's resolved native toolset
+// (`[skills, telclaudeRelay, todo]`) and the `skill_manage` write-denial are
+// proven separately by `verify-live`'s `runtime.toolset_inventory` /
+// `runtime.skill_manage_write_denied` gates. A clean served endpoint with an
+// over-broad native surface is NOT a contained runtime — both proofs are
+// required, and they must not be conflated.
 import net from "node:net";
 import type { ZodError } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
