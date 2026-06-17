@@ -52,6 +52,11 @@ import {
 	writeHermesJsonArtifact,
 } from "../hermes/foundation.js";
 import {
+	DEFAULT_HOSTILE_PEER_EVIDENCE_PATH,
+	HOSTILE_PEER_PROBE_ID,
+	runHermesHostilePeerProbe,
+} from "../hermes/hostile-peer-probes.js";
+import {
 	DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET,
 	requestTelclaudeLiveMcpCanaryWindowClose,
 	requestTelclaudeLiveMcpCanaryWindowOpen,
@@ -164,6 +169,8 @@ import {
 	type HermesVerifyLiveProviderCanary,
 	readHermesContainedStaticAuthorizationHeader,
 	runHermesVerifyLiveMcpChecks,
+	runHermesVerifyLiveRuntimeToolsetInventoryCheck,
+	runHermesVerifyLiveSkillManageWriteDeniedCheck,
 	runHermesVerifyLiveTurnChecks,
 } from "../hermes/verify-live.js";
 import {
@@ -289,6 +296,21 @@ const HERMES_FEATURE_PROBE_DEFINITIONS = [
 		evidence_path: DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH,
 		lockfile_key: "featureProbes.execution.servedMcpContainment",
 		security_scope: "served-mcp-containment",
+		approval_equivalent: true,
+		failure_outcome: "disable",
+	},
+	{
+		surface_id: HOSTILE_PEER_PROBE_ID,
+		documented_seam:
+			"Contained Hermes is treated as a hostile peer when native terminal/code/file tools are enabled",
+		probe_command: `pnpm dev hermes probe ${HOSTILE_PEER_PROBE_ID} --allow-run`,
+		expected_result:
+			"Five hostile in-container probes prove live MCP auth, model proxy peer binding, relay internal surface exposure, token replay limits, and runtime self-modification fail closed",
+		negative_probe:
+			"Any broadened native toolset, wrong-peer model-proxy token acceptance, exposed relay admin/provider/vault surface, token replay after authority close, or HERMES_HOME self-modification authority expansion fails closed",
+		evidence_path: DEFAULT_HOSTILE_PEER_EVIDENCE_PATH,
+		lockfile_key: "featureProbes.runtime.hostilePeer",
+		security_scope: "runtime-hostile-peer",
 		approval_equivalent: true,
 		failure_outcome: "disable",
 	},
@@ -2455,6 +2477,11 @@ export function registerHermesCommand(program: Command): void {
 			"--mcp-bearer-from-container",
 			"Authenticate the MCP surface checks with the static transport bearer read from the contained container's own config.yaml (replicates Hermes's discovery path; no admin socket needed)",
 		)
+		.option("--skip-runtime-toolset", "Skip the contained runtime native toolset inventory gate")
+		.option(
+			"--skip-runtime-skill-manage",
+			"Skip the contained runtime skill_manage write-denial gate",
+		)
 		.option("--skip-mcp", "Skip the MCP tool-surface checks")
 		.option("--skip-turn", "Skip the behavioral canary turn")
 		.option(
@@ -2475,6 +2502,8 @@ export function registerHermesCommand(program: Command): void {
 					dockerBin: string;
 					direct?: boolean;
 					mcpBearerFromContainer?: boolean;
+					skipRuntimeToolset?: boolean;
+					skipRuntimeSkillManage?: boolean;
 					skipMcp?: boolean;
 					skipTurn?: boolean;
 					apiBaseUrl?: string;
@@ -2515,6 +2544,26 @@ export function registerHermesCommand(program: Command): void {
 							timeoutMs,
 						}),
 				};
+
+				if (!options.skipRuntimeToolset) {
+					checks.push(
+						await runHermesVerifyLiveRuntimeToolsetInventoryCheck({
+							containerName: options.container,
+							dockerBin: options.dockerBin,
+							timeoutMs,
+						}),
+					);
+				}
+
+				if (!options.skipRuntimeSkillManage) {
+					checks.push(
+						await runHermesVerifyLiveSkillManageWriteDeniedCheck({
+							containerName: options.container,
+							dockerBin: options.dockerBin,
+							timeoutMs,
+						}),
+					);
+				}
 
 				if (!options.skipMcp) {
 					const mcpUrl = options.mcpUrl ?? defaultLiveMcpEndpointUrl();
@@ -3344,6 +3393,29 @@ export function registerHermesCommand(program: Command): void {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_SIDE_EFFECT_LEDGER_EVIDENCE_PATH,
 					);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === HOSTILE_PEER_PROBE_ID) {
+				const report = await runHermesHostilePeerProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_HOSTILE_PEER_EVIDENCE_PATH);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {

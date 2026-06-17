@@ -28,6 +28,7 @@ import {
 	edgeAdapterProbeEvidenceFailure,
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
+import { HOSTILE_PEER_PROBE_ID, hostilePeerProbeEvidenceFailure } from "./hostile-peer-probes.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import {
 	NO_FORK_RUNNER_ATTESTATION_RUNNER,
@@ -135,6 +136,7 @@ export const FeatureProbeSchema = z
 				"model-relay",
 				"nofork-proof",
 				"provider-approval-binding",
+				"runtime-hostile-peer",
 				"served-mcp-containment",
 				"served-mcp-provider-tools",
 				"side-effect-ledger",
@@ -379,6 +381,14 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/mcp/bridge.ts",
 		"src/hermes/mcp/live-server.ts",
 		"src/hermes/mcp/live-relay-clients.ts",
+	],
+	[HOSTILE_PEER_PROBE_ID]: [
+		"docker/hermes-contained-entrypoint.sh",
+		"src/hermes/hostile-peer-probes.ts",
+		"src/hermes/verify-live.ts",
+		"src/hermes/mcp/live-connection-resolver.ts",
+		"src/hermes/mcp/live-server.ts",
+		"src/relay/openai-codex-proxy.ts",
 	],
 	"model.relay": [
 		"src/hermes/model-relay.ts",
@@ -1098,6 +1108,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "execution.api_server_containment") {
 			return [collectApiServerContainmentProbeEvidence(probe)];
+		}
+		if (probe.surface_id === HOSTILE_PEER_PROBE_ID) {
+			return [collectHostilePeerProbeEvidence(probe)];
 		}
 		if (probe.surface_id === "model.relay") {
 			return [collectModelRelayProbeEvidence(probe, options)];
@@ -2061,6 +2074,42 @@ function collectSideEffectLedgerProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed MCP side-effect ledger controls`,
+	};
+}
+
+function collectHostilePeerProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = hostilePeerProbeEvidenceFailure(probe.surface_id, evidence);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed hostile contained-peer controls`,
 	};
 }
 

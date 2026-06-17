@@ -165,16 +165,16 @@ done < "$ALLOWLIST_PATH"
 mkdir -p "$DEST_SKILLS_DIR"
 cp -R "${CURATED_SKILLS_DIR}/." "$DEST_SKILLS_DIR"
 cp "$ALLOWLIST_PATH" "${HERMES_HOME}/telclaude-contained-skills.allowlist"
-find "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
-find "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
+find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
+find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
 chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"
 if [ "$(id -u)" = "0" ]; then
 	chown -R "$HERMES_RUNTIME_UID:$HERMES_RUNTIME_GID" \
 		"$CURATED_SKILLS_DIR" \
 		"$DEST_SKILLS_DIR" \
 		"${HERMES_HOME}/telclaude-contained-skills.allowlist"
-	find "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
-	find "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
+	find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
+	find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
 	chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"
 fi
 export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"
@@ -300,6 +300,43 @@ model:
   openai_runtime: auto
 skills:
   creation_nudge_interval: 0${SKILLS_EXTERNAL_DIRS_BLOCK}
+platform_toolsets:
+  api_server:
+    - todo
+    - skills
+    - telclaudeRelay
+agent:
+  disabled_toolsets:
+    - terminal
+    - process
+    - code_execution
+    - file
+    - vision
+    - browser
+    - cronjob
+    - delegation
+    - memory
+    - session_search
+    - skill_manage
+    - image_gen
+    - web
+    - x_search
+    - tts
+    - video
+    - video_gen
+    - moa
+    - messaging
+    - send_message
+    - context_engine
+    - clarify
+    - homeassistant
+    - spotify
+    - discord
+    - discord_admin
+    - yuanbao
+    - computer_use
+    - feishu_doc
+    - feishu_drive
 mcp_servers:
   telclaudeRelay:
     type: http
@@ -326,6 +363,9 @@ mcp_servers:
         - tc_image_generate
         - tc_tts
         - tc_skill_request
+        - tc_schedule_create
+        - tc_schedule_list
+        - tc_schedule_cancel
       exclude: []
       resources: false
       prompts: false

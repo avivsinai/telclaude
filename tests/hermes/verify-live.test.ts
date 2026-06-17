@@ -8,9 +8,12 @@ import type {
 import {
 	buildHermesVerifyLiveCanaryPrompt,
 	buildHermesVerifyLiveReport,
+	HERMES_VERIFY_LIVE_EXPECTED_API_SERVER_TOOLSETS,
 	HERMES_VERIFY_LIVE_SENTINEL,
 	type HermesVerifyLiveCanaryWindowClient,
 	type HermesVerifyLiveRpcTransport,
+	runHermesVerifyLiveRuntimeToolsetInventoryCheck,
+	runHermesVerifyLiveSkillManageWriteDeniedCheck,
 	runHermesVerifyLiveMcpChecks,
 	runHermesVerifyLiveTurnChecks,
 } from "../../src/hermes/verify-live.js";
@@ -232,6 +235,86 @@ describe("runHermesVerifyLiveMcpChecks", () => {
 			},
 		});
 		expect(checks.every((check) => check.status === "fail")).toBe(true);
+	});
+});
+
+describe("runHermesVerifyLiveRuntimeToolsetInventoryCheck", () => {
+	it("passes only for the signed minimal native runtime toolset", async () => {
+		const check = await runHermesVerifyLiveRuntimeToolsetInventoryCheck({
+			readToolsets: async () => ["todo", "skills", "telclaudeRelay"],
+		});
+
+		expect(check).toMatchObject({
+			id: "runtime.toolset_inventory",
+			status: "pass",
+		});
+		expect(check.evidence).toEqual({
+			expected: [...HERMES_VERIFY_LIVE_EXPECTED_API_SERVER_TOOLSETS].sort(),
+			observed: ["skills", "telclaudeRelay", "todo"],
+		});
+	});
+
+	it("fails closed when any broad native toolset is present", async () => {
+		const check = await runHermesVerifyLiveRuntimeToolsetInventoryCheck({
+			readToolsets: async () => ["browser", "file", "skills", "telclaudeRelay", "todo", "terminal"],
+		});
+
+		expect(check.status).toBe("fail");
+		expect(check.detail).toContain("expected [skills, telclaudeRelay, todo]");
+		expect(check.detail).toContain(
+			"observed [browser, file, skills, telclaudeRelay, terminal, todo]",
+		);
+	});
+
+	it("fails closed when the in-container inventory cannot be read", async () => {
+		const check = await runHermesVerifyLiveRuntimeToolsetInventoryCheck({
+			readToolsets: async () => {
+				throw new Error("docker not reachable");
+			},
+		});
+
+		expect(check.status).toBe("fail");
+		expect(check.detail).toContain("docker not reachable");
+	});
+});
+
+describe("runHermesVerifyLiveSkillManageWriteDeniedCheck", () => {
+	it("passes when skill_manage create is denied by the read-only skills directory", async () => {
+		const check = await runHermesVerifyLiveSkillManageWriteDeniedCheck({
+			runProbe: async () => ({
+				raised: "PermissionError",
+				message: "[Errno 13] Permission denied: '/home/hermes/.hermes/skills/canary'",
+			}),
+		});
+
+		expect(check).toMatchObject({
+			id: "runtime.skill_manage_write_denied",
+			status: "pass",
+		});
+	});
+
+	it("fails if skill_manage create succeeds", async () => {
+		const check = await runHermesVerifyLiveSkillManageWriteDeniedCheck({
+			runProbe: async () => ({
+				success: true,
+				path: "telclaude-write-deny-canary",
+			}),
+		});
+
+		expect(check.status).toBe("fail");
+		expect(check.detail).toContain("created or modified a skill");
+	});
+
+	it("fails closed on non-permission failures", async () => {
+		const check = await runHermesVerifyLiveSkillManageWriteDeniedCheck({
+			runProbe: async () => ({
+				success: false,
+				error: "content is required",
+			}),
+		});
+
+		expect(check.status).toBe("fail");
+		expect(check.detail).toContain("did not prove write denial");
 	});
 });
 

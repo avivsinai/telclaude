@@ -1031,6 +1031,7 @@ describe("Hermes wrapper foundation", () => {
 			expect(matrix.probes.map((probe) => probe.surface_id)).toEqual(
 				expect.arrayContaining([
 					"execution.cli_headless",
+					"runtime.hostile-peer",
 					"model.relay",
 					"edge.whatsapp",
 					"providers.google",
