@@ -359,10 +359,10 @@ function flattenZodError(error: ZodError): string {
 // The skills allowlist proof is a RUNTIME profile probe (docker-exec /
 // contained invocation), modeled on api-server-containment — NOT a network fetch
 // probe and NOT a host SDK-hook simulation. It proves the copied allowlist
-// manifest, curated runtime skills tree, and negative absence of a known
-// non-allowlisted skill inside HERMES_HOME. Origin is proven by docker
-// internal-network topology, not a server-peer-echo header. The CLI wires the
-// real runner + topology observer; tests inject mocks.
+// manifest, curated external runtime skills tree, and negative absence of a
+// known non-allowlisted skill. Origin is proven by docker internal-network
+// topology, not a server-peer-echo header. The CLI wires the real runner +
+// topology observer; tests inject mocks.
 
 export type SkillInvocationOutcome = {
 	readonly passed: boolean;

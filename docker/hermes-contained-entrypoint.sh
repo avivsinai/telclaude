@@ -28,6 +28,24 @@ restore_owner_write_if_present() {
 	fi
 }
 
+prepare_managed_skills_dir() {
+	if [ -e "$DEST_SKILLS_DIR" ]; then
+		[ -d "$DEST_SKILLS_DIR" ] || die "managed skills path is not a directory: $DEST_SKILLS_DIR"
+		if [ -w "$DEST_SKILLS_DIR" ]; then
+			restore_owner_write_if_present "$DEST_SKILLS_DIR"
+			rm -rf "$DEST_SKILLS_DIR"
+			mkdir -p "$DEST_SKILLS_DIR"
+		fi
+	else
+		mkdir -p "$DEST_SKILLS_DIR"
+	fi
+
+	[ -d "$DEST_SKILLS_DIR" ] || die "managed skills directory missing: $DEST_SKILLS_DIR"
+	if [ -n "$(find "$DEST_SKILLS_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+		die "managed skills directory must be empty: $DEST_SKILLS_DIR"
+	fi
+}
+
 SOURCE_SKILLS_DIR=${TELCLAUDE_HERMES_SOURCE_SKILLS_DIR:-/opt/hermes/skills}
 ALLOWLIST_PATH=${TELCLAUDE_HERMES_SKILL_ALLOWLIST:-/tmp/telclaude-hermes-contained-skills.allowlist}
 HERMES_HOME=${HERMES_HOME:-/home/hermes/.hermes}
@@ -71,8 +89,12 @@ validate_catalog_skill_entry() {
 	fi
 }
 
-SKILLS_EXTERNAL_DIRS_BLOCK=""
+SKILLS_EXTERNAL_DIRS_BLOCK="
+  external_dirs:
+    - \"${CURATED_SKILLS_DIR}\""
+CATALOG_ENABLED=0
 if [ -d "$SKILL_CATALOG_MOUNT" ]; then
+	CATALOG_ENABLED=1
 	case "$SKILL_CATALOG_MOUNT" in
 		/*) ;;
 		*) die "skill catalog mount must be an absolute path: $SKILL_CATALOG_MOUNT" ;;
@@ -83,15 +105,14 @@ if [ -d "$SKILL_CATALOG_MOUNT" ]; then
 			validate_catalog_skill_entry "$entry_path"
 		done
 	fi
-	SKILLS_EXTERNAL_DIRS_BLOCK="
-  external_dirs:
+	SKILLS_EXTERNAL_DIRS_BLOCK="${SKILLS_EXTERNAL_DIRS_BLOCK}
     - \"${CATALOG_SKILLS_DIR}\""
 fi
 
 # Relay-side preflight: validate the catalog mount and report, without touching
 # HERMES_HOME or launching Hermes.
 if [ "${1:-}" = "validate-catalog-only" ]; then
-	if [ -n "$SKILLS_EXTERNAL_DIRS_BLOCK" ]; then
+	if [ "$CATALOG_ENABLED" = "1" ]; then
 		printf 'telclaude hermes contained entrypoint: catalog enabled at %s\n' "$CATALOG_SKILLS_DIR"
 	else
 		printf 'telclaude hermes contained entrypoint: catalog disabled (no mount at %s)\n' "$SKILL_CATALOG_MOUNT"
@@ -127,8 +148,7 @@ case "$CURATED_SKILLS_DIR" in
 esac
 
 restore_owner_write_if_present "$CURATED_SKILLS_DIR"
-restore_owner_write_if_present "$DEST_SKILLS_DIR"
-rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"
+rm -rf "$CURATED_SKILLS_DIR"
 mkdir -p "$CURATED_SKILLS_DIR" "$HERMES_HOME"
 if [ "$(id -u)" = "0" ]; then
 	chown "0:$HERMES_RUNTIME_GID" "$HERMES_HOME"
@@ -162,22 +182,31 @@ done < "$ALLOWLIST_PATH"
 
 [ "$count" -gt 0 ] || die "skill allowlist is empty"
 
-mkdir -p "$DEST_SKILLS_DIR"
-cp -R "${CURATED_SKILLS_DIR}/." "$DEST_SKILLS_DIR"
+prepare_managed_skills_dir
 cp "$ALLOWLIST_PATH" "${HERMES_HOME}/telclaude-contained-skills.allowlist"
-find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
-find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
-chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"
-if [ "$(id -u)" = "0" ]; then
-	chown -R "$HERMES_RUNTIME_UID:$HERMES_RUNTIME_GID" \
-		"$CURATED_SKILLS_DIR" \
-		"$DEST_SKILLS_DIR" \
-		"${HERMES_HOME}/telclaude-contained-skills.allowlist"
-	find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
-	find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
-	chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"
+# Upstream Hermes treats HERMES_HOME/skills as its managed, writable skill
+# source. Telclaude serves curated skills through skills.external_dirs instead,
+# and keeps the managed directory empty/non-writable so skill_manage(create)
+# cannot add agent-authored skills inside the hostile runtime.
+touch "${HERMES_HOME}/.no-bundled-skills"
+find "$CURATED_SKILLS_DIR" -type d -exec chmod 0550 {} +
+find "$CURATED_SKILLS_DIR" -type f -exec chmod 0440 {} +
+if ! chmod 0550 "$DEST_SKILLS_DIR" 2>/dev/null; then
+	[ ! -w "$DEST_SKILLS_DIR" ] || die "failed to harden managed skills directory: $DEST_SKILLS_DIR"
 fi
-export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"
+[ ! -w "$DEST_SKILLS_DIR" ] || die "managed skills directory remains writable: $DEST_SKILLS_DIR"
+chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist" "${HERMES_HOME}/.no-bundled-skills"
+if [ "$(id -u)" = "0" ]; then
+	chown -R "$HERMES_RUNTIME_UID:$HERMES_RUNTIME_GID" "$CURATED_SKILLS_DIR"
+	chown "0:$HERMES_RUNTIME_GID" \
+		"$DEST_SKILLS_DIR" \
+		"${HERMES_HOME}/telclaude-contained-skills.allowlist" \
+		"${HERMES_HOME}/.no-bundled-skills"
+	find "$CURATED_SKILLS_DIR" -type d -exec chmod 0550 {} +
+	find "$CURATED_SKILLS_DIR" -type f -exec chmod 0440 {} +
+	chmod 0550 "$DEST_SKILLS_DIR"
+	chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist" "${HERMES_HOME}/.no-bundled-skills"
+fi
 
 mint_peer_bound_codex_relay_token() {
 	secret=$1

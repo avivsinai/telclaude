@@ -3,9 +3,10 @@ import { SkillsAllowlistAttestationSchema } from "./skills-allowlist-attestation
 
 // Evidence schema for the skills-allowlist parity probe. The probe exercises the
 // contained Hermes profile, not a host-side SDK simulation: the runtime allowlist
-// manifest must be present, an allowlisted skill must be installed, a known
-// non-allowlisted skill must be absent, and the runtime skills tree must match
-// the manifest exactly. This file is the schema + required-check catalog;
+// manifest must be present, an allowlisted skill must be installed in the
+// read-only curated external directory, a known non-allowlisted skill must be
+// absent, and the curated runtime skill tree must match the manifest exactly.
+// This file is the schema + required-check catalog;
 // skills-allowlist-probe.ts holds the evaluator.
 
 export const SKILLS_ALLOWLIST_SCHEMA_VERSION = "telclaude.hermes.skills-allowlist.v1";
@@ -13,11 +14,11 @@ export const SKILLS_ALLOWLIST_SCHEMA_VERSION = "telclaude.hermes.skills-allowlis
 export const SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES = [
 	// The runtime profile carries the copied allowlist manifest.
 	"allowlist_manifest_present",
-	// An explicitly allowlisted skill is present in HERMES_HOME/skills.
+	// An explicitly allowlisted skill is present in the curated external skill dir.
 	"allowlisted_skill_present",
 	// A known non-allowlisted skill is absent from the runtime profile.
 	"nonallowlisted_skill_absent",
-	// The installed runtime skills with SKILL.md match the manifest exactly.
+	// The curated runtime skills with SKILL.md match the manifest exactly.
 	"runtime_skills_match_allowlist",
 	// Upstream Hermes self-improvement skill creation is disabled at the source.
 	"skill_creation_nudge_disabled",

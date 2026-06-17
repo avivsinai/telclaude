@@ -307,11 +307,24 @@ TELCLAUDE_LOG_LEVEL=info
 				'"openrouter.ai:192.0.2.1"',
 				'"api.x.ai:192.0.2.1"',
 			]);
-			expect(listValues(block, "tmpfs")).toEqual([
-				"/tmp:size=128M,mode=1777,noexec",
-				"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
-				"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec",
-			]);
+			const tmpfs = listValues(block, "tmpfs");
+			expect(tmpfs).toEqual(
+				expect.arrayContaining([
+					"/tmp:size=128M,mode=1777,noexec",
+					"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
+					"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec",
+				]),
+			);
+			expect(tmpfs).toContain(
+				block === hermes
+					? "/home/hermes/.hermes:size=128M,uid=10000,gid=10000,mode=0700,noexec"
+					: "/home/hermes/.hermes-social:size=128M,uid=10000,gid=10000,mode=0700,noexec",
+			);
+			expect(tmpfs).toContain(
+				block === hermes
+					? "/home/hermes/.hermes/skills:size=1M,uid=0,gid=10000,mode=0550,noexec"
+					: "/home/hermes/.hermes-social/skills:size=1M,uid=0,gid=10000,mode=0550,noexec",
+			);
 			expect(block).toContain("start_period: 360s");
 			expect(block).toContain("http://127.0.0.1:8642/health");
 		}

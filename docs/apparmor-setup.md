@@ -57,7 +57,7 @@ Instead of AppArmor, the Hermes runtime containers are hardened with kernel/runt
 
 - `cap_drop: ALL` and `no-new-privileges:true`.
 - Non-root `user: "10000:10000"`.
-- `read_only: true` root filesystem; the only writable surfaces are `noexec` tmpfs mounts (`/tmp`, `/run`, `/home/hermes`).
+- `read_only: true` root filesystem; writable runtime state is limited to `noexec` tmpfs mounts (`/tmp`, `/run`, `/home/hermes`), with `$HERMES_HOME/skills` carved out as an empty root-owned `0550` tmpfs mount.
 - `pids_limit: 256`, `mem_limit: 2G`, `cpus: 2`.
 - Internal-only bridge network (`internal: true`) with model-provider hosts (`api.openai.com`, `api.anthropic.com`, etc.) pinned to a blackhole address via `extra_hosts`, so direct model egress fails. All model traffic must go through the relay's OpenAI Codex proxy.
 - The telclaude code is mounted into the contained runtime read-only (`..:/opt/data/telclaude-runner:ro`).
