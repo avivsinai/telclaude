@@ -211,6 +211,64 @@ describe("hermes-contained-entrypoint.sh generated runtime profile custody", () 
 		expect(generatedProfile).not.toContain(mcpTransportToken);
 		expect(config).toContain(`Authorization: "Bearer \${TELCLAUDE_HERMES_MCP_RELAY_TOKEN}"`);
 		expect(config).not.toMatch(/Authorization: "Bearer [A-Za-z0-9._~+/@:=,-]{12,}"/);
+		expect(config).toContain(
+			[
+				"platform_toolsets:",
+				"  api_server:",
+				"    - todo",
+				"    - skills",
+				"    - telclaudeRelay",
+			].join("\n"),
+		);
+		const disabledToolsetsBlock = config.slice(
+			config.indexOf("agent:"),
+			config.indexOf("mcp_servers:"),
+		);
+		expect(disabledToolsetsBlock).not.toContain("    - skills\n");
+		expect(config).toContain(
+			[
+				"agent:",
+				"  disabled_toolsets:",
+				"    - terminal",
+				"    - process",
+				"    - code_execution",
+				"    - file",
+				"    - vision",
+				"    - browser",
+				"    - cronjob",
+				"    - delegation",
+				"    - memory",
+				"    - session_search",
+				"    - skill_manage",
+				"    - image_gen",
+				"    - web",
+				"    - x_search",
+				"    - tts",
+				"    - video",
+				"    - video_gen",
+				"    - moa",
+				"    - messaging",
+				"    - send_message",
+				"    - context_engine",
+				"    - clarify",
+				"    - homeassistant",
+				"    - spotify",
+				"    - discord",
+				"    - discord_admin",
+				"    - yuanbao",
+				"    - computer_use",
+				"    - feishu_doc",
+				"    - feishu_drive",
+			].join("\n"),
+		);
+		for (const readOnlyPath of [
+			path.join(hermesHome, "skills"),
+			path.join(hermesHome, "skills", "productivity", "memory-search"),
+			curatedSkills,
+			path.join(curatedSkills, "productivity", "memory-search"),
+		]) {
+			expect(fs.statSync(readOnlyPath).mode & 0o222).toBe(0);
+		}
 		expect(manifest).toMatchObject({
 			rawCredentialPolicy: "relay-owned-only",
 			mcpTransportTokenBinding: "runtime-env-reference",

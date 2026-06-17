@@ -48,8 +48,12 @@ describe("Hermes contained profile provisioning", () => {
 		expect(script).toContain('rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"');
 		expect(script).toContain('cp -R "');
 		expect(script).toContain('/." "$DEST_SKILLS_DIR"');
-		expect(script).toContain('find "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +');
-		expect(script).toContain('find "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +');
+		expect(script).toContain(
+			'find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +',
+		);
+		expect(script).toContain(
+			'find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +',
+		);
 		expect(script).toContain('chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"');
 		expect(script).toContain('export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"');
 		expect(script).toContain("exec setpriv");

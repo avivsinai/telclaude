@@ -27,6 +27,12 @@ export const HERMES_VERIFY_LIVE_SENTINEL = "VERIFY-LIVE-OK";
 
 export const HERMES_VERIFY_LIVE_MCP_SERVER_NAME = "telclaude-live-mcp-relay";
 
+export const HERMES_VERIFY_LIVE_EXPECTED_API_SERVER_TOOLSETS = [
+	"skills",
+	"telclaudeRelay",
+	"todo",
+] as const;
+
 export type HermesVerifyLiveCheckStatus = "pass" | "fail" | "skip";
 
 export type HermesVerifyLiveCheck = {
@@ -294,6 +300,105 @@ function hasUsableToolSchema(tool: unknown): boolean {
 	if (schema.type !== "object") return false;
 	const properties = schema.properties;
 	return isRecord(properties) && Object.keys(properties).length > 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Runtime native toolset inventory checks (inside contained Hermes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type HermesVerifyLiveRuntimeToolsetReader = () => Promise<readonly string[]>;
+export type HermesVerifyLiveSkillManageWriteProbeRunner = () => Promise<unknown>;
+
+export type RunHermesVerifyLiveRuntimeToolsetInventoryCheckOptions = {
+	readonly readToolsets?: HermesVerifyLiveRuntimeToolsetReader;
+	readonly expectedToolsets?: readonly string[];
+	readonly containerName?: string;
+	readonly dockerBin?: string;
+	readonly timeoutMs?: number;
+};
+
+export async function runHermesVerifyLiveRuntimeToolsetInventoryCheck(
+	options: RunHermesVerifyLiveRuntimeToolsetInventoryCheckOptions = {},
+): Promise<HermesVerifyLiveCheck> {
+	const expected = [
+		...(options.expectedToolsets ?? HERMES_VERIFY_LIVE_EXPECTED_API_SERVER_TOOLSETS),
+	].sort();
+	try {
+		const readToolsets =
+			options.readToolsets ??
+			(() =>
+				readHermesContainedApiServerToolsets({
+					containerName: options.containerName,
+					dockerBin: options.dockerBin,
+					timeoutMs: options.timeoutMs,
+				}));
+		const observed = [...(await readToolsets())].map(String).sort();
+		if (sameStringArray(expected, observed)) {
+			return passCheck(
+				"runtime.toolset_inventory",
+				`contained api_server native toolset inventory matches signed expected set [${expected.join(", ")}]`,
+				{ expected, observed },
+			);
+		}
+		return failCheck(
+			"runtime.toolset_inventory",
+			`contained api_server native toolset inventory mismatch: expected [${expected.join(", ")}], observed [${observed.join(", ")}]`,
+			{ expected, observed },
+		);
+	} catch (error) {
+		return failCheck(
+			"runtime.toolset_inventory",
+			`contained api_server native toolset inventory read failed: ${errorMessage(error)}`,
+		);
+	}
+}
+
+export type RunHermesVerifyLiveSkillManageWriteDeniedCheckOptions = {
+	readonly runProbe?: HermesVerifyLiveSkillManageWriteProbeRunner;
+	readonly containerName?: string;
+	readonly dockerBin?: string;
+	readonly timeoutMs?: number;
+};
+
+export async function runHermesVerifyLiveSkillManageWriteDeniedCheck(
+	options: RunHermesVerifyLiveSkillManageWriteDeniedCheckOptions = {},
+): Promise<HermesVerifyLiveCheck> {
+	const id = "runtime.skill_manage_write_denied";
+	try {
+		const runProbe =
+			options.runProbe ??
+			(() =>
+				runHermesContainedSkillManageWriteDeniedProbe({
+					containerName: options.containerName,
+					dockerBin: options.dockerBin,
+					timeoutMs: options.timeoutMs,
+				}));
+		const result = await runProbe();
+
+		if (isRecord(result) && result.success === true) {
+			return failCheck(
+				id,
+				"skill_manage(create) created or modified a skill inside the contained runtime — the curated skill catalog is writable",
+				result,
+			);
+		}
+
+		if (skillManageProbeShowsWriteDenied(result)) {
+			return passCheck(
+				id,
+				"skill_manage(create) was denied by the contained runtime read-only skills directory",
+				result,
+			);
+		}
+
+		return failCheck(
+			id,
+			`skill_manage(create) did not prove write denial: ${skillManageProbeSummary(result)}`,
+			result,
+		);
+	} catch (error) {
+		return failCheck(id, `skill_manage(create) write-denial probe failed: ${errorMessage(error)}`);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -644,6 +749,30 @@ const DOCKER_EXEC_RPC_PYTHON = [
 	'print(json.dumps({"status":status,"body":body}))',
 ].join("\n");
 
+const DOCKER_EXEC_TOOLSET_INVENTORY_PYTHON = [
+	"import json",
+	"from hermes_cli.config import load_config",
+	"from hermes_cli.tools_config import _get_platform_tools",
+	'print(json.dumps(sorted(_get_platform_tools(load_config(),"api_server"))))',
+].join("\n");
+
+const DOCKER_EXEC_SKILL_MANAGE_WRITE_DENIED_PYTHON = [
+	"import json, uuid",
+	"from tools.skill_manager_tool import skill_manage",
+	'name="telclaude-write-deny-canary-"+uuid.uuid4().hex[:12]',
+	'content=f"---\\nname: {name}\\ndescription: Telclaude write denial canary\\n---\\n\\n# Canary\\n\\nThis write must fail.\\n"',
+	"try:",
+	'\traw=skill_manage(action="create", name=name, content=content)',
+	"\ttry:",
+	"\t\tresult=json.loads(raw)",
+	"\texcept Exception:",
+	'\t\tresult={"raw": raw}',
+	'\tresult["canaryName"]=name',
+	"\tprint(json.dumps(result))",
+	"except BaseException as exc:",
+	'\tprint(json.dumps({"raised": type(exc).__name__, "message": str(exc), "canaryName": name}))',
+].join("\n");
+
 export type CreateHermesVerifyLiveDockerExecTransportOptions = {
 	readonly containerName?: string;
 	readonly dockerBin?: string;
@@ -680,6 +809,38 @@ export function createHermesVerifyLiveDockerExecTransport(
 		}
 		throw new Error(`docker exec RPC returned unparseable output: ${text.slice(0, 200)}`);
 	};
+}
+
+export async function readHermesContainedApiServerToolsets(
+	options: CreateHermesVerifyLiveDockerExecTransportOptions & { readonly timeoutMs?: number } = {},
+): Promise<readonly string[]> {
+	const containerName = options.containerName ?? "tc-hermes-contained";
+	const dockerBin = options.dockerBin ?? "docker";
+	const output = await execDockerCollect({
+		dockerBin,
+		args: ["exec", containerName, "python", "-c", DOCKER_EXEC_TOOLSET_INVENTORY_PYTHON],
+		timeoutMs: (options.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS) + 5_000,
+		label: "docker exec runtime toolset inventory",
+	});
+	const parsed = parseJsonOrRaw(lastLine(output.trim()));
+	if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
+		throw new Error(`unexpected runtime toolset inventory shape: ${output.trim().slice(0, 200)}`);
+	}
+	return parsed;
+}
+
+export async function runHermesContainedSkillManageWriteDeniedProbe(
+	options: CreateHermesVerifyLiveDockerExecTransportOptions & { readonly timeoutMs?: number } = {},
+): Promise<unknown> {
+	const containerName = options.containerName ?? "tc-hermes-contained";
+	const dockerBin = options.dockerBin ?? "docker";
+	const output = await execDockerCollect({
+		dockerBin,
+		args: ["exec", containerName, "python", "-c", DOCKER_EXEC_SKILL_MANAGE_WRITE_DENIED_PYTHON],
+		timeoutMs: (options.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS) + 5_000,
+		label: "docker exec skill_manage write-denial probe",
+	});
+	return parseJsonOrRaw(lastLine(output.trim()));
 }
 
 function execDockerCollect(options: {
@@ -779,4 +940,22 @@ function lastLine(text: string): string {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function skillManageProbeShowsWriteDenied(result: unknown): boolean {
+	const summary = skillManageProbeSummary(result);
+	return /permission\s*denied|permissionerror|read-only file system|readonly file system|operation not permitted|errno\s*13|erofs/i.test(
+		summary,
+	);
+}
+
+function skillManageProbeSummary(result: unknown): string {
+	if (typeof result === "string") return result;
+	if (isRecord(result)) {
+		return Object.entries(result)
+			.filter(([, value]) => typeof value === "string" || typeof value === "boolean")
+			.map(([key, value]) => `${key}=${String(value)}`)
+			.join(", ");
+	}
+	return JSON.stringify(result);
 }
