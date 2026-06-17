@@ -1169,7 +1169,15 @@ function resolveScheduleOwnerOrThrow(
 function normalizeScheduleInput(schedule: CronSchedule): CronSchedule {
 	switch (schedule.kind) {
 		case "at": {
-			const atMs = Date.parse(schedule.at);
+			// Make the documented "no offset = UTC" contract deterministic. JS
+			// Date.parse treats a no-offset date-TIME as process-local, so a
+			// date-time without a trailing Z/±HH:MM offset gets an explicit Z
+			// appended before parsing (date-only forms are already UTC per spec).
+			// Without this the result would silently depend on the container TZ.
+			const trimmed = schedule.at.trim();
+			const hasOffset = /([Zz]|[+-]\d{2}:?\d{2})$/.test(trimmed);
+			const atInput = !hasOffset && trimmed.includes("T") ? `${trimmed}Z` : trimmed;
+			const atMs = Date.parse(atInput);
 			if (!Number.isFinite(atMs)) {
 				throw new TelclaudeLiveMcpScheduleValidationError(
 					"`at` must be an ISO-8601 timestamp (e.g. 2026-06-18T09:00:00Z; interpreted as UTC if no offset)",

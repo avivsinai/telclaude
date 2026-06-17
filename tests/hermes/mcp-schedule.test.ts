@@ -64,6 +64,25 @@ describe("Telclaude live MCP schedule tools", () => {
 		});
 	});
 
+	it("interprets a no-offset 'at' as UTC, not the process timezone", async () => {
+		setHomeTarget("local-operator", { chatId: 4242 });
+		const clients = createTelclaudeLiveMcpRelayClients({ ledger: testLedger() });
+
+		// A future ISO datetime with NO trailing Z/offset. The documented contract
+		// is "interpreted as UTC", so the stored instant must equal the explicit-Z
+		// parse — independent of the process TZ.
+		const noOffset = new Date(Date.now() + 60 * 60 * 1000).toISOString().replace("Z", "");
+		const expectedUtc = new Date(`${noOffset}Z`).toISOString();
+		const result = (await clients.scheduleCreate({
+			...privateStamp({ subjectUserId: "local-operator" }),
+			schedule: { kind: "at", at: noOffset },
+			prompt: "utc contract",
+		})) as { nextRunAt: string | null };
+
+		expect(result.nextRunAt).toBe(expectedUtc);
+		expect(result.nextRunAt?.endsWith("Z")).toBe(true);
+	});
+
 	it("ignores agent-supplied owner/chat/delivery fields and binds to the authority", async () => {
 		setHomeTarget("local-operator", { chatId: 4242 });
 		setHomeTarget("victim", { chatId: 999_999 });
