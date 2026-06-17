@@ -1835,7 +1835,9 @@ non_allowlisted_skill = sys.argv[3]
 home = pathlib.Path(os.environ.get("HERMES_HOME", "/home/hermes/.hermes"))
 manifest = home / "telclaude-contained-skills.allowlist"
 config = home / "config.yaml"
-skills_dir = home / "skills"
+curated_skills_dir = pathlib.Path(
+    os.environ.get("TELCLAUDE_HERMES_CURATED_BUNDLED_SKILLS", "/home/hermes/.telclaude-curated-bundled-skills")
+)
 
 def read_manifest():
     if not manifest.is_file():
@@ -1848,14 +1850,14 @@ def read_manifest():
     return sorted(set(entries))
 
 def skill_present(rel):
-    return (skills_dir / rel / "SKILL.md").is_file()
+    return (curated_skills_dir / rel / "SKILL.md").is_file()
 
 def installed_skills():
-    if not skills_dir.is_dir():
+    if not curated_skills_dir.is_dir():
         return None
     found = []
-    for skill_md in skills_dir.rglob("SKILL.md"):
-        found.append(skill_md.parent.relative_to(skills_dir).as_posix())
+    for skill_md in curated_skills_dir.rglob("SKILL.md"):
+        found.append(skill_md.parent.relative_to(curated_skills_dir).as_posix())
     return sorted(set(found))
 
 def skill_creation_nudge_disabled():

@@ -127,10 +127,12 @@ describe("hermes-contained-entrypoint.sh catalog config merge", () => {
 		// Exactly one skills: block in the generated config heredoc.
 		expect(script.match(/^skills:$/gm)).toHaveLength(1);
 		// creation_nudge_interval stays in the block; external_dirs joins it via the
-		// conditional expansion rather than a second skills: key.
+		// conditional expansion rather than a second skills: key. The curated
+		// bundled allowlist is always external; the relay catalog appends when mounted.
 		expect(script).toContain(`  creation_nudge_interval: 0\${SKILLS_EXTERNAL_DIRS_BLOCK}`);
-		expect(script).toContain('SKILLS_EXTERNAL_DIRS_BLOCK=""');
+		expect(script).toContain('SKILLS_EXTERNAL_DIRS_BLOCK="');
 		expect(script).toContain("  external_dirs:");
+		expect(script).toContain(`    - \\"\${CURATED_SKILLS_DIR}\\"`);
 		expect(script).toContain(`    - \\"\${CATALOG_SKILLS_DIR}\\"`);
 		// Default mount path and validation wiring.
 		expect(script).toContain(
@@ -138,7 +140,7 @@ describe("hermes-contained-entrypoint.sh catalog config merge", () => {
 		);
 		expect(script).toContain("validate_catalog_skill_entry");
 		// The catalog block is computed before the config heredoc is written.
-		expect(script.indexOf('SKILLS_EXTERNAL_DIRS_BLOCK=""')).toBeLessThan(
+		expect(script.indexOf('SKILLS_EXTERNAL_DIRS_BLOCK="')).toBeLessThan(
 			script.indexOf(`cat > "\${HERMES_HOME}/config.yaml"`),
 		);
 	});
@@ -261,9 +263,27 @@ describe("hermes-contained-entrypoint.sh generated runtime profile custody", () 
 				"    - feishu_drive",
 			].join("\n"),
 		);
+		expect(config).toContain(
+			[
+				"skills:",
+				"  creation_nudge_interval: 0",
+				"  external_dirs:",
+				`    - "${curatedSkills}"`,
+			].join("\n"),
+		);
+		expect(fs.existsSync(path.join(hermesHome, ".no-bundled-skills"))).toBe(true);
+		expect(fs.existsSync(path.join(hermesHome, "skills", "productivity", "memory-search"))).toBe(
+			false,
+		);
+		expect(
+			fs.existsSync(path.join(curatedSkills, "productivity", "memory-search", "SKILL.md")),
+		).toBe(true);
+		expect(() =>
+			fs.mkdirSync(path.join(hermesHome, "skills", "telclaude-write-deny-canary")),
+		).toThrow();
 		for (const readOnlyPath of [
 			path.join(hermesHome, "skills"),
-			path.join(hermesHome, "skills", "productivity", "memory-search"),
+			path.join(hermesHome, ".no-bundled-skills"),
 			curatedSkills,
 			path.join(curatedSkills, "productivity", "memory-search"),
 		]) {

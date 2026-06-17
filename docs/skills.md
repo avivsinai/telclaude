@@ -174,8 +174,13 @@ checked-in allowlist rather than the scaffold → draft → promote lifecycle.
   ships inside the image at `/opt/hermes/skills`
   (`TELCLAUDE_HERMES_SOURCE_SKILLS_DIR`).
 - At startup, `docker/hermes-contained-entrypoint.sh` curates only the
-  allowlisted skills from the source tree into `$HERMES_HOME/skills`. Each entry
-  must resolve to a real directory containing `SKILL.md`; unsafe paths
+  allowlisted skills from the source tree into a read-only
+  `skills.external_dirs` directory. `$HERMES_HOME/skills` remains the upstream
+  managed skill directory, but Telclaude leaves it as an empty root-owned `0550`
+  tmpfs mount and writes the `.no-bundled-skills` marker so
+  `skill_manage(create)` cannot add skills inside the contained runtime. Each
+  allowlist entry must resolve to a real
+  directory containing `SKILL.md`; unsafe paths
   (leading `/`, any `..`, `//`, a leading or post-slash `.`, whitespace) are
   rejected, and an empty allowlist fails the container closed.
 

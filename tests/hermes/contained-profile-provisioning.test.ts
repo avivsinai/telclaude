@@ -42,20 +42,27 @@ describe("Hermes contained profile provisioning", () => {
 		}
 	});
 
-	it("resets HERMES_HOME skills and points Hermes bundled sync at the curated tree", () => {
+	it("serves curated skills as read-only external dirs and denies managed skill creation", () => {
 		const script = fs.readFileSync(entrypointPath, "utf8");
 
-		expect(script).toContain('rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"');
+		expect(script).toContain("prepare_managed_skills_dir()");
+		expect(script).toContain('rm -rf "$CURATED_SKILLS_DIR"');
+		expect(script).not.toContain('rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"');
 		expect(script).toContain('cp -R "');
-		expect(script).toContain('/." "$DEST_SKILLS_DIR"');
+		expect(script).not.toContain('/." "$DEST_SKILLS_DIR"');
+		expect(script).toContain('touch "${HERMES_HOME}/.no-bundled-skills"');
+		expect(script).toContain('SKILLS_EXTERNAL_DIRS_BLOCK="');
+		expect(script).toContain('    - \\"${CURATED_SKILLS_DIR}\\"');
+		expect(script).toContain('find "$CURATED_SKILLS_DIR" -type d -exec chmod 0550 {} +');
+		expect(script).toContain('find "$CURATED_SKILLS_DIR" -type f -exec chmod 0440 {} +');
+		expect(script).toContain('chmod 0550 "$DEST_SKILLS_DIR"');
 		expect(script).toContain(
-			'find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +',
+			'[ ! -w "$DEST_SKILLS_DIR" ] || die "managed skills directory remains writable: $DEST_SKILLS_DIR"',
 		);
 		expect(script).toContain(
-			'find "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +',
+			'chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist" "${HERMES_HOME}/.no-bundled-skills"',
 		);
-		expect(script).toContain('chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"');
-		expect(script).toContain('export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"');
+		expect(script).not.toContain('export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"');
 		expect(script).toContain("exec setpriv");
 		expect(script).toContain('--reuid="$HERMES_RUNTIME_UID"');
 		expect(script).toContain('--regid="$HERMES_RUNTIME_GID"');
@@ -127,6 +134,12 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain("cap_drop:");
 		expect(compose).toContain("      - ALL");
 		expect(compose).not.toContain("cap_add:");
+		expect(compose).toContain(
+			"/home/hermes/.hermes/skills:size=1M,uid=0,gid=10000,mode=0550,noexec",
+		);
+		expect(compose).toContain(
+			"/home/hermes/.hermes-social/skills:size=1M,uid=0,gid=10000,mode=0550,noexec",
+		);
 		expect(compose).toMatch(
 			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-172\.30\.92\.10\}/,
 		);

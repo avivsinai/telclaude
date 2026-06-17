@@ -106,6 +106,8 @@ services:
       - /tmp:size=128M,mode=1777,noexec
       - /run:size=16M,uid=10000,gid=10000,mode=0755,noexec
       - /home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec
+      - /home/hermes/.hermes:size=128M,uid=10000,gid=10000,mode=0700,noexec
+      - /home/hermes/.hermes/skills:size=1M,uid=0,gid=10000,mode=0550,noexec
     pids_limit: 256
     mem_limit: 2G
     cpus: 2
@@ -176,6 +178,8 @@ services:
       - /tmp:size=128M,mode=1777,noexec
       - /run:size=16M,uid=10000,gid=10000,mode=0755,noexec
       - /home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec
+      - /home/hermes/.hermes-social:size=128M,uid=10000,gid=10000,mode=0700,noexec
+      - /home/hermes/.hermes-social/skills:size=1M,uid=0,gid=10000,mode=0550,noexec
     pids_limit: 256
     mem_limit: 2G
     cpus: 2
