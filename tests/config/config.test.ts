@@ -60,7 +60,15 @@ describe("config defaults", () => {
 		expect(cfg.hermes).toEqual({
 			privateRuntime: {
 				providerScopes: [],
-				capabilityScopes: ["web.fetch", "web.search", "media.image", "media.tts", "skills.request"],
+				capabilityScopes: [
+					"web.fetch",
+					"web.search",
+					"media.image",
+					"media.tts",
+					"skills.request",
+					"schedule.read",
+					"schedule.write",
+				],
 				outboundChannels: ["whatsapp"],
 			},
 		});
@@ -97,6 +105,8 @@ describe("config defaults", () => {
 			"media.image",
 			"media.tts",
 			"skills.request",
+			"schedule.read",
+			"schedule.write",
 		]);
 		expect(cfg.hermes.privateRuntime.outboundChannels).toEqual(["whatsapp"]);
 	});

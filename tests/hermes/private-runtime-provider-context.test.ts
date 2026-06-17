@@ -44,6 +44,28 @@ describe("Hermes private runtime provider context", () => {
 		expect(context.systemPromptAppend).toContain("supersedes any legacy external-provider");
 	});
 
+	it("strips schedule.write below WRITE_LOCAL but keeps schedule.read", () => {
+		const grant = {
+			providerScopes: [],
+			capabilityScopes: ["schedule.read", "schedule.write", "web.search"],
+			outboundChannels: [],
+		} as const;
+		const config = { hermes: { privateRuntime: grant } };
+
+		// READ_ONLY: schedule.write (a relay-mutating scope) is dropped.
+		const readOnly = buildHermesPrivateRuntimeProviderContext(config, grant, "READ_ONLY");
+		expect(readOnly.capabilityScopes).toEqual(["schedule.read", "web.search"]);
+
+		// WRITE_LOCAL and above keep the full grant.
+		const writeLocal = buildHermesPrivateRuntimeProviderContext(config, grant, "WRITE_LOCAL");
+		expect(writeLocal.capabilityScopes).toEqual(["schedule.read", "schedule.write", "web.search"]);
+
+		// Fail-closed: a missing/undefined tier strips write-tier scopes, so a
+		// caller that forgets to thread `tier` cannot silently grant schedule.write.
+		const noTier = buildHermesPrivateRuntimeProviderContext(config, grant);
+		expect(noTier.capabilityScopes).toEqual(["schedule.read", "web.search"]);
+	});
+
 	it("lets explicit profile scopes override global private-runtime scopes", () => {
 		const context = buildHermesPrivateRuntimeProviderContext(
 			{

@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "../../config/config.js";
+import { getHomeTarget } from "../../config/sessions.js";
+import { validateCronExpression } from "../../cron/parse.js";
+import { addCronJob, getCronJob, listCronJobs, removeCronJob } from "../../cron/store.js";
+import type { CronJob, CronSchedule } from "../../cron/types.js";
 import { upsertCuratorItem } from "../../curator/store.js";
 import { getChildLogger } from "../../logging.js";
 import type { MemorySnapshotRequest } from "../../memory/rpc.js";
@@ -60,6 +64,9 @@ import type {
 	TelclaudeMcpOutboundPrepareRequest,
 	TelclaudeMcpProviderPrepareWriteRequest,
 	TelclaudeMcpProviderReadRequest,
+	TelclaudeMcpScheduleCancelRequest,
+	TelclaudeMcpScheduleCreateRequest,
+	TelclaudeMcpScheduleListRequest,
 	TelclaudeMcpSkillRequestRequest,
 	TelclaudeMcpToolName,
 	TelclaudeMcpTtsRequest,
@@ -87,6 +94,17 @@ type ProviderProxy = (request: ProviderProxyRequest) => Promise<{
 }>;
 
 type AttachmentValidator = typeof validateAttachmentRef;
+
+/**
+ * Resolves the relay-owned schedule owner for an authority. The ownerId is the
+ * key under which a home target is stored, so a job created with it delivers to
+ * the operator's own home chat. This is derived SERVER-SIDE from the authority
+ * stamp; the agent never supplies an ownerId, chatId, threadId, or delivery
+ * target. Returns null when the authority has no resolvable home target.
+ */
+export type ScheduleOwnerResolver = (
+	request: TelclaudeMcpAuthorityStamp,
+) => { readonly ownerId: string } | null;
 type OutboundMediaResolver = (
 	refs: readonly string[],
 	context: {
@@ -122,6 +140,11 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly webRateLimit?: FeatureRateLimitConfig;
 	/** Injectable HTTP boundary for the web-search provider (tests only). */
 	readonly webSearchFetch?: typeof fetch;
+	/**
+	 * Resolves the schedule owner for an authority (schedule tools). Defaults to
+	 * a home-target-backed resolver that keys off the authority's subjectUserId.
+	 */
+	readonly resolveScheduleOwner?: ScheduleOwnerResolver;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
@@ -250,9 +273,52 @@ function sanitizedErrorMessage(cause: unknown): string {
 	return redactSecrets(message).slice(0, 300);
 }
 
+/**
+ * The authority has no resolvable home target, so a home-delivered reminder
+ * cannot be created or owned. The operator must run /sethome first. The error
+ * carries no chat/owner identifiers.
+ */
+export class TelclaudeLiveMcpScheduleOwnerError extends Error {
+	readonly code = "mcp_schedule_owner_unresolved";
+
+	constructor() {
+		super(
+			"schedule denied: no home target is set for this operator. Ask the operator to run /sethome in the chat where reminders should land.",
+		);
+		this.name = "TelclaudeLiveMcpScheduleOwnerError";
+	}
+}
+
+/** A schedule input failed validation (bad timestamp, interval, or cron expr). */
+export class TelclaudeLiveMcpScheduleValidationError extends Error {
+	readonly code = "mcp_schedule_invalid";
+
+	constructor(reason: string) {
+		super(`schedule denied: ${reason}`);
+		this.name = "TelclaudeLiveMcpScheduleValidationError";
+	}
+}
+
+/** The referenced job does not exist or is owned by a different authority. */
+export class TelclaudeLiveMcpScheduleNotFoundError extends Error {
+	readonly code = "mcp_schedule_not_found";
+
+	constructor() {
+		super("schedule job not found for this owner");
+		this.name = "TelclaudeLiveMcpScheduleNotFoundError";
+	}
+}
+
 export type TelclaudeMcpCapabilityClients = Pick<
 	TelclaudeMcpBridgeDependencies,
-	"webFetch" | "webSearch" | "imageGenerate" | "tts" | "skillRequest"
+	| "webFetch"
+	| "webSearch"
+	| "imageGenerate"
+	| "tts"
+	| "skillRequest"
+	| "scheduleCreate"
+	| "scheduleList"
+	| "scheduleCancel"
 >;
 
 /**
@@ -277,6 +343,15 @@ export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcp
 		},
 		async skillRequest() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_skill_request");
+		},
+		async scheduleCreate() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_schedule_create");
+		},
+		async scheduleList() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_schedule_list");
+		},
+		async scheduleCancel() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_schedule_cancel");
 		},
 	};
 }
@@ -371,6 +446,7 @@ export function createTelclaudeLiveMcpRelayClients(
 	const edgeRuntime = options.edgeRuntime ?? new TelclaudeEdgeRuntime();
 	const resolveOutboundMediaRefs =
 		options.resolveOutboundMediaRefs ?? defaultResolveOutboundMediaRefs;
+	const resolveScheduleOwner = options.resolveScheduleOwner ?? defaultResolveScheduleOwner;
 	const webRateLimit = () => options.webRateLimit ?? loadConfig().web;
 
 	// Audit a tool call, taking the authority-stamp fields off the request and
@@ -720,6 +796,61 @@ export function createTelclaudeLiveMcpRelayClients(
 				note: "Filed as a Curator review item. The operator reviews skill requests via /curator (or `telclaude curator list`); nothing is installed or changed automatically.",
 			};
 		},
+
+		async scheduleCreate(request: TelclaudeMcpScheduleCreateRequest) {
+			assertAuthorityMemoryBoundary(request);
+			// ownerId + delivery target are resolved SERVER-SIDE from the authority.
+			// The agent's input never carries an ownerId/chatId/threadId/deliveryTarget.
+			const ownerId = resolveScheduleOwnerOrThrow(resolveScheduleOwner, request);
+			const schedule = normalizeScheduleInput(request.schedule);
+			const job = addCronJob({
+				name: scheduleJobName(request.prompt, request.label),
+				ownerId,
+				// Forced home delivery: a same-authority reminder to the operator's
+				// own home target. The agent cannot redirect this to another chat.
+				deliveryTarget: { kind: "home" },
+				schedule,
+				action: { kind: "agent-prompt", prompt: request.prompt },
+			});
+			await auditFromRequest(request, "schedule.create", {
+				jobId: job.id,
+				scheduleKind: schedule.kind,
+				promptChars: request.prompt.length,
+			});
+			return scheduleJobView(job);
+		},
+
+		async scheduleList(request: TelclaudeMcpScheduleListRequest) {
+			assertAuthorityMemoryBoundary(request);
+			// Scope strictly to the authority's own owner. No home target means no
+			// owned jobs — return an empty list rather than failing.
+			const ownerId = resolveScheduleOwner(request)?.ownerId;
+			const jobs = ownerId
+				? listCronJobs({ includeDisabled: true })
+						.filter((job) => job.ownerId === ownerId && job.action.kind === "agent-prompt")
+						.slice(0, request.limit)
+				: [];
+			await auditFromRequest(request, "schedule.list", { count: jobs.length });
+			return { jobs: jobs.map(scheduleJobView) };
+		},
+
+		async scheduleCancel(request: TelclaudeMcpScheduleCancelRequest) {
+			assertAuthorityMemoryBoundary(request);
+			const ownerId = resolveScheduleOwnerOrThrow(resolveScheduleOwner, request);
+			const job = getCronJob(request.jobId);
+			// Ownership check: a job owned by a different owner (or absent) fails
+			// closed with an identical not-found error — the agent learns nothing
+			// about other owners' jobs.
+			if (!job || job.ownerId !== ownerId) {
+				throw new TelclaudeLiveMcpScheduleNotFoundError();
+			}
+			const removed = removeCronJob(request.jobId);
+			await auditFromRequest(request, "schedule.cancel", {
+				jobId: request.jobId,
+				removed,
+			});
+			return { jobId: request.jobId, cancelled: removed };
+		},
 	};
 }
 
@@ -994,6 +1125,98 @@ async function defaultResolveOutboundMediaRefs(
 		throw new Error("outbound mediaRefs require an edge attachment resolver");
 	}
 	return [];
+}
+
+/** Minimum recurring interval for an "every" schedule. */
+const SCHEDULE_EVERY_FLOOR_MS = 60_000;
+
+/**
+ * Resolve the schedule owner from the authority's subjectUserId (the operator's
+ * resolved local-user id / home-target key) and confirm a home target exists.
+ * Returns null when no home target is registered for that owner.
+ *
+ * The authority's subjectUserId is server-stamped: for a linked chat it is the
+ * localUserId (which is exactly the home-target key), so a one-to-one match
+ * confirms the operator owns a home target. The agent cannot influence it.
+ */
+function defaultResolveScheduleOwner(
+	request: TelclaudeMcpAuthorityStamp,
+): { readonly ownerId: string } | null {
+	const candidate = request.subjectUserId?.trim();
+	if (!candidate) return null;
+	if (!getHomeTarget(candidate)) return null;
+	return { ownerId: candidate };
+}
+
+function resolveScheduleOwnerOrThrow(
+	resolver: ScheduleOwnerResolver,
+	request: TelclaudeMcpAuthorityStamp,
+): string {
+	const resolved = resolver(request);
+	const ownerId = resolved?.ownerId.trim();
+	if (!ownerId) {
+		throw new TelclaudeLiveMcpScheduleOwnerError();
+	}
+	return ownerId;
+}
+
+/**
+ * Validate and normalize an agent-supplied schedule. addCronJob performs the
+ * authoritative checks (future "at", positive everyMs, parseable cron); this
+ * adds a friendlier error surface plus a sane recurring-interval floor and an
+ * up-front cron-shape check so a malformed expression fails before the store.
+ */
+function normalizeScheduleInput(schedule: CronSchedule): CronSchedule {
+	switch (schedule.kind) {
+		case "at": {
+			const atMs = Date.parse(schedule.at);
+			if (!Number.isFinite(atMs)) {
+				throw new TelclaudeLiveMcpScheduleValidationError(
+					"`at` must be an ISO-8601 timestamp (e.g. 2026-06-18T09:00:00Z; interpreted as UTC if no offset)",
+				);
+			}
+			if (atMs <= Date.now()) {
+				throw new TelclaudeLiveMcpScheduleValidationError("`at` timestamp must be in the future");
+			}
+			return { kind: "at", at: new Date(atMs).toISOString() };
+		}
+		case "every": {
+			if (!Number.isFinite(schedule.everyMs) || schedule.everyMs < SCHEDULE_EVERY_FLOOR_MS) {
+				throw new TelclaudeLiveMcpScheduleValidationError(
+					`\`every\` interval must be at least ${SCHEDULE_EVERY_FLOOR_MS}ms`,
+				);
+			}
+			return { kind: "every", everyMs: Math.trunc(schedule.everyMs) };
+		}
+		case "cron": {
+			try {
+				validateCronExpression(schedule.expr);
+			} catch (error) {
+				throw new TelclaudeLiveMcpScheduleValidationError(sanitizedErrorMessage(error));
+			}
+			return { kind: "cron", expr: schedule.expr.trim() };
+		}
+		default: {
+			const exhaustiveCheck: never = schedule;
+			throw new TelclaudeLiveMcpScheduleValidationError(String(exhaustiveCheck));
+		}
+	}
+}
+
+function scheduleJobName(prompt: string, label: string | undefined): string {
+	const base = label?.trim() || prompt.replace(/\s+/g, " ").trim().slice(0, 40);
+	return `reminder - ${base}`.slice(0, 120);
+}
+
+function scheduleJobView(job: CronJob): Record<string, unknown> {
+	return {
+		jobId: job.id,
+		name: job.name,
+		enabled: job.enabled,
+		schedule: job.schedule,
+		prompt: job.action.kind === "agent-prompt" ? job.action.prompt : null,
+		nextRunAt: job.nextRunAtMs === null ? null : new Date(job.nextRunAtMs).toISOString(),
+	};
 }
 
 function destinationForPreparedOutbound(prepared: PreparedOutbound): string {

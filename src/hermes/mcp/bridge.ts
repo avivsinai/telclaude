@@ -141,6 +141,25 @@ export type TelclaudeMcpSkillRequestRequest = TelclaudeMcpAuthorityStamp & {
 	sourceHint?: string;
 };
 
+export type TelclaudeMcpScheduleInput =
+	| { kind: "at"; at: string }
+	| { kind: "every"; everyMs: number }
+	| { kind: "cron"; expr: string };
+
+export type TelclaudeMcpScheduleCreateRequest = TelclaudeMcpAuthorityStamp & {
+	schedule: TelclaudeMcpScheduleInput;
+	prompt: string;
+	label?: string;
+};
+
+export type TelclaudeMcpScheduleListRequest = TelclaudeMcpAuthorityStamp & {
+	limit: number;
+};
+
+export type TelclaudeMcpScheduleCancelRequest = TelclaudeMcpAuthorityStamp & {
+	jobId: string;
+};
+
 export type TelclaudeMcpBridgeDependencies = {
 	providerRead(request: TelclaudeMcpProviderReadRequest): Promise<unknown>;
 	providerPrepareWrite(request: TelclaudeMcpProviderPrepareWriteRequest): Promise<unknown>;
@@ -156,6 +175,9 @@ export type TelclaudeMcpBridgeDependencies = {
 	imageGenerate(request: TelclaudeMcpImageGenerateRequest): Promise<unknown>;
 	tts(request: TelclaudeMcpTtsRequest): Promise<unknown>;
 	skillRequest(request: TelclaudeMcpSkillRequestRequest): Promise<unknown>;
+	scheduleCreate(request: TelclaudeMcpScheduleCreateRequest): Promise<unknown>;
+	scheduleList(request: TelclaudeMcpScheduleListRequest): Promise<unknown>;
+	scheduleCancel(request: TelclaudeMcpScheduleCancelRequest): Promise<unknown>;
 };
 
 export type TelclaudeMcpBridge = {
@@ -174,6 +196,9 @@ export type TelclaudeMcpBridge = {
 	tc_image_generate(input: unknown): Promise<unknown>;
 	tc_tts(input: unknown): Promise<unknown>;
 	tc_skill_request(input: unknown): Promise<unknown>;
+	tc_schedule_create(input: unknown): Promise<unknown>;
+	tc_schedule_list(input: unknown): Promise<unknown>;
+	tc_schedule_cancel(input: unknown): Promise<unknown>;
 };
 
 const NonEmptyString = z.string().trim().min(1);
@@ -310,6 +335,47 @@ const SkillRequestInputSchema = z
 		skillName: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
 		rationale: NonEmptyString.max(2_000),
 		sourceHint: NonEmptyString.max(500).optional(),
+	})
+	.strip();
+
+const ScheduleInputSchema = z.discriminatedUnion("kind", [
+	z
+		.object({
+			kind: z.literal("at"),
+			at: NonEmptyString.max(64),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("every"),
+			everyMs: z.number().int().min(1),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("cron"),
+			expr: NonEmptyString.max(128),
+		})
+		.strict(),
+]);
+
+const ScheduleCreateInputSchema = z
+	.object({
+		schedule: ScheduleInputSchema,
+		prompt: NonEmptyString.max(2_000),
+		label: NonEmptyString.max(80).optional(),
+	})
+	.strip();
+
+const ScheduleListInputSchema = z
+	.object({
+		limit: z.number().int().min(1).max(50).default(20),
+	})
+	.strip();
+
+const ScheduleCancelInputSchema = z
+	.object({
+		jobId: NonEmptyString.max(128),
 	})
 	.strip();
 
@@ -546,6 +612,41 @@ export function createTelclaudeMcpBridge(
 				rationale: parsed.rationale,
 				...(parsed.sourceHint ? { sourceHint: parsed.sourceHint } : {}),
 			});
+		},
+
+		async tc_schedule_create(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_schedule_create,
+			);
+			const parsed = ScheduleCreateInputSchema.parse(input);
+			return dependencies.scheduleCreate({
+				...stamp,
+				schedule: parsed.schedule,
+				prompt: parsed.prompt,
+				...(parsed.label ? { label: parsed.label } : {}),
+			});
+		},
+
+		async tc_schedule_list(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_schedule_list,
+			);
+			const parsed = ScheduleListInputSchema.parse(input);
+			return dependencies.scheduleList({ ...stamp, limit: parsed.limit });
+		},
+
+		async tc_schedule_cancel(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_schedule_cancel,
+			);
+			const parsed = ScheduleCancelInputSchema.parse(input);
+			return dependencies.scheduleCancel({ ...stamp, jobId: parsed.jobId });
 		},
 	};
 }

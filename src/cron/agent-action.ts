@@ -196,6 +196,7 @@ export async function executeScheduledAgentPromptAction(
 	const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
 		cfg,
 		activeProfile.profile,
+		"WRITE_LOCAL",
 	);
 	const systemPromptAppend = [
 		chatContext,

@@ -417,6 +417,9 @@ export function createFailClosedTelclaudeLiveMcpRelayClients(
 		imageGenerate: fail,
 		tts: fail,
 		skillRequest: fail,
+		scheduleCreate: fail,
+		scheduleList: fail,
+		scheduleCancel: fail,
 	};
 }
 

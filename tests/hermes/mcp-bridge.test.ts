@@ -25,6 +25,9 @@ describe("Telclaude MCP bridge foundation", () => {
 				"tc_image_generate",
 				"tc_tts",
 				"tc_skill_request",
+				"tc_schedule_create",
+				"tc_schedule_list",
+				"tc_schedule_cancel",
 			],
 			resources: [],
 			prompts: [],
@@ -645,5 +648,8 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		imageGenerate: async () => ({ attachmentRef: "att_img" }),
 		tts: async () => ({ attachmentRef: "att_audio" }),
 		skillRequest: async () => ({ requestId: "skill_req_1" }),
+		scheduleCreate: async () => ({ jobId: "cron-1" }),
+		scheduleList: async () => ({ jobs: [] }),
+		scheduleCancel: async () => ({ jobId: "cron-1", cancelled: true }),
 	};
 }

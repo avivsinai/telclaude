@@ -133,10 +133,6 @@ import {
 	matchTelegramControlCommand,
 	type TelegramCommandMatch,
 } from "./control-commands.js";
-import {
-	READ_ONLY_CRON_MESSAGE,
-	tryHandleConversationalCronRequest,
-} from "./conversational-cron.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
 import { resolveTelegramIntent } from "./intent-router.js";
 import {
@@ -163,6 +159,9 @@ import { createTypingControllerFromCallback } from "./typing.js";
 import { routeWizardTextMessage } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
+
+const READ_ONLY_SCHEDULE_MESSAGE =
+	"READ_ONLY tier cannot configure scheduled jobs. Ask an operator to raise your tier first.";
 
 function managedSkillHousekeepingDidWork(
 	result: ReturnType<typeof cleanupManagedSkillHousekeeping>,
@@ -1225,7 +1224,7 @@ async function dispatchTelegramControlCommand(
 		case "sethome": {
 			const tier = getUserPermissionTier(msg.chatId, cfg.security);
 			if (tier === "READ_ONLY") {
-				await msg.reply(READ_ONLY_CRON_MESSAGE);
+				await msg.reply(READ_ONLY_SCHEDULE_MESSAGE);
 				return true;
 			}
 			await setHomeTargetCommand(bot.api, {
@@ -1627,6 +1626,7 @@ async function executeWithSession(
 		const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
 			ctx.config,
 			activeProfile.profile,
+			tier,
 		);
 
 		// Build lightweight system info for agent awareness
@@ -2601,17 +2601,6 @@ async function handleInboundMessage(
 		}
 	}
 
-	const conversationalCron = tryHandleConversationalCronRequest({
-		body: processingBody.trim(),
-		chatId: msg.chatId,
-		threadId: msg.messageThreadId,
-		tier,
-	});
-	if (conversationalCron.handled) {
-		await msg.reply(conversationalCron.replyText);
-		return;
-	}
-
 	const observerResult = await observer.analyze(processingBody, {
 		permissionTier: tier,
 	});
@@ -3183,6 +3172,7 @@ async function executePlanPhase(
 			const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
 				cfg,
 				activeProfile.profile,
+				"READ_ONLY",
 			);
 			const planningPromptAppend = [
 				PLANNING_SYSTEM_PROMPT,

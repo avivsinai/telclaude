@@ -56,6 +56,7 @@ export async function handlePrivateHeartbeat(
 	const hermesProviderContext = buildHermesPrivateRuntimeProviderContext(
 		config,
 		defaultProfile ?? undefined,
+		"WRITE_LOCAL",
 	);
 
 	const prompt = [

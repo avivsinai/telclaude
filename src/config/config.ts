@@ -136,6 +136,8 @@ const HermesCapabilityScopeSchema = z.enum([
 	"media.image",
 	"media.tts",
 	"skills.request",
+	"schedule.read",
+	"schedule.write",
 ]);
 const HermesOutboundChannelSchema = z.enum(["whatsapp", "email", "agentmail", "social"]);
 
@@ -145,6 +147,8 @@ const HERMES_PRIVATE_RUNTIME_DEFAULT_CAPABILITY_SCOPES = [
 	"media.image",
 	"media.tts",
 	"skills.request",
+	"schedule.read",
+	"schedule.write",
 ] satisfies z.infer<typeof HermesCapabilityScopeSchema>[];
 
 const HERMES_PRIVATE_RUNTIME_DEFAULT_OUTBOUND_CHANNELS = ["whatsapp"] satisfies z.infer<
