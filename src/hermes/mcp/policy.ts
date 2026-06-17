@@ -13,6 +13,9 @@ export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_image_generate",
 	"tc_tts",
 	"tc_skill_request",
+	"tc_schedule_create",
+	"tc_schedule_list",
+	"tc_schedule_cancel",
 ] as const;
 
 export type TelclaudeMcpToolName = (typeof TELCLAUDE_MCP_TOOL_NAMES)[number];
@@ -28,6 +31,9 @@ export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
 	tc_image_generate: "media.image",
 	tc_tts: "media.tts",
 	tc_skill_request: "skills.request",
+	tc_schedule_create: "schedule.write",
+	tc_schedule_list: "schedule.read",
+	tc_schedule_cancel: "schedule.write",
 } as const satisfies Partial<Record<TelclaudeMcpToolName, string>>;
 
 export type TelclaudeMcpCapabilityScope =

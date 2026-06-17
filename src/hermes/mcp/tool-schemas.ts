@@ -305,6 +305,92 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 			false,
 		),
 	},
+	{
+		name: "tc_schedule_create",
+		description:
+			"Create a relay-owned scheduled reminder/task for the operator (requires the schedule.write capability scope). " +
+			"The reminder is delivered to the operator's own home target — you cannot target another chat or owner; delivery and ownership are resolved server-side from your authority. " +
+			"`at` is an absolute ISO-8601 instant (interpreted as UTC if no offset is given) and must be in the future; `every` is a positive interval in milliseconds; `cron` is a 5-field expression (minute hour day month weekday).",
+		inputSchema: objectSchema(
+			{
+				schedule: {
+					oneOf: [
+						objectSchema(
+							{
+								kind: { const: "at" },
+								at: { type: "string", minLength: 1, maxLength: 64 },
+							},
+							["kind", "at"],
+							false,
+						),
+						objectSchema(
+							{
+								kind: { const: "every" },
+								everyMs: { type: "integer", minimum: 1 },
+							},
+							["kind", "everyMs"],
+							false,
+						),
+						objectSchema(
+							{
+								kind: { const: "cron" },
+								expr: { type: "string", minLength: 1, maxLength: 128 },
+							},
+							["kind", "expr"],
+							false,
+						),
+					],
+				},
+				prompt: {
+					type: "string",
+					minLength: 1,
+					maxLength: 2_000,
+				},
+				label: {
+					type: "string",
+					minLength: 1,
+					maxLength: 80,
+				},
+			},
+			["schedule", "prompt"],
+			false,
+		),
+	},
+	{
+		name: "tc_schedule_list",
+		description:
+			"List the scheduled reminders/tasks owned by the current authority (requires the schedule.read capability scope). " +
+			"Only your own jobs are returned — you cannot see another owner's schedules.",
+		inputSchema: objectSchema(
+			{
+				limit: {
+					type: "integer",
+					minimum: 1,
+					maximum: 50,
+					default: 20,
+				},
+			},
+			[],
+			false,
+		),
+	},
+	{
+		name: "tc_schedule_cancel",
+		description:
+			"Cancel a scheduled reminder/task by job id (requires the schedule.write capability scope). " +
+			"You can only cancel a job you own; cancelling another owner's job is denied.",
+		inputSchema: objectSchema(
+			{
+				jobId: {
+					type: "string",
+					minLength: 1,
+					maxLength: 128,
+				},
+			},
+			["jobId"],
+			false,
+		),
+	},
 ] as const;
 
 export function telclaudeMcpToolDefinitions(): readonly TelclaudeMcpToolDefinition[] {

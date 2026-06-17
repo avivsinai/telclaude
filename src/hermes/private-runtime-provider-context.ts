@@ -1,4 +1,4 @@
-import type { TelclaudeConfig } from "../config/config.js";
+import type { PermissionTier, TelclaudeConfig } from "../config/config.js";
 import type { EffectiveOperatorProfile } from "../config/profiles.js";
 import type { TelclaudeMcpCapabilityScope } from "./mcp/bridge.js";
 
@@ -9,19 +9,32 @@ export type HermesPrivateRuntimeProviderContext = {
 	readonly systemPromptAppend: string;
 };
 
+/**
+ * Capability scopes that mutate relay state and therefore require a write tier.
+ * schedule.read is fine at READ_ONLY (listing your own reminders is harmless);
+ * schedule.write (create/cancel) is stripped below WRITE_LOCAL.
+ */
+const WRITE_TIER_CAPABILITY_SCOPES: ReadonlySet<TelclaudeMcpCapabilityScope> = new Set([
+	"schedule.write",
+]);
+
 export function buildHermesPrivateRuntimeProviderContext(
 	config: Pick<TelclaudeConfig, "hermes">,
 	profile?: Pick<
 		EffectiveOperatorProfile,
 		"providerScopes" | "capabilityScopes" | "outboundChannels"
 	>,
+	tier?: PermissionTier,
 ): HermesPrivateRuntimeProviderContext {
 	const providerScopes = uniqueSorted(
 		profile?.providerScopes ?? config.hermes?.privateRuntime?.providerScopes,
 	);
-	const capabilityScopes = uniqueSorted(
-		profile?.capabilityScopes ?? config.hermes?.privateRuntime?.capabilityScopes,
-	) as TelclaudeMcpCapabilityScope[];
+	const capabilityScopes = gateCapabilityScopesByTier(
+		uniqueSorted(
+			profile?.capabilityScopes ?? config.hermes?.privateRuntime?.capabilityScopes,
+		) as TelclaudeMcpCapabilityScope[],
+		tier,
+	);
 	const outboundChannels = uniqueSorted(
 		profile?.outboundChannels ?? config.hermes?.privateRuntime?.outboundChannels,
 	);
@@ -51,6 +64,20 @@ export function buildHermesPrivateRuntimeProviderContext(
 						"</hermes-provider-runtime>",
 					].join("\n"),
 	};
+}
+
+function gateCapabilityScopesByTier(
+	scopes: readonly TelclaudeMcpCapabilityScope[],
+	tier: PermissionTier | undefined,
+): TelclaudeMcpCapabilityScope[] {
+	// Fail-closed: write-tier scopes (e.g. schedule.write) are granted ONLY when
+	// the caller passes an explicit write-capable tier. A missing/undefined tier
+	// or READ_ONLY strips them, so a future caller that forgets to thread `tier`
+	// cannot silently grant write capability. All current call sites pass a
+	// concrete tier (live / READ_ONLY / WRITE_LOCAL), so this changes only the
+	// unreachable no-tier path.
+	if (tier && tier !== "READ_ONLY") return [...scopes];
+	return scopes.filter((scope) => !WRITE_TIER_CAPABILITY_SCOPES.has(scope));
 }
 
 function uniqueSorted(values: readonly string[] | undefined): string[] {

@@ -142,7 +142,11 @@ export function buildWhatsAppInboundHermesPrompt(
 export function buildWhatsAppInboundHermesOptions(
 	input: WhatsAppInboundDispatchInput,
 ): HermesQueryOptions {
-	const providerContext = buildHermesPrivateRuntimeProviderContext(input.config, input.profile);
+	const providerContext = buildHermesPrivateRuntimeProviderContext(
+		input.config,
+		input.profile,
+		"WRITE_LOCAL",
+	);
 	const query = input.event.normalized.text;
 	const memoryBundle = buildTelegramMemoryBundle({
 		profileId: input.profile.id,
