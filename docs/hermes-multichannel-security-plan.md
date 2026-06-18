@@ -18,18 +18,21 @@ Telclaude edge + relay authority
         v
 Contained upstream Hermes profile
         |
-        | relay-served MCP tools only
+        | signed native container tools + relay-served capability tools
         v
-Providers, outbound sends, memory, web, media, approvals
-owned and executed by Telclaude relay/sidecars
+Local scratch compute inside the hardened container
+        |
+        v
+Providers, outbound sends, memory, authenticated services, browser egress, media, approvals
+owned and executed by Telclaude relay/sidecars/brokers
 ```
 
-Hermes may be the single conversational/runtime brain. It must not become the credential owner, policy owner, approval issuer, side-effect executor, or raw network boundary.
+Hermes may be the single conversational/runtime brain and may run useful in-container compute. It must not become the credential owner, policy owner, approval issuer, provider side-effect executor, or raw trust boundary.
 
 ## Non-Negotiable Invariants
 
 1. Runtime compute never receives raw provider credentials, OAuth refresh tokens, bank tokens, WhatsApp credentials, email credentials, browser cookies, TOTP seeds, vault credentials, or model-provider credentials.
-2. The contained Hermes runtime does not directly reach provider sidecars, vault, home/LAN services, metadata endpoints, model providers, or connector bridges.
+2. The contained Hermes runtime may run approved native tools inside the hardened container, but it does not directly reach provider sidecars, vault, home/LAN services, metadata endpoints, model providers, or connector bridges.
 3. Every Hermes request to privileged capability goes through a relay-issued, opaque, peer-bound authority handle.
 4. Hermes cannot choose its actor, profile, memory source, provider scopes, outbound channels, connector identity, or approval state.
 5. Same agent does not mean same authority. Operator Telegram, operator WhatsApp, operator email, family WhatsApp, family email, and external email are distinct channel identities with server-derived trust domains.
@@ -37,17 +40,20 @@ Hermes may be the single conversational/runtime brain. It must not become the cr
 7. Writes are never inline. Provider writes and outbound sends use `prepare -> approve/step-up -> execute`.
 8. Approval tokens are one-time, short-lived, JTI-checked, Ed25519-signed, and bound to the exact prepared record digest.
 9. High-risk approvals require an independent step-up factor. For this slice, the factor is trusted TOTP freshness consumed by Telegram `/approve`; a separate approval channel remains a later hardening option for banking, public sharing, account changes, or provider PII release.
-10. Public web access is relay-served public-web read capability, not raw container egress or authenticated browser sessions inside Hermes.
+10. Public web access is an explicit capability. Ordinary search/fetch may be relay-served; interactive browsing must be brokered or egress-governed. Authenticated service cookies and write credentials stay outside the contained Hermes runtime.
 11. WhatsApp and email are edge transports. Their credentials live in relay-owned sidecars or gateway surfaces, never in the contained agent runtime.
 12. Inbound channel content is untrusted data until CL-1 wraps it, deduplicates it, assigns identity/domain, quarantines attachments, and binds it to a relay conversation.
 13. Web-derived and inbound-derived content cannot become trusted memory through prompt discipline alone. Memory writes must carry source/provenance and require relay policy or human confirmation before entering trusted operator or household memory.
 14. Every slice that touches Hermes runtime startup, connector wiring, profile generation, or cutover evidence must preserve the no-fork proof: upstream checkout clean, no runtime source replacement, no monkeypatches, `nofork.clean` passing, and fresh strict cutover evidence.
+15. Native toolset expansion is not a weakening of the gate. `verify-live` must still fail closed unless the runtime's resolved toolset matches the signed expected allowlist for that profile.
+16. Sub-agents are allowed only after a delegation proof shows child authority is inherited or narrowed, never widened, and that child runtime state cannot escape the same envelope.
 
 ## Current Local Reality To Preserve
 
 The existing repo already has the right primitives:
 
 - Contained upstream Hermes with relay as the security envelope.
+- A hardened runtime envelope that can host native scratch compute once proven: non-root runtime, `cap_drop`, `no-new-privileges`, read-only root, noexec tmpfs, internal networks, provider/model host blocking, and relay-mediated credentials.
 - Relay-served MCP tools for provider read/write, memory, attachments, outbound, audit, web fetch/search, media, TTS, and skill requests.
 - Opaque authority handles, memory-source enforcement, client authority stripping, provider scope checks, and capability scope checks.
 - DNS-pinned public web fetch with private/metadata blocking, content-type allowlist, truncation, redaction, audit, and untrusted-content wrapping.
@@ -69,6 +75,11 @@ The plan should reuse those primitives rather than creating a parallel authoriza
 7. WhatsApp outbound and the operator-only WhatsApp inbound CL-1 bridge path are wired; household/group WhatsApp and email inbound remain pending.
 8. Email edge is documented in the Hermes proof matrix but needs the same concrete edge treatment as WhatsApp.
 9. The current private memory source naming is Telegram-flavored; multichannel operator memory needs a server-owned profile source that does not imply Telegram-only authority.
+10. The contained Hermes profile is currently too narrow for normal Hermes usage: `api_server` is pinned to `[todo, skills, telclaudeRelay]`, while upstream Hermes expects terminal/process, file, browser, memory, code execution, delegation, cron, vision, and other tools to be available depending on platform/profile.
+11. The hostile-peer live runner is still missing. Before widening native tools, the runtime must prove token isolation, relay-surface isolation, egress containment, filesystem custody, and self-modification denial from inside the container.
+12. Browser scope is now full: Camoufox, interaction, and persistent logins/cookies are in scope. Persistent cookies are credential-class state and must be relay-owned, encrypted, domain/authority-scoped, approval-gated, and injected only into bounded browser contexts.
+13. Browser egress is now intentionally no-MITM. The relay browser proxy validates CONNECT host/IP and policy before egress, but does not install a trusted CA in `tc-browser` or inspect HTTPS bodies. This preserves Camoufox compatibility with anti-bot targets at the cost of an accepted low-bandwidth, non-secret-shaped exfiltration residual comparable to `tc_web_fetch`.
+14. The simplified browser design is sound only with the invisible relay controls M1-M6 and one host/state-change anchored confirm binding for sensitive hydrated-origin writes.
 
 ## Architecture Decisions
 
@@ -99,13 +110,47 @@ Forbidden mode:
 
 - Putting Telegram, WhatsApp, email, provider, browser, or bank credentials directly into the main contained Hermes runtime.
 
-### Decision 3: Public Web Is Useful, But It Is Data
+### Decision 3: Native Compute Is Allowed Inside The Hardened Envelope
 
-Public web search/fetch should be enabled for the operator-private profile through relay MCP tools. Web results are always untrusted external content. They can inform answers or proposed side effects; they cannot authorize actions or become trusted memory without human confirmation.
+The earlier "relay-served MCP tools only" target was too restrictive. It made the contained runtime safe, but not useful enough as a personal Hermes agent.
+
+Approved direction:
+
+- Enable native `terminal`, `process`, `file`, `code_execution`, and practical media/vision tools for operator-private Hermes after the W2 hostile-peer and runtime gates pass.
+- Keep native compute bound to container-local scratch/workspace state, read-only curated mounts, no secret volumes, no Docker socket, no host home access, no provider/vault/model/connector/LAN reachability, and bounded CPU/memory/PID limits.
+- Treat native `code_execution` as an accelerator for allowed local tool chains, not as a way to reach provider credentials or bypass relay policy.
+- Keep `verify-live.runtime.toolset_inventory` as a signed allowlist gate. Widen the expected set deliberately; do not remove the gate.
+- Keep privileged, durable, cross-boundary, connector, provider, outbound, memory, schedule, and approval actions relay-owned unless a separate proof explicitly moves a surface.
+
+Native compute changes the blast radius, so it needs live hostile-peer evidence before production enablement. It does not require forbidding useful shell/code/file operations forever.
+
+### Decision 4: Public Web Is Useful, But It Is Data
+
+Public web search/fetch should be enabled for the operator-private profile. Simple public fetch/search can use relay MCP tools. JS-heavy or bot-hostile pages should use a browser broker or explicitly governed public egress path. Web results are always untrusted external content. They can inform answers or proposed side effects; they cannot authorize actions or become trusted memory without human confirmation.
 
 Implementation must enforce this at the relay memory boundary. Web and inbound channel data must be tagged as external-derived provenance, and trusted memory writes from those sources must require an explicit confirmation policy instead of relying on the agent prompt.
 
-### Decision 4: Writes Need Fresh Step-Up
+Authenticated service browsing is not the default way to access Google, banking, WhatsApp, email, or home services. Those stay typed, relay-mediated providers/connectors with approval and step-up.
+
+### Decision 5: Browser Uses A Simple UX With Relay-Side Session Controls
+
+The user-facing browser shape is one brokered `tc_browse` tool family behind one `browse.use` authority. There is no global public-web allowlist, read/act split, read-mode GET/HEAD policy, TLS MITM, or per-click ledger.
+
+A separate hardened browser plus relay-owned credentials handles process escape, SSRF, and credential theft. It does not by itself solve live authenticated-session authority, so the relay must enforce these invisible controls:
+
+- M1: origin-bind egress for cookie-bearing contexts. While a context carries hydrated login state for an approved origin set, CONNECT targets must remain within that credential profile. Cross-origin top-level navigation forks a fresh cookie-less context.
+- M2: hydrate only the target site's cookie state. Never hydrate a portfolio-wide cookie jar.
+- M3: pin the CONNECT upstream socket to the validated IP, re-check private/non-overridable ranges at dial time, and preserve original SNI/Host.
+- M4: enforce outbound client-to-upstream byte budgets plus per-actor and per-session rate caps at the CONNECT proxy.
+- M5: run the shared web-egress secret/private-data preflight on broker-visible navigation URLs and typed/submitted strings.
+- M6: create fresh ephemeral browser contexts and discard all browser storage on close except the relay-owned encrypted cookie store.
+- Browser write confirm: on a sensitive hydrated origin, a state-changing or ambiguous commit freezes and requires host/state-change anchored approval bound to `sessionRef`, actor, approver, profile, hydrated origin scope, destination host, submitted-values hash, screenshot/attachment hash, TTL, and approval revision.
+
+Catastrophic surfaces require fresh login every time through use-time noVNC/session-capture and do not receive standing sessions by default: primary-email root/admin, bank account-management/payee/admin, and security settings.
+
+There is no relay CA, TLS termination, or HTTPS body inspection. Reopen TLS termination only if browser exfil residuals prove unacceptable in live probes or red-team tests, and accept the stealth cost explicitly before enabling it.
+
+### Decision 6: Writes Need Fresh Step-Up
 
 The existing approval-token and side-effect ledger pattern remains the core. Add fresh step-up before minting a side-effect approval token according to risk:
 
@@ -114,7 +159,7 @@ The existing approval-token and side-effect ledger pattern remains the core. Add
 - Public sharing, account changes, destructive actions: passkey or independent admin channel.
 - Bank transfers/new payees: bank-native SCA plus relay step-up.
 
-### Decision 5: Home Services Are Providers, Not Private Web Targets
+### Decision 7: Home Services Are Providers, Not Private Web Targets
 
 For personal/family deployment, home/LAN stays blocked from Hermes. Home Assistant, NAS, cameras, locks, and similar services must be exposed as typed relay-owned home providers with read/write policies, not direct `WebFetch` private endpoints.
 
@@ -122,7 +167,9 @@ For personal/family deployment, home/LAN stays blocked from Hermes. Home Assista
 
 | Surface | Read Policy | Write Policy | Step-Up | MVP Status |
 | --- | --- | --- | --- | --- |
-| Public web | Allow `tc_web_search` and `tc_web_fetch`; block private/metadata/LAN; wrap as untrusted | No arbitrary web POST or authenticated browser writes | None for ordinary reads; approval if private facts are being sent outward | Enable |
+| Native container compute | Allow signed native `terminal`, `process`, `file`, `code_execution`, and useful media/vision tools inside hardened container after hostile-peer gates | Scratch/workspace writes only; no provider, connector, memory, approval, or outbound side effects except through relay tools | None for local scratch compute; relay approval for any external side effect | Enable after W2 |
+| Delegation/sub-agents | Allow only after child authority inheritance/narrowing is proven | No child authority widening, recursive fanout beyond limits, or cross-profile memory/provider access | Same as parent authority plus child budget/TTL | After native compute proof |
+| Public web/browser | Allow `tc_web_search`, `tc_web_fetch`, and brokered Camoufox `tc_browse` under one `browse.use` authority; browser egress is CONNECT-validated without TLS MITM; persistent login state is relay-owned credential-class browser state, not runtime state | No per-click ledger and no read/act split; sensitive hydrated-origin state changes require one host/state-change anchored browser approval binding; catastrophic surfaces require fresh use-time noVNC/session-capture, not standing cookies | None for ordinary public or unauthenticated browsing; approval to create/import/activate persistent login state; light confirm for sensitive authenticated writes | Full scope locked |
 | Telegram operator | Operator-private channel; route to same Hermes profile | Outbound reply through Telegram relay | Existing approval for side effects | Existing |
 | WhatsApp operator | Strong-linked phone maps to operator-private channel authority | Reply/send through prepared outbound only | Approval for ordinary sends; fresh step-up for provider PII or high-risk content | Wire outbound first |
 | WhatsApp household | Household domain, no operator-private memory | Benign replies only; provider PII only with strong link and policy | Independent operator approval for sensitive releases | Wire after operator path |
@@ -195,24 +242,79 @@ Exit criteria:
 - Same Hermes profile can serve multiple operator channels.
 - Each inbound channel gets a server-derived authority handle with explicit scopes.
 
-### Slice 3: Public Web For Operator-Private
+### Slice 3: Native Container Compute For Operator-Private
 
-Goal: make the agent able to browse public web usefully without raw egress.
+Goal: make Hermes useful again by enabling native in-container compute without making the runtime a credential or network boundary.
 
 Tasks:
 
-1. Ensure private/operator profile gets explicit `web.search` and `web.fetch`.
-2. Confirm live MCP tool wiring and web search provider config.
-3. Add private-fact/PII outbound preflight for web queries and fetch URLs, beyond token-shaped secret filtering.
-4. Keep DNS-pinned SSRF guard, redirect revalidation, content-type allowlist, redaction, truncation, audit, and external-content wrapping.
-5. Add fixtures for allowed public fetch, denied RFC1918, denied metadata, denied mixed DNS, denied provider/vault/model host, denied private-fact outbound query.
+1. Build the live hostile-peer runner and make it mandatory for widened native-tool profiles.
+2. Add an explicit profile/native-tool policy, starting with operator-private `terminal`, `process`, `file`, `code_execution`, and practical media/vision tools.
+3. Update generated Hermes config by widening `platform_toolsets.api_server` and removing only the approved native toolsets from `agent.disabled_toolsets`.
+4. Keep `verify-live.runtime.toolset_inventory` fail-closed, but point it at the widened signed expected set for the selected profile.
+5. Provide a deliberate scratch/workspace mount for local compute. Keep rootfs read-only, curated skills read-only, no host home, no secret volumes, no Docker socket, no provider sidecar mounts, no connector bridge mounts.
+6. Add terminal/code/file probes for env, config, auth, log, and filesystem custody: no root tokens, no raw provider credentials, no relay private config, no OAuth stores, no TOTP/vault material, no host SSH/cloud creds, no skill/config/auth self-modification, no symlink/path escape.
+7. Add egress probes from terminal/code: no provider/vault/model/RFC1918/metadata/DNS-rebind/DoH/WebSocket/proxy/SMTP/IMAP/WhatsApp reachability except through approved relay/broker surfaces.
+8. Add code-execution probes for bounded stdout/stderr, timeout/tool-call limits, child env scrubbing, no persistent daemons, and no plugin/import path injection.
 
 Exit criteria:
 
-- Operator can ask the agent to search/read public web.
-- Web cannot be used as a private-data exfiltration path without explicit approval.
+- Operator-private Hermes can run shell/code/file tasks inside the container and produce useful artifacts.
+- The runtime still has no raw service/model/provider/connector credentials and no direct privileged egress.
+- `verify-live`, hostile-peer, no-fork, and network probes pass with the widened native toolset.
 
-### Slice 4: Service Enrollment UX
+### Slice 4: Public Web And Browser Broker
+
+Goal: make the agent browse public web usefully, including JS-heavy pages, bot-defended targets, authenticated sessions, and approved interactions, while keeping browser credentials, network egress policy, and authenticated-session authority in the relay.
+
+Locked scope:
+
+- Engine: Camoufox, not plain Playwright, because bot-defended targets are in scope.
+- Tool surface: one brokered `tc_browse` tool family under one `browse.use` capability.
+- No global public-web allowlist, no read/act split, no read-mode request policy, no TLS MITM, no per-click ledger.
+- Persistent login cookies are in scope only as relay-owned credential-class state.
+- Catastrophic surfaces require fresh use-time noVNC/session-capture and never get standing cookies by default.
+
+Tasks:
+
+1. Ensure private/operator profile gets explicit `web.search`, `web.fetch`, and `browse.use`.
+2. Confirm live MCP tool wiring, web search provider config, and permissive public-fetch mode where intended.
+3. Keep DNS-pinned SSRF guard, redirect revalidation, content-type allowlist, redaction, truncation, audit, and external-content wrapping for `tc_web_search`/`tc_web_fetch`.
+4. Run browser execution in separate `tc-browser` trust domain, not inside `tc-hermes-contained`: relay-owned internal-only Camoufox container on its own network, no provider/connector/model/vault access, no secret volumes, no runtime-held cookies, no direct agent-container reachability.
+5. Put Playwright/Camoufox client in relay-side browser broker. Hermes sees only `tc_browse` tool family and opaque `sessionRef`s.
+6. Make `sessionRef` opaque, relay-issued, actor/profile/domain-bound, TTL-bound, and non-reusable across private/social/household authorities.
+7. Force browser egress through relay-owned CONNECT proxy and kernel firewall backstop. Proxy validates CONNECT host/IP, blocks private/metadata/provider/vault/model reachability, pins dial to validated IP, rechecks blocked ranges at dial, preserves original SNI/Host, audits, and does not terminate TLS.
+8. Make egress proxy session/context-aware. Broker supplies per-context credential/token bound to `{sessionRef, actor, hydratedOriginScope}`; proxy rejects browser tunnels without valid context identity.
+9. Implement M1 origin-bound egress for cookie-bearing contexts; while hydrated session active, CONNECT targets limited to approved login-origin set; cross-origin top-level navigation forks fresh cookie-less context.
+10. Implement M2 per-target cookie hydration; hydrate only navigated host's credential-profile storageState, never portfolio-wide jar.
+11. Implement M3 rebind acceptance test and IPv6/NAT64 canonicalization hardening before deployment.
+12. Implement M4 client-to-upstream byte budget plus per actor/session rate cap in CONNECT pipe.
+13. Implement M5 shared egress preflight helper for broker-visible nav URLs and typed/submitted strings; helper shared with `tc_web_*`.
+14. Implement M6 fresh ephemeral browser contexts; discard all service workers, IndexedDB, localStorage, HSTS, and other browser storage on close; persist only via relay-owned encrypted cookie store.
+15. Add persistent browser credential store in relay, not `tc-browser`: encrypted at rest, domain/origin-set/authority-scoped, profile-bound, versioned, auditable, revocable, never exposed to Hermes.
+16. Provision standing browser login state through one-time human session-capture (`enroll-session` pattern). Operator logs in through relay-owned hosted/noVNC browser; relay captures Playwright `storageState`; no password/passkey/OTP seed/recovery credential stored. Mid-task re-auth/CAPTCHA/passkey/password prompts fail to human reprovisioning.
+17. Mark catastrophic surfaces in credential-profile policy: primary-email root/admin, bank account-management/payee/admin, security settings. These require fresh use-time noVNC/session-capture and receive no standing session by default.
+18. Require operator approval to create/import/activate/refresh/persist browser login profile. Treat persistent cookie activation as credential use, not a public-web read.
+19. Add host/state-change anchored confirm for sensitive hydrated-origin writes. Trigger on sensitive hydrated origin plus state-changing or ambiguous commit observed through Playwright routing/events and broker-known action intent; fail closed on ambiguous sensitive commits. Bind approval to browser side-effect record: actionRef/sessionRef, actor/approver/profile, hydrated origin scope, destination host, submitted-values hash, screenshot/attachment hash, TTL, approval revision.
+20. Return page text/accessibility/link summaries through `redactSecrets` and `wrapExternalContent`; screenshots return short-lived attachment refs, never inline bytes. Do not treat these as action-side security controls.
+21. Add fixtures/probes for allowed unauth public browse, denied RFC1918/metadata/provider/vault/model, validated-IP CONNECT pin/rebind denial, no relay CA/no TLS MITM assumptions, denied browser tunnel without context identity, cookie-bearing context cannot egress outside approved login-origin set, cross-origin navigation forks cookie-less context, per-target cookie hydration/no portfolio jar, byte-budget exhaustion, egress preflight denial, ephemeral storage discard, catastrophic standing-session denial, and sensitive hydrated write confirm binding.
+
+Exit criteria:
+
+- Operator can search/read public web and use brokered Camoufox with free unauthenticated interaction.
+- Browser containment proves separate internal-only trust domain, no direct Hermes runtime/container/provider/vault/model/LAN reachability, and all internet egress via relay browser proxy.
+- Unauthenticated public browsing remains open; cookie-bearing contexts cannot egress outside their approved login-origin set.
+- CONNECT proxy proves no MITM, validated-IP pinning, rebind denial, byte budget, context identity requirement, and RFC1918/metadata block at validation and dial.
+- Persistent login state can be used only through relay broker and under scoped operator authority; catastrophic surfaces are fresh-login only.
+- Sensitive hydrated-origin writes are host/state-change confirmed and approval-bound; no per-click ledger or read/act split is required.
+
+Slice 4 lane split:
+
+- S0 containment and egress-proxy infra, owned by Codex: `docker/Dockerfile.browser`, `docker-compose.browser.yml`, `telclaude-browser` network, firewall extension, Camoufox digest pin/canary, browser containment signed probe, CONNECT host/IP validation, M3 validated-IP pin + rebind test, M4 byte budget, no-MITM proof, and `verify-live` gates.
+- Broker/session layer, owned by Claude: per-context proxy token, M1 origin-scope policy fed by broker/cookie store, M2 cookie hydration, M5 shared egress preflight helper, relay Playwright/Camoufox broker, `tc_browse` tool surface, cookie store, session-capture provisioning, and browser approval binding.
+- S0 must be green before broker/session layers ship.
+
+### Slice 5: Service Enrollment UX
 
 Goal: make service setup feel like a product workflow, not manual machine work.
 
@@ -229,7 +331,7 @@ Exit criteria:
 - Google/email/WhatsApp setup can be guided from the operator channel.
 - No setup flow asks the agent to handle raw secrets.
 
-### Slice 5: Google Useful Core
+### Slice 6: Google Useful Core
 
 Goal: ship the first genuinely useful provider set.
 
@@ -246,7 +348,7 @@ Exit criteria:
 - Reads work without exposing tokens to Hermes.
 - First Google writes require fresh step-up and exact digest-bound execution.
 
-### Slice 6: WhatsApp Outbound
+### Slice 7: WhatsApp Outbound
 
 Goal: let the same operator-private Hermes profile reply/send through WhatsApp safely.
 
@@ -265,7 +367,7 @@ Exit criteria:
 - Operator can ask the same Hermes agent to send/reply on WhatsApp.
 - Sends are edge-owned and side-effect-ledger-owned.
 
-### Slice 7: WhatsApp And Email Inbound CL-1
+### Slice 8: WhatsApp And Email Inbound CL-1
 
 Goal: safely let WhatsApp/email initiate conversations into the same Hermes-backed assistant.
 
@@ -278,14 +380,14 @@ Tasks:
 5. Add group handling rules before enabling WhatsApp group chats.
 6. Wired for the operator WhatsApp path: the bridge POSTs signed inbound events to `POST /v1/whatsapp/inbound`, the endpoint calls the complete CL-1 pipeline, and only sanitized events dispatch into Hermes.
 7. Inbound bridge signing contract: compute HMAC over the post-schema-default canonical object that the relay verifies, including defaulted fields such as `attachments: []`; signing a sparse pre-default payload must fail closed.
-8. Operator-only W-B may use a static operator address allowlist; Telegram `/approve` strong-link pairing and household/multi-number pairing remain separate Aviv-gated follow-up work.
+8. Operator-only W-B may use a static operator address allowlist; Telegram `/approve` strong-link pairing and household/multi-number pairing remain separate operator-gated follow-up work.
 
 Exit criteria:
 
 - Inbound WhatsApp/email can reach Hermes only as sanitized, domain-bound, identity-bound content.
 - No inbound channel can smuggle authority fields or raw credentials.
 
-### Slice 8: Durable High-Risk Side Effects
+### Slice 9: Durable High-Risk Side Effects
 
 Goal: prepare for bank writes, Drive sharing/deletion, email send, home safety actions.
 
@@ -302,7 +404,7 @@ Exit criteria:
 - Relay restart cannot lose high-risk pending/executing state.
 - Duplicate real-world effects are suppressed by relay and provider.
 
-### Slice 9: Bank And Home Providers
+### Slice 10: Bank And Home Providers
 
 Goal: add sensitive personal/family services only after the lower-risk path is proven.
 
@@ -326,40 +428,55 @@ Required gates:
 1. No raw credential appears in Hermes env, config, auth files, logs, or generated artifacts.
 2. Wrong-peer and expired runtime handles fail closed.
 3. Client-supplied authority/profile/provider/memory/outbound fields fail closed.
-4. Public web can fetch public content but cannot reach RFC1918, metadata, provider, vault, model, or bridge hosts.
-5. Web content is wrapped as untrusted and cannot become trusted memory without human confirmation.
-6. Google reads route through relay/sidecar only.
-7. Google writes require fresh step-up and exact approval-token binding.
-8. WhatsApp outbound cannot mutate recipient/body/attachment after approval.
-9. WhatsApp/email inbound remains dark until CL-1 passes.
-10. Household and external domains cannot read operator-private memory or provider PII.
-11. Cutover/probe evidence is signed, fresh, and origin-bound where applicable.
+4. Widened native toolsets match the signed expected allowlist for the active profile; unexpected native tools fail closed.
+5. Native terminal/code/file cannot read relay private config, OAuth stores, vault/TOTP material, host SSH/cloud credentials, or runtime root tokens.
+6. Native terminal/code/file cannot write managed skills, Hermes config/auth, relay state, or paths outside the approved scratch/workspace boundary.
+7. Native terminal/code/file cannot reach RFC1918, metadata, provider, vault, model, connector, or bridge hosts except through approved relay/broker surfaces.
+8. Public web can fetch public content but cannot reach RFC1918, metadata, provider, vault, model, or bridge hosts.
+9. Web content is wrapped as untrusted and cannot become trusted memory without human confirmation.
+10. Browser containment proves the browser runtime is a separate internal-only trust domain, not reachable from Hermes runtime containers, and cannot egress except through the relay browser proxy.
+11. Browser egress proxy proves the locked no-MITM posture: CONNECT host/IP validation is enforced, no relay CA is installed in `tc-browser`, and no required gate depends on HTTPS body inspection.
+12. CONNECT proxy dials the validated IP, rechecks blocked ranges at dial, preserves original SNI/Host, and has a rebind denial test.
+13. Browser tunnels require relay-issued context identity; cookie-bearing contexts cannot egress outside their approved login-origin set, and unauthenticated public browsing stays open.
+14. Persistent browser cookies are encrypted at rest, relay-owned, domain/origin-set/authority-scoped, activation-approved, revocable, and never present in Hermes runtime config/env/logs.
+15. Browser contexts hydrate only the target credential profile, never a portfolio jar, and discard all non-relay-owned browser storage on close.
+16. Sensitive hydrated-origin writes require host/state-change anchored approval binding; no read/act split or per-click ledger is required.
+17. Catastrophic browser surfaces have no standing session by default and require fresh use-time noVNC/session-capture.
+18. Delegation cannot widen parent authority, cross memory domains, bypass profile/channel scopes, or create unbounded fanout.
+19. Google reads route through relay/sidecar only.
+20. Google writes require fresh step-up and exact approval-token binding.
+21. WhatsApp outbound cannot mutate recipient/body/attachment after approval.
+22. WhatsApp/email inbound remains dark until CL-1 passes.
+23. Household and external domains cannot read operator-private memory or provider PII.
+24. Cutover/probe evidence is signed, fresh, and origin-bound where applicable.
 
 ## Initial Build Order
 
 1. Slice 0: current-state proof.
 2. Slice 1: remove runtime token custody.
 3. Slice 2: explicit profile/channel authority.
-4. Slice 3: public web for operator-private.
-5. Slice 4: service enrollment UX.
-6. Slice 5: Google useful core.
-7. Slice 6: WhatsApp outbound.
-8. Slice 7: WhatsApp/email inbound CL-1.
-9. Slice 8: durable high-risk side effects.
-10. Slice 9: bank/home providers.
+4. Slice 3: native container compute for operator-private.
+5. Slice 4: public web and browser broker.
+6. Slice 5: service enrollment UX.
+7. Slice 6: Google useful core.
+8. Slice 7: WhatsApp outbound.
+9. Slice 8: WhatsApp/email inbound CL-1.
+10. Slice 9: durable high-risk side effects.
+11. Slice 10: bank/home providers.
 
 ## Definition Of Done For "Personal Agent MVP"
 
 The MVP is done when:
 
 1. The same Hermes-backed operator-private profile can be reached from Telegram and at least one additional strong-linked channel.
-2. The agent can search/fetch public web through relay MCP tools.
-3. The agent can read Google/Gmail/Calendar/Drive/Contacts through relay providers.
-4. The agent can prepare at least Gmail draft and self-only calendar event writes with fresh step-up approval.
-5. The agent can send/reply through WhatsApp outbound as an edge-owned prepared side effect.
-6. No connector/provider/model/vault token is present in the contained Hermes runtime except non-root, short-lived, peer-bound handles with replay denial.
-7. All privileged actions are auditable and replay-denied.
-8. Household and external channels cannot reach operator-private authority.
+2. The agent can run useful native shell/code/file tasks inside the hardened container, with hostile-peer and egress gates green.
+3. The agent can search/fetch public web, use brokered Camoufox sessions where ordinary fetch is insufficient, activate relay-owned persistent login state under approval, and perform sensitive hydrated-origin writes only through the host/state-change browser approval binding.
+4. The agent can read Google/Gmail/Calendar/Drive/Contacts through relay providers.
+5. The agent can prepare at least Gmail draft and self-only calendar event writes with fresh step-up approval.
+6. The agent can send/reply through WhatsApp outbound as an edge-owned prepared side effect.
+7. No connector/provider/model/vault token is present in the contained Hermes runtime except non-root, short-lived, peer-bound handles with replay denial.
+8. All privileged actions are auditable and replay-denied.
+9. Household and external channels cannot reach operator-private authority.
 
 ## Explicit Non-Goals For MVP
 
@@ -367,7 +484,9 @@ The MVP is done when:
 2. Drive public sharing/deletion.
 3. Email send without a separate approval policy.
 4. WhatsApp group autonomy.
-5. Authenticated browser sessions inside Hermes.
-6. Direct LAN/Home Assistant/NAS access from Hermes.
-7. Provider enrollment through an agent-held browser cookie.
-8. Any use of prompt instructions as a security boundary.
+5. Runtime-held browser cookies or direct authenticated service browser sessions inside Hermes.
+6. Standing browser sessions for catastrophic surfaces unless explicitly named later by the operator.
+7. Direct LAN/Home Assistant/NAS access from Hermes.
+8. Direct host-home, host-filesystem, Docker socket, or unrestricted host terminal access from Hermes.
+9. Provider enrollment through an agent-held browser cookie.
+10. Any use of prompt instructions as a security boundary.

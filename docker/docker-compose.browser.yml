@@ -1,0 +1,72 @@
+# Browser trust-domain overlay for Hermes public web browsing.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.browser.yml up -d telclaude tc-browser
+#
+# `tc-browser` is intentionally not on provider, vault, model, WhatsApp, or
+# Hermes runtime networks. It can reach only the relay over relay-browser-net;
+# internet egress must go through the relay-owned CONNECT proxy.
+
+services:
+  telclaude:
+    environment:
+      - TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED=1
+      - TELCLAUDE_BROWSER_CONNECT_PROXY_HOST=0.0.0.0
+      - TELCLAUDE_BROWSER_CONNECT_PROXY_PORT=${TELCLAUDE_BROWSER_CONNECT_PROXY_PORT:-8794}
+      - TELCLAUDE_BROWSER_CONNECT_PROXY_REQUIRE_CONTEXT=${TELCLAUDE_BROWSER_CONNECT_PROXY_REQUIRE_CONTEXT:-1}
+      - TELCLAUDE_BROWSER_CONNECT_PROXY_CLIENT_TO_UPSTREAM_BYTES=${TELCLAUDE_BROWSER_CONNECT_PROXY_CLIENT_TO_UPSTREAM_BYTES:-2097152}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-browser}
+    networks:
+      - relay-browser-net
+
+  tc-browser:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.browser
+      args:
+        CAMOUFOX_VERSION: ${TELCLAUDE_CAMOUFOX_VERSION:-0.4.11}
+    image: ${TELCLAUDE_BROWSER_IMAGE:-telclaude-browser:camoufox-0.4.11}
+    container_name: tc-browser
+    depends_on:
+      telclaude:
+        condition: service_healthy
+    environment:
+      - TELCLAUDE_BROWSER_PORT=3006
+      - TELCLAUDE_BROWSER_CONNECT_PROXY_URL=http://telclaude:${TELCLAUDE_BROWSER_CONNECT_PROXY_PORT:-8794}
+      - HTTP_PROXY=http://telclaude:${TELCLAUDE_BROWSER_CONNECT_PROXY_PORT:-8794}
+      - HTTPS_PROXY=http://telclaude:${TELCLAUDE_BROWSER_CONNECT_PROXY_PORT:-8794}
+      - NO_PROXY=127.0.0.1,localhost,::1
+      - no_proxy=127.0.0.1,localhost,::1
+      - NODE_ENV=production
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256M,mode=1777,noexec
+      - /home/browser:size=256M,uid=10001,gid=10001,mode=0700
+    pids_limit: 256
+    mem_limit: 2G
+    cpus: 2
+    networks:
+      - relay-browser-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "/usr/local/bin/telclaude-browser-canary.py", "--health-once"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  relay-browser-net:
+    name: telclaude-relay-browser
+    driver: bridge
+    internal: true

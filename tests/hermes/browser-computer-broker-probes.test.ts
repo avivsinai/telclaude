@@ -53,6 +53,14 @@ describe("Hermes browser/computer broker probes", () => {
 					name: "egress.computer-covert-denied",
 					status: "fail",
 				}),
+				expect.objectContaining({
+					name: "egress.connect-validated-ip-pin",
+					status: "fail",
+				}),
+				expect.objectContaining({
+					name: "egress.connect-context-identity-required",
+					status: "fail",
+				}),
 			]),
 		);
 	});
@@ -183,7 +191,6 @@ describe("Hermes browser/computer broker probes", () => {
 			"harness did not run",
 		);
 	});
-
 });
 
 function completeNetworkEgressBrokerRunReport() {
@@ -205,6 +212,10 @@ function completeNetworkEgressBrokerRunReport() {
 		"webrtc",
 		"ip-literal",
 		"dns-rebinding",
+		"validated-ip-pin",
+		"no-tls-mitm",
+		"context-identity",
+		"byte-budget",
 		"localhost-callback",
 		"unquarantined-upload",
 		"browser-provider-bypass",
