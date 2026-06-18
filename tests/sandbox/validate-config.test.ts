@@ -135,6 +135,26 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(findings).toEqual([]);
 	});
 
+	it("ships Docker policy config with the reminder capability scopes", () => {
+		const example = fs.readFileSync(
+			path.resolve(process.cwd(), "docker/telclaude.json.example"),
+			"utf8",
+		);
+		const match = example.match(/"capabilityScopes":\s*\[([\s\S]*?)\]/);
+		expect(match).not.toBeNull();
+		const scopes = [...(match?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+
+		expect(scopes).toEqual([
+			"web.fetch",
+			"web.search",
+			"media.image",
+			"media.tts",
+			"skills.request",
+			"schedule.read",
+			"schedule.write",
+		]);
+	});
+
 	it("keeps the Hermes compose overlay raw-provider-secretless and contained", () => {
 		const composePath = path.resolve(process.cwd(), "docker/docker-compose.hermes.yml");
 		const compose = fs.readFileSync(composePath, "utf8");
@@ -464,6 +484,36 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(deployStep).toContain(
 			'docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480',
 		);
+	});
+
+	it("repairs William reminder capability scopes before deploy", () => {
+		const workflow = fs.readFileSync(
+			path.resolve(process.cwd(), ".github/workflows/ci.yml"),
+			"utf8",
+		);
+		const repairStep = workflowStep(workflow, "Ensure William reminder capability scopes");
+		const deployStep = workflowStep(workflow, "Build and deploy");
+
+		expect(repairStep).toContain("schedule.read");
+		expect(repairStep).toContain("schedule.write");
+		expect(repairStep).toContain("JSON.parse(raw)");
+		expect(repairStep).not.toContain("require.resolve");
+		expect(repairStep).not.toContain("JSON5");
+		expect(repairStep).toContain('repair_js="$(mktemp)"');
+		expect(repairStep).toContain('${label}_schedule_scope=');
+		expect(repairStep).toContain('node "$repair_js" "$HOME/telclaude/docker/telclaude.json" "host_policy"');
+		expect(repairStep).toContain('"live_policy"');
+		expect(repairStep).toContain("live_policy_schedule_scope=skip reason=container_not_running");
+		expect(repairStep).toContain(
+			'docker exec -i -u 0 -w /app telclaude node - "/data/telclaude.json" "live_policy" < "$repair_js"',
+		);
+		expect(repairStep).toContain("reason=no_explicit_capabilityScopes");
+		expect(repairStep).toContain("pre-schedule-scope");
+		expect(repairStep).toContain("fs.copyFileSync(configPath, backupPath");
+		expect(repairStep).toContain("fs.writeFileSync(configPath");
+		expect(repairStep).not.toContain("renameSync");
+		expect(repairStep).not.toContain("tmpPath");
+		expect(workflow.indexOf(repairStep)).toBeLessThan(workflow.indexOf(deployStep));
 	});
 
 	it("runs official Hermes verify-live runtime gates from the William deploy context", () => {
