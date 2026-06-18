@@ -152,6 +152,7 @@ TELCLAUDE_LOG_LEVEL=info
 			"skills.request",
 			"schedule.read",
 			"schedule.write",
+			"browse.use",
 		]);
 	});
 
