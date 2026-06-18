@@ -18,6 +18,7 @@ import {
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
+import type { BrowseRequest, BrowseResult } from "../../relay/browser-broker.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
@@ -59,6 +60,7 @@ import type {
 	TelclaudeMcpAuditNoteRequest,
 	TelclaudeMcpAuthorityStamp,
 	TelclaudeMcpBridgeDependencies,
+	TelclaudeMcpBrowseRequest,
 	TelclaudeMcpDomain,
 	TelclaudeMcpImageGenerateRequest,
 	TelclaudeMcpMemorySearchRequest,
@@ -123,6 +125,11 @@ export type TelclaudeLiveMcpAuditEntry = {
 	readonly payload: Record<string, unknown>;
 };
 
+/** The relay-owned browser broker surface tc_browse drives (read-only slice). */
+export type BrowseExecutor = {
+	browse(request: BrowseRequest): Promise<BrowseResult>;
+};
+
 export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly providerProxy?: ProviderProxy;
@@ -141,6 +148,12 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly webRateLimit?: FeatureRateLimitConfig;
 	/** Injectable HTTP boundary for the web-search provider (tests only). */
 	readonly webSearchFetch?: typeof fetch;
+	/**
+	 * Relay-owned browser broker backing tc_browse. Omitted until a live
+	 * tc-browser endpoint is wired — tc_browse then fails closed with a typed
+	 * not-configured error rather than silently succeeding.
+	 */
+	readonly browser?: BrowseExecutor;
 	/**
 	 * Resolves the schedule owner for an authority (schedule tools). Defaults to
 	 * a home-target-backed resolver that keys off the authority's subjectUserId.
@@ -236,6 +249,7 @@ export type TelclaudeMcpCapabilityClients = Pick<
 	TelclaudeMcpBridgeDependencies,
 	| "webFetch"
 	| "webSearch"
+	| "browse"
 	| "imageGenerate"
 	| "tts"
 	| "skillRequest"
@@ -257,6 +271,9 @@ export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcp
 		},
 		async webSearch() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_web_search");
+		},
+		async browse() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse");
 		},
 		async imageGenerate() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_image_generate");
@@ -599,6 +616,32 @@ export function createTelclaudeLiveMcpRelayClients(
 					includeRiskAssessment: true,
 				}),
 			};
+		},
+
+		async browse(request: TelclaudeMcpBrowseRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("web_browse", request.actorId, webRateLimit());
+			// Refuse secret-shaped URLs outbound (broker re-checks too), then fail
+			// closed if no live browser is wired before reserving the rate slot.
+			assertSafeWebEgress(request.url, "url");
+			if (!options.browser) {
+				throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse");
+			}
+			consumeRateLimit("web_browse", request.actorId);
+			const result = await options.browser.browse({
+				actor: request.actorId,
+				sessionRef: request.turnConversationRef ?? request.endpointId,
+				url: request.url,
+				...(request.maxChars !== undefined ? { maxChars: request.maxChars } : {}),
+				...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
+			});
+			await auditFromRequest(request, "web.browse", {
+				url: redactSecrets(request.url),
+				finalUrl: redactSecrets(result.finalUrl),
+				httpStatus: result.httpStatus,
+				truncated: result.truncated,
+			});
+			return result;
 		},
 
 		async imageGenerate(request: TelclaudeMcpImageGenerateRequest) {

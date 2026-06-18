@@ -28,6 +28,7 @@ describe("Telclaude MCP bridge foundation", () => {
 				"tc_schedule_create",
 				"tc_schedule_list",
 				"tc_schedule_cancel",
+				"tc_browse",
 			],
 			resources: [],
 			prompts: [],
@@ -445,6 +446,7 @@ describe("Telclaude MCP bridge foundation", () => {
 		const denials: Array<[keyof TelclaudeMcpBridge & `tc_${string}`, unknown, string]> = [
 			["tc_web_fetch", { url: "https://example.com" }, "web.fetch"],
 			["tc_web_search", { query: "telclaude" }, "web.search"],
+			["tc_browse", { url: "https://example.com" }, "browse.use"],
 			["tc_image_generate", { prompt: "an owl on a wire" }, "media.image"],
 			["tc_tts", { text: "hello" }, "media.tts"],
 			["tc_skill_request", { skillName: "weather", rationale: "forecast" }, "skills.request"],
@@ -457,6 +459,7 @@ describe("Telclaude MCP bridge foundation", () => {
 					...baseDependencies(),
 					webFetch: capture,
 					webSearch: capture,
+					browse: capture,
 					imageGenerate: capture,
 					tts: capture,
 					skillRequest: capture,
@@ -473,13 +476,21 @@ describe("Telclaude MCP bridge foundation", () => {
 		const calls: Record<string, unknown[]> = {
 			webFetch: [],
 			webSearch: [],
+			browse: [],
 			imageGenerate: [],
 			tts: [],
 			skillRequest: [],
 		};
 		const bridge = createTelclaudeMcpBridge(
 			baseAuthority({
-				capabilityScopes: ["web.fetch", "web.search", "media.image", "media.tts", "skills.request"],
+				capabilityScopes: [
+					"web.fetch",
+					"web.search",
+					"browse.use",
+					"media.image",
+					"media.tts",
+					"skills.request",
+				],
 			}),
 			{
 				...baseDependencies(),
@@ -490,6 +501,10 @@ describe("Telclaude MCP bridge foundation", () => {
 				webSearch: async (request) => {
 					calls.webSearch.push(request);
 					return { results: [] };
+				},
+				browse: async (request) => {
+					calls.browse.push(request);
+					return { content: "browsed" };
 				},
 				imageGenerate: async (request) => {
 					calls.imageGenerate.push(request);
@@ -510,6 +525,9 @@ describe("Telclaude MCP bridge foundation", () => {
 			text: "fetched",
 		});
 		await expect(bridge.tc_web_search({ query: "telclaude" })).resolves.toEqual({ results: [] });
+		await expect(bridge.tc_browse({ url: "https://example.com/read" })).resolves.toEqual({
+			content: "browsed",
+		});
 		await expect(
 			bridge.tc_image_generate({ prompt: "an owl on a wire", size: "1024x1024" }),
 		).resolves.toEqual({ attachmentRef: "att_img" });
@@ -533,6 +551,7 @@ describe("Telclaude MCP bridge foundation", () => {
 			{ ...stamp, url: "https://example.com/page", maxChars: 50_000 },
 		]);
 		expect(calls.webSearch).toEqual([{ ...stamp, query: "telclaude", count: 5 }]);
+		expect(calls.browse).toEqual([{ ...stamp, url: "https://example.com/read" }]);
 		expect(calls.imageGenerate).toEqual([
 			{ ...stamp, prompt: "an owl on a wire", size: "1024x1024" },
 		]);
@@ -645,6 +664,7 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		auditNote: async () => ({ stored: true }),
 		webFetch: async () => ({ text: "" }),
 		webSearch: async () => ({ results: [] }),
+		browse: async () => ({ content: "" }),
 		imageGenerate: async () => ({ attachmentRef: "att_img" }),
 		tts: async () => ({ attachmentRef: "att_audio" }),
 		skillRequest: async () => ({ requestId: "skill_req_1" }),

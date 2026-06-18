@@ -123,6 +123,12 @@ export type TelclaudeMcpWebSearchRequest = TelclaudeMcpAuthorityStamp & {
 	count: number;
 };
 
+export type TelclaudeMcpBrowseRequest = TelclaudeMcpAuthorityStamp & {
+	url: string;
+	maxChars?: number;
+	timeoutMs?: number;
+};
+
 export type TelclaudeMcpImageGenerateRequest = TelclaudeMcpAuthorityStamp & {
 	prompt: string;
 	size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto";
@@ -172,6 +178,7 @@ export type TelclaudeMcpBridgeDependencies = {
 	auditNote(request: TelclaudeMcpAuditNoteRequest): Promise<unknown>;
 	webFetch(request: TelclaudeMcpWebFetchRequest): Promise<unknown>;
 	webSearch(request: TelclaudeMcpWebSearchRequest): Promise<unknown>;
+	browse(request: TelclaudeMcpBrowseRequest): Promise<unknown>;
 	imageGenerate(request: TelclaudeMcpImageGenerateRequest): Promise<unknown>;
 	tts(request: TelclaudeMcpTtsRequest): Promise<unknown>;
 	skillRequest(request: TelclaudeMcpSkillRequestRequest): Promise<unknown>;
@@ -193,6 +200,7 @@ export type TelclaudeMcpBridge = {
 	tc_audit_note(input: unknown): Promise<unknown>;
 	tc_web_fetch(input: unknown): Promise<unknown>;
 	tc_web_search(input: unknown): Promise<unknown>;
+	tc_browse(input: unknown): Promise<unknown>;
 	tc_image_generate(input: unknown): Promise<unknown>;
 	tc_tts(input: unknown): Promise<unknown>;
 	tc_skill_request(input: unknown): Promise<unknown>;
@@ -311,6 +319,14 @@ const WebSearchInputSchema = z
 	.object({
 		query: NonEmptyString.max(512),
 		count: z.number().int().min(1).max(10).default(5),
+	})
+	.strip();
+
+const BrowseInputSchema = z
+	.object({
+		url: z.url({ protocol: /^https?$/ }).max(2048),
+		maxChars: z.number().int().min(1).max(200_000).optional(),
+		timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
 	})
 	.strip();
 
@@ -569,6 +585,18 @@ export function createTelclaudeMcpBridge(
 				...stamp,
 				query: parsed.query,
 				count: parsed.count,
+			});
+		},
+
+		async tc_browse(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(normalizedAuthority, TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_browse);
+			const parsed = BrowseInputSchema.parse(input);
+			return dependencies.browse({
+				...stamp,
+				url: parsed.url,
+				...(parsed.maxChars !== undefined ? { maxChars: parsed.maxChars } : {}),
+				...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
 			});
 		},
 

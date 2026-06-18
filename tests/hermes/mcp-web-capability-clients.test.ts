@@ -6,10 +6,12 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	TelclaudeMcpAuthorityStamp,
+	TelclaudeMcpBrowseRequest,
 	TelclaudeMcpWebFetchRequest,
 	TelclaudeMcpWebSearchRequest,
 } from "../../src/hermes/mcp/bridge.js";
 import {
+	type BrowseExecutor,
 	createTelclaudeLiveMcpRelayClients,
 	type TelclaudeLiveMcpAuditEntry,
 } from "../../src/hermes/mcp/live-relay-clients.js";
@@ -412,6 +414,83 @@ describe("Telclaude live MCP web capability clients", () => {
 			}),
 		]);
 	});
+
+	it("browses through the configured broker, maps authority, and audits web.browse", async () => {
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const browseCalls: unknown[] = [];
+		const broker: BrowseExecutor = {
+			browse: async (request) => {
+				browseCalls.push(request);
+				return {
+					url: request.url,
+					finalUrl: `${request.url}?r=1`,
+					httpStatus: 200,
+					title: "Example",
+					content: "[BROWSED WEB PAGE (TC_BROWSE) - UNTRUSTED]\nhello",
+					truncated: false,
+				};
+			},
+		};
+		const clients = makeClients({ auditEntries, browser: broker });
+
+		const result = (await clients.browse(
+			browse({ url: "https://example.org/read", maxChars: 1_000 }),
+		)) as { content: string; finalUrl: string };
+
+		expect(result.content).toContain("UNTRUSTED");
+		expect(result.finalUrl).toBe("https://example.org/read?r=1");
+		// The broker is driven with the relay-stamped actor and a server-derived
+		// sessionRef — the runtime never names either.
+		expect(browseCalls).toEqual([
+			{
+				actor: "operator",
+				sessionRef: "endpoint-private",
+				url: "https://example.org/read",
+				maxChars: 1_000,
+			},
+		]);
+		expect(auditEntries).toEqual([
+			expect.objectContaining({
+				actorId: "operator",
+				kind: "web.browse",
+				payload: expect.objectContaining({
+					url: "https://example.org/read",
+					httpStatus: 200,
+					truncated: false,
+				}),
+			}),
+		]);
+	});
+
+	it("fails closed when no browser broker is configured", async () => {
+		const clients = makeClients();
+		await expect(clients.browse(browse({ url: "https://example.org/read" }))).rejects.toMatchObject({
+			code: "mcp_tool_not_configured",
+		});
+	});
+
+	it("refuses a secret-shaped browse URL before reaching the broker", async () => {
+		const browseCalls: unknown[] = [];
+		const broker: BrowseExecutor = {
+			browse: async (request) => {
+				browseCalls.push(request);
+				return {
+					url: request.url,
+					finalUrl: request.url,
+					httpStatus: 200,
+					title: "",
+					content: "",
+					truncated: false,
+				};
+			},
+		};
+		const clients = makeClients({ browser: broker });
+
+		await expect(
+			clients.browse(browse({ url: `https://example.org/?token=${FAKE_AWS_KEY}` })),
+		).rejects.toMatchObject({ code: "mcp_outbound_secret_blocked" });
+		expect(browseCalls).toEqual([]);
+	});
 });
 
 function makeClients(
@@ -419,6 +498,7 @@ function makeClients(
 		auditEntries?: TelclaudeLiveMcpAuditEntry[];
 		webRateLimit?: { maxPerHourPerUser: number; maxPerDayPerUser: number };
 		webSearchFetch?: typeof fetch;
+		browser?: BrowseExecutor;
 	} = {},
 ) {
 	return createTelclaudeLiveMcpRelayClients({
@@ -438,7 +518,16 @@ function makeClients(
 			: {}),
 		...(options.webRateLimit ? { webRateLimit: options.webRateLimit } : {}),
 		...(options.webSearchFetch ? { webSearchFetch: options.webSearchFetch } : {}),
+		...(options.browser ? { browser: options.browser } : {}),
 	});
+}
+
+function browse(overrides: Partial<TelclaudeMcpBrowseRequest> = {}): TelclaudeMcpBrowseRequest {
+	return {
+		...privateStamp(),
+		url: `${hostBaseUrl}/page`,
+		...overrides,
+	};
 }
 
 function braveFetch(): typeof fetch {

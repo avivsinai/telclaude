@@ -21,6 +21,7 @@ export type MultimediaFeature =
 	| "token_refresh"
 	| "web_fetch"
 	| "web_search"
+	| "web_browse"
 	| "skill_request"
 	| `${string}_post`
 	| `${string}_reply`
