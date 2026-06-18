@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-
-import { BROWSER_CONTEXT_PROXY_BASIC_USERNAME } from "../../src/relay/browser-connect-contract.js";
 import {
 	type BrowseRequest,
 	BrowserBroker,
@@ -10,7 +8,9 @@ import {
 	type BrowserDriverContext,
 	type BrowserDriverPage,
 	type BrowserProxyOptions,
+	resolveBrowserBrokerConfig,
 } from "../../src/relay/browser-broker.js";
+import { BROWSER_CONTEXT_PROXY_BASIC_USERNAME } from "../../src/relay/browser-connect-contract.js";
 import { createBrowserConnectContextVerifier } from "../../src/relay/browser-context-token.js";
 
 const SECRET = "browser-broker-hmac-secret";
@@ -176,9 +176,9 @@ describe("BrowserBroker — read-only browse", () => {
 		const { driver, calls } = fakeDriver();
 		const broker = new BrowserBroker(driver, CONFIG);
 
-		await expect(
-			broker.browse({ ...REQUEST, url: "file:///etc/passwd" }),
-		).rejects.toMatchObject({ code: "browse_url_scheme_denied" });
+		await expect(broker.browse({ ...REQUEST, url: "file:///etc/passwd" })).rejects.toMatchObject({
+			code: "browse_url_scheme_denied",
+		});
 		expect(calls.connectEndpoints).toEqual([]);
 	});
 
@@ -198,5 +198,32 @@ describe("BrowserBroker — read-only browse", () => {
 		expect(calls.pageClosed).toBe(1);
 		expect(calls.contextClosed).toBe(1);
 		expect(calls.connectionClosed).toBe(1);
+	});
+});
+
+describe("resolveBrowserBrokerConfig", () => {
+	const fullEnv = {
+		TELCLAUDE_BROWSER_WS_ENDPOINT: "ws://tc-browser:3006/playwright",
+		TELCLAUDE_BROWSER_CONNECT_PROXY_URL: "http://telclaude:8794",
+		TELCLAUDE_BROWSER_PEER_ADDRESS: "172.30.94.11",
+		TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET: "secret",
+	};
+
+	it("returns the config when all browser overlay env vars are present", () => {
+		expect(resolveBrowserBrokerConfig(fullEnv)).toEqual({
+			browserWsEndpoint: "ws://tc-browser:3006/playwright",
+			connectProxyUrl: "http://telclaude:8794",
+			tcBrowserPeerAddress: "172.30.94.11",
+			contextTokenSecret: "secret",
+		});
+	});
+
+	it("returns null (browser off → tc_browse fails closed) when any var is missing or blank", () => {
+		expect(resolveBrowserBrokerConfig({})).toBeNull();
+		for (const key of Object.keys(fullEnv)) {
+			expect(resolveBrowserBrokerConfig({ ...fullEnv, [key]: "" })).toBeNull();
+			const { [key]: _omitted, ...partial } = fullEnv;
+			expect(resolveBrowserBrokerConfig(partial)).toBeNull();
+		}
 	});
 });

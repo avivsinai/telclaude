@@ -248,3 +248,69 @@ async function safeClose(close: () => Promise<void>): Promise<void> {
 		// remote BrowserServer reaps orphaned contexts/pages on disconnect.
 	}
 }
+
+const PLAYWRIGHT_CONNECT_TIMEOUT_MS = 30_000;
+
+/**
+ * Production `BrowserDriver` over `playwright-core`'s `firefox.connect()`. It
+ * connects to the contained tc-browser Camoufox BrowserServer (a remote
+ * Playwright server) and maps the narrow seam the broker owns onto Playwright.
+ * playwright-core is imported dynamically so the heavy dependency loads only
+ * when the browser feature is actually wired, and the relay starts fine without
+ * a browser configured. Node `playwright-core` and the image's Python Playwright
+ * must match major/minor (both pinned ~1.59) — the connect protocol is
+ * version-coupled.
+ */
+export function createPlaywrightBrowserDriver(): BrowserDriver {
+	return {
+		async connect(wsEndpoint) {
+			const { firefox } = await import("playwright-core");
+			const browser = await firefox.connect(wsEndpoint, {
+				timeout: PLAYWRIGHT_CONNECT_TIMEOUT_MS,
+			});
+			return {
+				async newContext({ proxy }) {
+					const context = await browser.newContext({ proxy });
+					return {
+						async newPage() {
+							const page = await context.newPage();
+							return {
+								async goto(url, { timeoutMs }) {
+									const response = await page.goto(url, {
+										timeout: timeoutMs,
+										waitUntil: "domcontentloaded",
+									});
+									return { finalUrl: page.url(), status: response ? response.status() : null };
+								},
+								title: () => page.title(),
+								innerText: () => page.innerText("body"),
+								close: () => page.close(),
+							};
+						},
+						close: () => context.close(),
+					};
+				},
+				close: () => browser.close(),
+			};
+		},
+	};
+}
+
+/**
+ * Resolve the broker config from the relay environment (set by the browser
+ * overlay compose). Returns null when any required value is missing — the
+ * browser feature is then off and tc_browse fails closed
+ * (`mcp_tool_not_configured`) rather than half-configured.
+ */
+export function resolveBrowserBrokerConfig(
+	env: NodeJS.ProcessEnv = process.env,
+): BrowserBrokerConfig | null {
+	const browserWsEndpoint = env.TELCLAUDE_BROWSER_WS_ENDPOINT?.trim();
+	const connectProxyUrl = env.TELCLAUDE_BROWSER_CONNECT_PROXY_URL?.trim();
+	const tcBrowserPeerAddress = env.TELCLAUDE_BROWSER_PEER_ADDRESS?.trim();
+	const contextTokenSecret = env.TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET?.trim();
+	if (!browserWsEndpoint || !connectProxyUrl || !tcBrowserPeerAddress || !contextTokenSecret) {
+		return null;
+	}
+	return { browserWsEndpoint, connectProxyUrl, tcBrowserPeerAddress, contextTokenSecret };
+}

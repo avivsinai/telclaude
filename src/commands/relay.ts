@@ -47,6 +47,11 @@ import {
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
 import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
+import {
+	BrowserBroker,
+	createPlaywrightBrowserDriver,
+	resolveBrowserBrokerConfig,
+} from "../relay/browser-broker.js";
 import { startBrowserConnectProxy } from "../relay/browser-connect-proxy.js";
 import { resolveBrowserConnectProxyStartup } from "../relay/browser-context-token.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
@@ -290,6 +295,16 @@ export function registerRelayCommand(program: Command): void {
 					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval ?? denyRelayLiveMcpApproval,
 				});
 				const liveMcpEdgeRuntime = new TelclaudeEdgeRuntime();
+				// tc_browse broker: live only when the browser overlay env is set
+				// (TELCLAUDE_BROWSER_WS_ENDPOINT/_CONNECT_PROXY_URL/_PEER_ADDRESS/
+				// _CONTEXT_TOKEN_SECRET). Otherwise omitted → tc_browse fails closed.
+				const liveMcpBrowserBrokerConfig = resolveBrowserBrokerConfig();
+				const liveMcpBrowserBroker = liveMcpBrowserBrokerConfig
+					? new BrowserBroker(createPlaywrightBrowserDriver(), liveMcpBrowserBrokerConfig)
+					: undefined;
+				if (liveMcpBrowserBroker) {
+					console.log("  tc_browse: enabled (contained browser broker wired)");
+				}
 				const liveMcpAttachmentQuarantineStore = createAttachmentQuarantineStore();
 				const liveMcpAttachmentQuarantineCleanup = setInterval(() => {
 					const removed = liveMcpAttachmentQuarantineStore.cleanupExpired();
@@ -403,6 +418,7 @@ export function registerRelayCommand(program: Command): void {
 							ledger,
 							conversationStore: liveMcpConversationStore,
 							edgeRuntime: liveMcpEdgeRuntime,
+							browser: liveMcpBrowserBroker,
 							resolveOutboundMediaRefs: createStoredAttachmentOutboundMediaResolver({
 								edgeRuntime: liveMcpEdgeRuntime,
 								quarantineStore: liveMcpAttachmentQuarantineStore,
