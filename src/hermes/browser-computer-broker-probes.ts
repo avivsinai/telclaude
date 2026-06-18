@@ -62,6 +62,10 @@ const NetworkEgressAttemptKindSchema = z.enum([
 	"webrtc",
 	"ip-literal",
 	"dns-rebinding",
+	"validated-ip-pin",
+	"no-tls-mitm",
+	"context-identity",
+	"byte-budget",
 	"localhost-callback",
 	"unquarantined-upload",
 	"browser-provider-bypass",
@@ -201,6 +205,10 @@ const NETWORK_EGRESS_DENIAL_TARGETS = [
 	{ kind: "webrtc", target: "webrtc://peer/exfil" },
 	{ kind: "ip-literal", target: "https://203.0.113.99/upload" },
 	{ kind: "dns-rebinding", target: "https://rebind.example.invalid" },
+	{ kind: "validated-ip-pin", target: "CONNECT rebind.example.invalid:443" },
+	{ kind: "no-tls-mitm", target: "CONNECT example.org:443 without relay CA" },
+	{ kind: "context-identity", target: "CONNECT example.org:443 without context token" },
+	{ kind: "byte-budget", target: "CONNECT example.org:443 oversized client upload" },
 	{ kind: "localhost-callback", target: "http://127.0.0.1:33221/callback" },
 	{ kind: "unquarantined-upload", target: "https://example.org/upload/raw-local-path" },
 	{ kind: "browser-provider-bypass", target: "https://clalit.example.invalid/session" },
@@ -251,6 +259,27 @@ const NETWORK_EGRESS_CHECK_REQUIREMENTS = [
 			"IP literal, DNS rebinding, and localhost callback egress were denied by live broker evidence",
 	},
 	{
+		name: "egress.connect-validated-ip-pin",
+		kinds: ["validated-ip-pin"],
+		detail: "CONNECT proxy dialed only the validated IP and denied rebind attempts",
+	},
+	{
+		name: "egress.connect-no-tls-mitm",
+		kinds: ["no-tls-mitm"],
+		detail:
+			"CONNECT proxy preserved no-MITM posture with no relay CA or TLS termination dependency",
+	},
+	{
+		name: "egress.connect-context-identity-required",
+		kinds: ["context-identity"],
+		detail: "CONNECT proxy denied browser tunnels without relay-issued context identity",
+	},
+	{
+		name: "egress.connect-byte-budget-enforced",
+		kinds: ["byte-budget"],
+		detail: "CONNECT proxy enforced client-to-upstream byte budget",
+	},
+	{
 		name: "egress.upload-without-quarantine-denied",
 		kinds: ["unquarantined-upload"],
 		detail: "Upload-without-quarantine egress was denied by live broker evidence",
@@ -299,6 +328,10 @@ const BROWSER_COMPUTER_REQUIRED_CHECKS: Record<BrowserComputerBrokerSurfaceId, r
 			"egress.dns-doh-dot-denied",
 			"egress.proxy-tunnel-webrtc-websocket-denied",
 			"egress.ip-literal-localhost-callback-denied",
+			"egress.connect-validated-ip-pin",
+			"egress.connect-no-tls-mitm",
+			"egress.connect-context-identity-required",
+			"egress.connect-byte-budget-enforced",
 			"egress.upload-without-quarantine-denied",
 			"egress.browser-provider-bypass-denied",
 			"egress.computer-covert-denied",
@@ -814,6 +847,30 @@ function networkEgressProbe(
 	);
 	pushCheck(
 		checks,
+		"egress.connect-validated-ip-pin",
+		false,
+		"CONNECT validated-IP pinning requires live machine-observed egress evidence",
+	);
+	pushCheck(
+		checks,
+		"egress.connect-no-tls-mitm",
+		false,
+		"CONNECT no-MITM posture requires live machine-observed egress evidence",
+	);
+	pushCheck(
+		checks,
+		"egress.connect-context-identity-required",
+		false,
+		"CONNECT context identity denial requires live machine-observed egress evidence",
+	);
+	pushCheck(
+		checks,
+		"egress.connect-byte-budget-enforced",
+		false,
+		"CONNECT byte-budget denial requires live machine-observed egress evidence",
+	);
+	pushCheck(
+		checks,
 		"egress.upload-without-quarantine-denied",
 		false,
 		"Upload-without-quarantine denial requires live machine-observed egress evidence",
@@ -839,7 +896,16 @@ function networkEgressProbe(
 		),
 		egressCovertDenialHash: hashJson(
 			requiredDenialTargets.filter((denial) =>
-				["connect-proxy", "websocket", "webrtc", "computer-covert-egress"].includes(denial.kind),
+				[
+					"connect-proxy",
+					"websocket",
+					"webrtc",
+					"validated-ip-pin",
+					"no-tls-mitm",
+					"context-identity",
+					"byte-budget",
+					"computer-covert-egress",
+				].includes(denial.kind),
 			),
 		),
 		auditEntryCount: 1,

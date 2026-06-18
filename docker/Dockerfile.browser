@@ -1,0 +1,64 @@
+# Telclaude browser trust-domain image.
+#
+# This image is intentionally separate from the Hermes runtime image. It carries
+# Camoufox and browser runtime dependencies, but no relay/provider/vault secrets.
+
+FROM python:3.12-slim-bookworm
+
+ARG CAMOUFOX_VERSION=0.4.11
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/camoufox
+ENV HOME=/home/browser
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcairo2 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libglib2.0-0 \
+    libgtk-3-0 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libxrender1 \
+    libxtst6 \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --system --create-home --home-dir /home/browser --uid 10001 browser \
+    && mkdir -p /opt/camoufox \
+    && chown -R browser:browser /opt/camoufox /home/browser
+
+USER browser
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir "camoufox[geoip]==${CAMOUFOX_VERSION}" \
+    && python -m camoufox fetch
+
+USER root
+COPY --chown=browser:browser docker/browser-canary.py /usr/local/bin/telclaude-browser-canary.py
+RUN chmod 0555 /usr/local/bin/telclaude-browser-canary.py
+
+USER browser
+WORKDIR /home/browser
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD ["python", "/usr/local/bin/telclaude-browser-canary.py", "--health-once"]
+
+CMD ["python", "/usr/local/bin/telclaude-browser-canary.py", "--serve-health"]

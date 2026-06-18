@@ -47,6 +47,7 @@ import {
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
 import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
+import { startBrowserConnectProxy } from "../relay/browser-connect-proxy.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
@@ -246,6 +247,14 @@ export function registerRelayCommand(program: Command): void {
 
 					startGitProxyServer();
 					console.log("  Git proxy: enabled (transparent auth injection)");
+
+					if (process.env.TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED === "1") {
+						const browserConnectProxy = startBrowserConnectProxy();
+						schedulerHandles.push(browserConnectProxy);
+						console.log("  Browser CONNECT proxy: enabled (no TLS MITM)");
+					} else {
+						console.log("  Browser CONNECT proxy: disabled");
+					}
 
 					if (vaultAvailable) {
 						startHttpCredentialProxy({ vaultSocketPath });
