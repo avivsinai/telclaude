@@ -1,0 +1,250 @@
+/**
+ * Relay-owned browser broker (read-only slice).
+ *
+ * The contained runtime never drives a browser directly. It asks the relay,
+ * through the served-MCP `tc_browse` tool, to fetch a page; this broker is what
+ * the relay runs. It connects to the hardened `tc-browser` Camoufox
+ * BrowserServer, opens a fresh cookie-less context whose egress is pinned to the
+ * relay-owned CONNECT proxy with a per-context token, navigates, reads the page
+ * text, and discards the context. All security-relevant decisions (egress
+ * preflight, per-context identity, ephemeral storage, output redaction +
+ * untrusted-content wrapping) stay relay-side; the browser is dumb compute.
+ *
+ * This slice is read-only: cookie-less contexts only, no persistent logins, no
+ * writes, no screenshots. Cookie hydration (M2), persistent sessions, and the
+ * write-confirm binding land in later slices. The broker depends on a narrow
+ * `BrowserDriver` interface it owns rather than on Playwright directly, so the
+ * security logic is unit-testable without a live browser; the production driver
+ * (a thin Playwright/Camoufox adapter) is wired where the live endpoint lands.
+ */
+
+import crypto from "node:crypto";
+
+import { wrapExternalContent } from "../security/external-content.js";
+import { redactSecrets } from "../security/output-filter.js";
+import { assertSafeWebEgress } from "../security/web-egress-preflight.js";
+import { BROWSER_CONTEXT_PROXY_BASIC_USERNAME } from "./browser-connect-contract.js";
+import { mintBrowserContextToken } from "./browser-context-token.js";
+
+const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
+const MIN_NAVIGATION_TIMEOUT_MS = 1_000;
+const MAX_NAVIGATION_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_CHARS = 20_000;
+const MAX_MAX_CHARS = 200_000;
+
+/** Proxy credentials a context presents to the relay CONNECT proxy. */
+export interface BrowserProxyOptions {
+	readonly server: string;
+	readonly username: string;
+	readonly password: string;
+}
+
+export interface BrowserNavigation {
+	readonly finalUrl: string;
+	readonly status: number | null;
+}
+
+export interface BrowserDriverPage {
+	goto(url: string, options: { readonly timeoutMs: number }): Promise<BrowserNavigation>;
+	title(): Promise<string>;
+	/** Visible text of the document body. */
+	innerText(): Promise<string>;
+	close(): Promise<void>;
+}
+
+export interface BrowserDriverContext {
+	newPage(): Promise<BrowserDriverPage>;
+	close(): Promise<void>;
+}
+
+export interface BrowserDriverConnection {
+	newContext(options: { readonly proxy: BrowserProxyOptions }): Promise<BrowserDriverContext>;
+	close(): Promise<void>;
+}
+
+/**
+ * The single seam between the broker and Playwright/Camoufox. A production
+ * driver connects `playwright-core`'s `firefox.connect(wsEndpoint)`; tests
+ * inject a fake. The broker owns this interface so it never imports Playwright.
+ */
+export interface BrowserDriver {
+	connect(wsEndpoint: string): Promise<BrowserDriverConnection>;
+}
+
+export interface BrowserBrokerConfig {
+	/** WS endpoint of the tc-browser Camoufox BrowserServer. */
+	readonly browserWsEndpoint: string;
+	/** CONNECT proxy URL as reachable *from tc-browser* (e.g. http://telclaude:8794). */
+	readonly connectProxyUrl: string;
+	/** tc-browser's address as the relay CONNECT proxy observes it; the per-context token binds to it. */
+	readonly tcBrowserPeerAddress: string;
+	/** HMAC secret for minting per-context tokens (relay-only). */
+	readonly contextTokenSecret: string;
+	readonly navigationTimeoutMs?: number;
+	readonly maxChars?: number;
+	readonly tokenTtlMs?: number;
+}
+
+export interface BrowseRequest {
+	/** Server-resolved actor identity (the runtime never names its own). */
+	readonly actor: string;
+	/** Server-resolved session reference for this browse. */
+	readonly sessionRef: string;
+	readonly url: string;
+	readonly maxChars?: number;
+	readonly timeoutMs?: number;
+}
+
+export interface BrowseResult {
+	readonly url: string;
+	readonly finalUrl: string;
+	readonly httpStatus: number | null;
+	readonly title: string;
+	/** Redacted, untrusted-content-wrapped page text. */
+	readonly content: string;
+	readonly truncated: boolean;
+}
+
+export class BrowserBrokerError extends Error {
+	readonly code: string;
+
+	constructor(code: string, message: string) {
+		super(message);
+		this.code = code;
+		this.name = "BrowserBrokerError";
+	}
+}
+
+export class BrowserBroker {
+	private readonly driver: BrowserDriver;
+	private readonly config: BrowserBrokerConfig;
+	private readonly now: () => Date;
+
+	constructor(
+		driver: BrowserDriver,
+		config: BrowserBrokerConfig,
+		options: { readonly now?: () => Date } = {},
+	) {
+		this.driver = driver;
+		this.config = config;
+		this.now = options.now ?? (() => new Date());
+	}
+
+	async browse(request: BrowseRequest): Promise<BrowseResult> {
+		const url = normalizeBrowseUrl(request.url);
+		// M5: fail closed before any browser work if the URL itself carries
+		// secret-shaped or private-data material outbound.
+		assertSafeWebEgress(url, "url");
+
+		const actor = request.actor.trim();
+		const sessionRef = request.sessionRef.trim();
+		if (!actor || !sessionRef) {
+			throw new BrowserBrokerError(
+				"browse_identity_missing",
+				"browse requires actor and sessionRef",
+			);
+		}
+
+		const maxChars = clampMaxChars(request.maxChars ?? this.config.maxChars ?? DEFAULT_MAX_CHARS);
+		const timeoutMs = clampTimeout(
+			request.timeoutMs ?? this.config.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS,
+		);
+
+		// Read-only slice: cookie-less context, no origin scope. The proxy lets a
+		// cookie-less context reach any public host; the relay CONNECT proxy still
+		// blocks private/metadata/provider/model targets at the network layer.
+		const token = mintBrowserContextToken({
+			secret: this.config.contextTokenSecret,
+			peerAddress: this.config.tcBrowserPeerAddress,
+			contextId: `browse-${crypto.randomUUID()}`,
+			sessionRef,
+			actor,
+			cookieBearing: false,
+			now: this.now(),
+			...(this.config.tokenTtlMs !== undefined ? { ttlMs: this.config.tokenTtlMs } : {}),
+		});
+
+		const connection = await this.driver.connect(this.config.browserWsEndpoint);
+		try {
+			const context = await connection.newContext({
+				proxy: {
+					server: this.config.connectProxyUrl,
+					username: BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
+					password: token,
+				},
+			});
+			try {
+				const page = await context.newPage();
+				try {
+					const navigation = await page.goto(url, { timeoutMs });
+					const title = await page.title();
+					const rawText = await page.innerText();
+					const truncated = rawText.length > maxChars;
+					const content = wrapExternalContent(redactSecrets(rawText.slice(0, maxChars)), {
+						source: "web-browse",
+						serviceId: "tc_browse",
+						includeRiskAssessment: true,
+						maxLength: maxChars,
+					});
+					return {
+						url,
+						finalUrl: navigation.finalUrl || url,
+						httpStatus: navigation.status,
+						title: redactSecrets(title),
+						content,
+						truncated,
+					};
+				} finally {
+					await safeClose(() => page.close());
+				}
+			} finally {
+				// M6: discard the context (and all of its web storage) every browse.
+				await safeClose(() => context.close());
+			}
+		} finally {
+			await safeClose(() => connection.close());
+		}
+	}
+}
+
+function normalizeBrowseUrl(rawUrl: string): string {
+	const trimmed = rawUrl.trim();
+	if (!trimmed) {
+		throw new BrowserBrokerError("browse_url_invalid", "browse url is required");
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(trimmed);
+	} catch {
+		throw new BrowserBrokerError("browse_url_invalid", "browse url is not a valid URL");
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		throw new BrowserBrokerError(
+			"browse_url_scheme_denied",
+			`browse url scheme not allowed: ${parsed.protocol}`,
+		);
+	}
+	return parsed.toString();
+}
+
+function clampMaxChars(value: number): number {
+	if (!Number.isFinite(value) || value <= 0) return DEFAULT_MAX_CHARS;
+	return Math.min(Math.floor(value), MAX_MAX_CHARS);
+}
+
+function clampTimeout(value: number): number {
+	if (!Number.isFinite(value)) return DEFAULT_NAVIGATION_TIMEOUT_MS;
+	return Math.min(
+		Math.max(Math.floor(value), MIN_NAVIGATION_TIMEOUT_MS),
+		MAX_NAVIGATION_TIMEOUT_MS,
+	);
+}
+
+async function safeClose(close: () => Promise<void>): Promise<void> {
+	try {
+		await close();
+	} catch {
+		// Teardown failures must not mask the browse result or leak details; the
+		// remote BrowserServer reaps orphaned contexts/pages on disconnect.
+	}
+}

@@ -185,6 +185,33 @@ export function createBrowserConnectContextVerifier(options: {
 	};
 }
 
+/**
+ * Pure decision for whether the relay should start the browser CONNECT proxy.
+ *
+ * Fail-closed: when the proxy is enabled but the HMAC signing secret is missing
+ * or blank, the proxy must NOT start — a CONNECT proxy that cannot verify
+ * per-context identity (and could, with `REQUIRE_CONTEXT=0`, allow anonymous
+ * tunnels) is worse than no proxy. The verifier is only constructed on the
+ * `start` path, so a missing secret never yields a half-configured proxy.
+ */
+export type BrowserConnectProxyStartupDecision =
+	| { readonly action: "disabled" }
+	| { readonly action: "fail-closed"; readonly reason: string }
+	| { readonly action: "start"; readonly contextVerifier: BrowserConnectContextVerifier };
+
+export function resolveBrowserConnectProxyStartup(
+	env: NodeJS.ProcessEnv = process.env,
+): BrowserConnectProxyStartupDecision {
+	if (env.TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED !== "1") {
+		return { action: "disabled" };
+	}
+	const secret = env[BROWSER_CONTEXT_TOKEN_SECRET_ENV]?.trim();
+	if (!secret) {
+		return { action: "fail-closed", reason: `${BROWSER_CONTEXT_TOKEN_SECRET_ENV} is not set` };
+	}
+	return { action: "start", contextVerifier: createBrowserConnectContextVerifier({ secret }) };
+}
+
 function isValidPayload(
 	payload: Partial<BrowserContextTokenPayload>,
 ): payload is BrowserContextTokenPayload {

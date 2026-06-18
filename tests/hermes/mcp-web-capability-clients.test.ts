@@ -245,7 +245,7 @@ describe("Telclaude live MCP web capability clients", () => {
 			.catch((error: unknown) => error);
 
 		expect(err).toMatchObject({
-			name: "TelclaudeLiveMcpOutboundSecretError",
+			name: "WebEgressSecretError",
 			code: "mcp_outbound_secret_blocked",
 		});
 		// The preflight fires before fetchWebContent, so nothing is audited and the
@@ -268,7 +268,7 @@ describe("Telclaude live MCP web capability clients", () => {
 			.catch((error: unknown) => error);
 
 		expect(err).toMatchObject({
-			name: "TelclaudeLiveMcpOutboundSecretError",
+			name: "WebEgressSecretError",
 			code: "mcp_outbound_secret_blocked",
 		});
 		expect(webSearchFetch).not.toHaveBeenCalled();
@@ -307,7 +307,7 @@ describe("Telclaude live MCP web capability clients", () => {
 			.catch((error: unknown) => error);
 
 		expect(err).toMatchObject({
-			name: "TelclaudeLiveMcpOutboundPrivateDataError",
+			name: "WebEgressPrivateDataError",
 			code: "mcp_outbound_private_data_blocked",
 		});
 		expect(webSearchFetch).not.toHaveBeenCalled();
@@ -329,7 +329,7 @@ describe("Telclaude live MCP web capability clients", () => {
 			.catch((error: unknown) => error);
 
 		expect(err).toMatchObject({
-			name: "TelclaudeLiveMcpOutboundPrivateDataError",
+			name: "WebEgressPrivateDataError",
 			code: "mcp_outbound_private_data_blocked",
 		});
 		expect(webSearchFetch).not.toHaveBeenCalled();

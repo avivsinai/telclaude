@@ -54,6 +54,17 @@ export type BrowserConnectContextVerifier = (
 ) => BrowserConnectContextVerification | Promise<BrowserConnectContextVerification>;
 
 /**
+ * Sentinel proxy username the broker sets on a browser context's proxy
+ * credentials. Firefox/Camoufox under Playwright cannot set a Bearer or a
+ * custom CONNECT header, so the per-context token rides the proxy *password*
+ * field and reaches the proxy as `Proxy-Authorization: Basic b64(user:pass)`.
+ * The username is this fixed marker so the proxy can distinguish a relay-minted
+ * browser-context credential from any other Basic auth and pull the token from
+ * the password component. The username is not a secret — the HMAC token is.
+ */
+export const BROWSER_CONTEXT_PROXY_BASIC_USERNAME = "tc-browser-context";
+
+/**
  * Normalize a single origin-scope entry to a bare hostname.
  *
  * Accepts either a URL (`https://accounts.google.com/...`) or a bare host

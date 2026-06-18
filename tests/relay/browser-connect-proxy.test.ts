@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { hostMatchesBrowserOriginScope } from "../../src/relay/browser-connect-contract.js";
+import {
+	BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
+	hostMatchesBrowserOriginScope,
+} from "../../src/relay/browser-connect-contract.js";
 import {
 	addBrowserConnectClientBytes,
 	normalizeIpForBlocking,
@@ -179,6 +182,46 @@ describe("browser CONNECT proxy context policy", () => {
 			reason: "cookie-bearing browser context cannot egress outside hydrated origin scope",
 		});
 		expect(hostMatchesBrowserOriginScope("accounts.google.com", ["google.com"])).toBe(true);
+	});
+
+	it("accepts the per-context token from Proxy-Authorization: Basic with the sentinel username", async () => {
+		const config = readBrowserConnectProxyConfigFromEnv({
+			requireContextIdentity: true,
+			contextVerifier: ({ token }) => ({ allowed: true, context: { contextId: token } }),
+		});
+		const basic = Buffer.from(`${BROWSER_CONTEXT_PROXY_BASIC_USERNAME}:ctx-basic`, "utf8").toString(
+			"base64",
+		);
+
+		await expect(
+			validateBrowserConnectContext(
+				{ "proxy-authorization": `Basic ${basic}` },
+				target,
+				"198.51.100.11",
+				config,
+			),
+		).resolves.toMatchObject({ allowed: true, context: { contextId: "ctx-basic" } });
+	});
+
+	it("ignores a Basic credential whose username is not the sentinel (token not extracted)", async () => {
+		const config = readBrowserConnectProxyConfigFromEnv({
+			requireContextIdentity: true,
+			contextVerifier: ({ token }) => ({ allowed: true, context: { contextId: token } }),
+		});
+		const basic = Buffer.from("someone-else:ctx-basic", "utf8").toString("base64");
+
+		// Wrong username ⇒ no token extracted ⇒ requireContextIdentity fails closed.
+		await expect(
+			validateBrowserConnectContext(
+				{ "proxy-authorization": `Basic ${basic}` },
+				target,
+				"198.51.100.11",
+				config,
+			),
+		).resolves.toEqual({
+			allowed: false,
+			reason: "relay-issued browser context token required",
+		});
 	});
 });
 
