@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import net from "node:net";
 import { describe, expect, it } from "vitest";
 import {
 	BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
@@ -8,6 +10,7 @@ import {
 	normalizeIpForBlocking,
 	parseConnectAuthority,
 	readBrowserConnectProxyConfigFromEnv,
+	startBrowserConnectProxy,
 	type ValidatedConnectTarget,
 	validateBrowserConnectContext,
 	validateBrowserConnectTarget,
@@ -222,6 +225,43 @@ describe("browser CONNECT proxy context policy", () => {
 			allowed: false,
 			reason: "relay-issued browser context token required",
 		});
+	});
+
+	it("challenges CONNECT clients with Basic proxy auth when context identity is missing", async () => {
+		const handle = startBrowserConnectProxy({
+			host: "127.0.0.1",
+			port: 0,
+			requireContextIdentity: true,
+			resolveHost: async () => ["93.184.216.34"],
+		});
+		try {
+			if (!handle.server.listening) {
+				await once(handle.server, "listening");
+			}
+			const address = handle.server.address();
+			if (!address || typeof address === "string") {
+				throw new Error("expected TCP listener");
+			}
+
+			const response = await new Promise<string>((resolve, reject) => {
+				const client = net.connect(address.port, "127.0.0.1", () => {
+					client.write("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n");
+				});
+				let data = "";
+				client.setEncoding("utf8");
+				client.on("data", (chunk) => {
+					data += chunk;
+				});
+				client.on("error", reject);
+				client.on("end", () => resolve(data));
+			});
+
+			expect(response).toContain("HTTP/1.1 407 Proxy Authentication Required");
+			expect(response).toContain('Proxy-Authenticate: Basic realm="telclaude-browser"');
+			expect(response).toContain("relay-issued browser context token required");
+		} finally {
+			await handle.stop();
+		}
 	});
 });
 
