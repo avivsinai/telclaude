@@ -54,6 +54,10 @@ type AuthHeader = {
 	source: string;
 	extraHeaders?: Record<string, string>;
 };
+type RelayOwnedCodexCredential = {
+	accessToken: string;
+	source: "vault-oauth2-refreshable" | "vault-static-secret-fallback" | "env-static-fallback";
+};
 type PeerBoundProxyTokenPayload = {
 	readonly version: 1;
 	readonly tokenScope: OpenAiCodexPeerBoundProxyTokenScope;
@@ -67,6 +71,7 @@ type PeerBoundProxyTokenPayload = {
 
 const rateLimiter = new SlidingWindowRateLimiter();
 const latestResponseProofByPeer = new Map<string, CodexRelayProof>();
+let staticCodexCredentialWarningLogged = false;
 
 export function isOpenAiCodexProxyRequest(url: string): boolean {
 	return url === PROXY_PREFIX || url.startsWith(`${PROXY_PREFIX}/`);
@@ -75,6 +80,7 @@ export function isOpenAiCodexProxyRequest(url: string): boolean {
 export function resetOpenAiCodexProxyState(): void {
 	rateLimiter.stopCleanup();
 	latestResponseProofByPeer.clear();
+	staticCodexCredentialWarningLogged = false;
 }
 
 export async function handleOpenAiCodexProxyRequest(
@@ -315,17 +321,18 @@ async function readRequestBodyLimited(
 }
 
 async function buildAuthHeader(): Promise<AuthHeader | null> {
-	const accessToken = await getRelayOwnedCodexAccessToken();
-	if (!accessToken) return null;
+	const credential = await getRelayOwnedCodexCredential();
+	if (!credential) return null;
+	warnIfStaticCodexCredentialSource(credential.source);
 	return {
 		name: "Authorization",
-		value: `Bearer ${accessToken}`,
-		source: "relay-vault-codex-oauth",
-		extraHeaders: codexCloudflareHeaders(accessToken),
+		value: ["Bearer", credential.accessToken].join(" "),
+		source: `relay-codex-${credential.source}`,
+		extraHeaders: codexCloudflareHeaders(credential.accessToken),
 	};
 }
 
-async function getRelayOwnedCodexAccessToken(): Promise<string | null> {
+async function getRelayOwnedCodexCredential(): Promise<RelayOwnedCodexCredential | null> {
 	if (await isVaultAvailable()) {
 		const client = getVaultClient();
 		try {
@@ -335,7 +342,7 @@ async function getRelayOwnedCodexAccessToken(): Promise<string | null> {
 					token.token,
 					`vault-token:${CODEX_VAULT_TARGET}`,
 				);
-				return sanitized;
+				return sanitized ? { accessToken: sanitized, source: "vault-oauth2-refreshable" } : null;
 			}
 		} catch (error) {
 			logger.warn({ error: String(error) }, "[openai-codex-proxy] vault token lookup failed");
@@ -350,16 +357,28 @@ async function getRelayOwnedCodexAccessToken(): Promise<string | null> {
 						parsed,
 						`vault-secret:${CODEX_SECRET_TARGET}`,
 					);
-					return sanitized;
+					return sanitized
+						? { accessToken: sanitized, source: "vault-static-secret-fallback" }
+						: null;
 				}
 			}
 		} catch (error) {
 			logger.warn({ error: String(error) }, "[openai-codex-proxy] vault secret lookup failed");
 		}
 	}
-	return sanitizeRelayOwnedCodexAccessToken(
+	const sanitized = sanitizeRelayOwnedCodexAccessToken(
 		process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN,
 		"env:TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN",
+	);
+	return sanitized ? { accessToken: sanitized, source: "env-static-fallback" } : null;
+}
+
+function warnIfStaticCodexCredentialSource(source: RelayOwnedCodexCredential["source"]): void {
+	if (source === "vault-oauth2-refreshable" || staticCodexCredentialWarningLogged) return;
+	staticCodexCredentialWarningLogged = true;
+	logger.warn(
+		{ source, preferredVaultTarget: `http:${CODEX_VAULT_TARGET}` },
+		"[openai-codex-proxy] using static Codex access-token fallback; provision refreshable OAuth2 credential",
 	);
 }
 

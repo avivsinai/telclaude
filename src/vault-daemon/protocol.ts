@@ -90,6 +90,7 @@ export const OAuth2CredentialSchema = z.object({
 			message: "Token endpoint must use HTTPS to protect credentials in transit",
 		}),
 	scope: z.string().optional(),
+	tokenRequestFormat: z.enum(["form", "json"]).optional(),
 });
 
 export type OAuth2Credential = z.infer<typeof OAuth2CredentialSchema>;

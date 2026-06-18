@@ -156,6 +156,28 @@ describe("Protocol schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("should validate oauth2 JSON token request format", () => {
+			const result = OAuth2CredentialSchema.safeParse({
+				type: "oauth2",
+				clientId: "client",
+				refreshToken: "refresh",
+				tokenEndpoint: "https://oauth2.example.com/token",
+				tokenRequestFormat: "json",
+			});
+			expect(result.success).toBe(true);
+		});
+
+		it("should reject invalid oauth2 token request format", () => {
+			const result = OAuth2CredentialSchema.safeParse({
+				type: "oauth2",
+				clientId: "client",
+				refreshToken: "refresh",
+				tokenEndpoint: "https://oauth2.example.com/token",
+				tokenRequestFormat: "xml",
+			});
+			expect(result.success).toBe(false);
+		});
+
 		it("should reject invalid token endpoint URL", () => {
 			const result = OAuth2CredentialSchema.safeParse({
 				type: "oauth2",

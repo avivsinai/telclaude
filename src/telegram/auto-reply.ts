@@ -162,6 +162,8 @@ const logger = getChildLogger({ module: "telegram-auto-reply" });
 
 const READ_ONLY_SCHEDULE_MESSAGE =
 	"READ_ONLY tier cannot configure scheduled jobs. Ask an operator to raise your tier first.";
+const MODEL_AUTH_REAUTH_MESSAGE =
+	"AI backend needs operator re-auth. Please ping the operator to sign in again.";
 
 function managedSkillHousekeepingDidWork(
 	result: ReturnType<typeof cleanupManagedSkillHousekeeping>,
@@ -189,6 +191,35 @@ function runManagedSkillHousekeeping(stage: "startup" | "periodic"): void {
 	} catch (err) {
 		logger.warn({ stage, error: String(err) }, "managed skill housekeeping failed");
 	}
+}
+
+function isHermesTimeoutError(error: string | undefined): boolean {
+	return Boolean(error?.includes("aborted"));
+}
+
+function isHermesModelAuthError(error: string | undefined): boolean {
+	const normalized = error?.toLowerCase() ?? "";
+	if (!normalized) return false;
+	return (
+		normalized.includes("token_expired") ||
+		normalized.includes("authentication token is expired") ||
+		(normalized.includes("http 401") &&
+			(normalized.includes("openai-codex") ||
+				normalized.includes("codex") ||
+				normalized.includes("auth"))) ||
+		(normalized.includes("error code: 401") &&
+			(normalized.includes("token") || normalized.includes("auth")))
+	);
+}
+
+function formatHermesFailureForTelegram(error: string | undefined): string {
+	if (isHermesTimeoutError(error)) {
+		return "Request timed out. Please try again with a simpler request.";
+	}
+	if (isHermesModelAuthError(error)) {
+		return MODEL_AUTH_REAUTH_MESSAGE;
+	}
+	return `Request failed: ${error ?? "Unknown error"}`;
 }
 
 function resolveExecutableModelForChat(
@@ -1746,9 +1777,7 @@ async function executeWithSession(
 				reactions?.setTool(chunk.toolName);
 			} else if (chunk.type === "done") {
 				if (!chunk.result.success) {
-					const errorMsg = chunk.result.error?.includes("aborted")
-						? "Request timed out. Please try again with a simpler request."
-						: `Request failed: ${chunk.result.error ?? "Unknown error"}`;
+					const errorMsg = formatHermesFailureForTelegram(chunk.result.error);
 
 					logger.warn({ requestId, error: chunk.result.error }, "Hermes query failed");
 
@@ -1769,7 +1798,7 @@ async function executeWithSession(
 						observerConfidence,
 						permissionTier: tier,
 						executionTimeMs: chunk.result.durationMs,
-						outcome: chunk.result.error?.includes("aborted") ? "timeout" : "error",
+						outcome: isHermesTimeoutError(chunk.result.error) ? "timeout" : "error",
 						errorType: chunk.result.error ?? "hermes_error",
 					});
 					return;
@@ -1955,6 +1984,7 @@ export const __test = {
 	dispatchTelegramControlCommand,
 	executeAndReply,
 	executePlanPhase,
+	formatHermesFailureForTelegram,
 	handleInboundMessage,
 	handleLinkCommand,
 	handleProfileSwitchCommand,
