@@ -49,8 +49,8 @@ const ORIGINAL_ENV = {
 	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
 	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 	TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN: process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN,
-	TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN: process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN,
 };
+const DEFAULT_CODEX_ACCESS_TOKEN = fakeCodexJwt("acct_123");
 
 describe("OpenAI Codex relay proxy", () => {
 	let server: ReturnType<typeof startCapabilityServer> | null = null;
@@ -61,9 +61,13 @@ describe("OpenAI Codex relay proxy", () => {
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN = "relay-proxy-token";
-		process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN = fakeCodexJwt("acct_123");
-		isVaultAvailableMock.mockReset().mockResolvedValue(false);
+		isVaultAvailableMock.mockReset().mockResolvedValue(true);
 		vaultClientMock.getToken.mockReset();
+		vaultClientMock.getToken.mockResolvedValue({
+			ok: true,
+			token: DEFAULT_CODEX_ACCESS_TOKEN,
+			expiresAt: Date.now() + 3600_000,
+		});
 		vaultClientMock.getSecret.mockReset();
 		loggerMock.info.mockReset();
 		loggerMock.warn.mockReset();
@@ -85,7 +89,6 @@ describe("OpenAI Codex relay proxy", () => {
 		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
 		restoreEnv("TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN");
-		restoreEnv("TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN");
 		resetOpenAiCodexProxyState();
 		vi.unstubAllGlobals();
 	});
@@ -96,9 +99,7 @@ describe("OpenAI Codex relay proxy", () => {
 				"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 			);
 			const headers = new Headers(init?.headers);
-			expect(headers.get("authorization")).toBe(
-				`Bearer ${process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN}`,
-			);
+			expect(headers.get("authorization")).toBe(`Bearer ${DEFAULT_CODEX_ACCESS_TOKEN}`);
 			expect(headers.get("cookie")).toBeNull();
 			expect(headers.get("x-api-key")).toBeNull();
 			expect(headers.get("openai-organization")).toBeNull();
@@ -139,20 +140,14 @@ describe("OpenAI Codex relay proxy", () => {
 			loggerMock.info.mock.calls.some(
 				([meta, message]) =>
 					message === "proxying to OpenAI Codex subscription backend" &&
-					(meta as { authSource?: string }).authSource === "relay-codex-env-static-fallback",
+					(meta as { authSource?: string }).authSource === "relay-codex-vault-oauth2-refreshable",
 			),
 		).toBe(true);
-		expect(
-			loggerMock.warn.mock.calls.some(
-				([meta, message]) =>
-					String(message).includes("using static Codex access-token fallback") &&
-					(meta as { source?: string }).source === "env-static-fallback",
-			),
-		).toBe(true);
+		expect(vaultClientMock.getToken).toHaveBeenCalledWith("openai-codex");
+		expect(vaultClientMock.getSecret).not.toHaveBeenCalled();
 	});
 
-	it("prefers refreshable vault OAuth over static Codex fallback", async () => {
-		isVaultAvailableMock.mockResolvedValue(true);
+	it("uses only refreshable vault OAuth for Codex subscription credentials", async () => {
 		vaultClientMock.getToken.mockResolvedValue({
 			ok: true,
 			token: fakeCodexJwt("acct_123"),
@@ -177,6 +172,7 @@ describe("OpenAI Codex relay proxy", () => {
 		);
 
 		expect(result.status).toBe(200);
+		expect(vaultClientMock.getToken).toHaveBeenCalledWith("openai-codex");
 		expect(vaultClientMock.getSecret).not.toHaveBeenCalled();
 		expect(
 			loggerMock.info.mock.calls.some(
@@ -185,11 +181,7 @@ describe("OpenAI Codex relay proxy", () => {
 					(meta as { authSource?: string }).authSource === "relay-codex-vault-oauth2-refreshable",
 			),
 		).toBe(true);
-		expect(
-			loggerMock.warn.mock.calls.some(([_meta, message]) =>
-				String(message).includes("using static Codex access-token fallback"),
-			),
-		).toBe(false);
+		expect(loggerMock.warn).not.toHaveBeenCalled();
 	});
 
 	it("records a non-secret relay proof for the latest Codex response request from the peer", async () => {
@@ -608,8 +600,12 @@ describe("OpenAI Codex relay proxy", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it("rejects raw provider credentials from env fallback", async () => {
-		process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN = "sk-proj-rawProviderKey12345678";
+	it("rejects raw provider-like tokens from the refreshable vault credential", async () => {
+		vaultClientMock.getToken.mockResolvedValue({
+			ok: true,
+			token: "sk-proj-rawProviderKey12345678",
+			expiresAt: Date.now() + 3600_000,
+		});
 		const fetchSpy = vi.fn();
 		vi.stubGlobal("fetch", fetchSpy);
 
@@ -619,17 +615,15 @@ describe("OpenAI Codex relay proxy", () => {
 
 		expect(result.status).toBe(500);
 		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(
+			loggerMock.warn.mock.calls.some(([_meta, message]) =>
+				String(message).includes("rejected raw provider-like Codex credential"),
+			),
+		).toBe(true);
 	});
 
-	it("does not accept api_key-shaped vault secrets as Codex subscription credentials", async () => {
-		delete process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN;
-		isVaultAvailableMock.mockResolvedValue(true);
+	it("fails loud without querying static vault secrets when refreshable OAuth is missing", async () => {
 		vaultClientMock.getToken.mockResolvedValue({ ok: false });
-		vaultClientMock.getSecret.mockResolvedValue({
-			ok: true,
-			type: "get-secret",
-			value: JSON.stringify({ api_key: "sk-proj-rawProviderKey12345678" }),
-		});
 		const fetchSpy = vi.fn();
 		vi.stubGlobal("fetch", fetchSpy);
 
@@ -638,7 +632,9 @@ describe("OpenAI Codex relay proxy", () => {
 		});
 
 		expect(result.status).toBe(500);
+		expect(result.body).toContain("run vault import-codex-auth");
 		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(vaultClientMock.getSecret).not.toHaveBeenCalled();
 	});
 
 	it("allows only loopback, RFC1918, and IPv6 ULA clients", () => {
