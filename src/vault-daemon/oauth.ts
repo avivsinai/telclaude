@@ -195,28 +195,39 @@ export function clearTokenCache(): void {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function refreshToken(credential: OAuth2Credential): Promise<TokenResponse> {
-	const body = new URLSearchParams({
+	const payload: Record<string, string> = {
 		grant_type: "refresh_token",
 		client_id: credential.clientId,
 		refresh_token: credential.refreshToken,
-	});
+	};
 
 	if (credential.clientSecret) {
-		body.set("client_secret", credential.clientSecret);
+		payload.client_secret = credential.clientSecret;
 	}
 
 	if (credential.scope) {
-		body.set("scope", credential.scope);
+		payload.scope = credential.scope;
 	}
+
+	const tokenRequest =
+		credential.tokenRequestFormat === "json"
+			? {
+					contentType: "application/json",
+					body: JSON.stringify(payload),
+				}
+			: {
+					contentType: "application/x-www-form-urlencoded",
+					body: new URLSearchParams(payload).toString(),
+				};
 
 	const response = await fetchWithTimeout(
 		credential.tokenEndpoint,
 		{
 			method: "POST",
 			headers: {
-				"Content-Type": "application/x-www-form-urlencoded",
+				"Content-Type": tokenRequest.contentType,
 			},
-			body: body.toString(),
+			body: tokenRequest.body,
 			// SECURITY: Disable redirects - a redirect from a token endpoint is an error.
 			// Following redirects could leak client_secret and refresh_token.
 			redirect: "error",

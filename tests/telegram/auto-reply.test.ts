@@ -239,6 +239,15 @@ describe("auto-reply executeAndReply", () => {
 		}
 	});
 
+	it("does not expose raw model auth errors to Telegram users", () => {
+		const raw =
+			"Error code: 401 - {'error': {'message': 'Provided authentication token is expired. Please try signing in again.', 'code': 'token_expired'}}";
+
+		expect(autoReplyTest.formatHermesFailureForTelegram(raw)).toBe(
+			"AI backend needs operator re-auth. Please ping the operator to sign in again.",
+		);
+	});
+
 	it("streams text through redactor and replies with sanitized output", async () => {
 		// Stream a text chunk followed by done
 		executeHermesQueryImpl.mockReturnValueOnce(

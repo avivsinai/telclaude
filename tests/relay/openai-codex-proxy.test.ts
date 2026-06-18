@@ -135,6 +135,61 @@ describe("OpenAI Codex relay proxy", () => {
 		expect(result.headers["set-cookie"]).toBeUndefined();
 		expect(result.body).toContain("gpt-5.3-codex");
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(
+			loggerMock.info.mock.calls.some(
+				([meta, message]) =>
+					message === "proxying to OpenAI Codex subscription backend" &&
+					(meta as { authSource?: string }).authSource === "relay-codex-env-static-fallback",
+			),
+		).toBe(true);
+		expect(
+			loggerMock.warn.mock.calls.some(
+				([meta, message]) =>
+					String(message).includes("using static Codex access-token fallback") &&
+					(meta as { source?: string }).source === "env-static-fallback",
+			),
+		).toBe(true);
+	});
+
+	it("prefers refreshable vault OAuth over static Codex fallback", async () => {
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getToken.mockResolvedValue({
+			ok: true,
+			token: fakeCodexJwt("acct_123"),
+			expiresAt: Date.now() + 3600_000,
+		});
+		const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const headers = new Headers(init?.headers);
+			expect(headers.get("authorization")).toMatch(/^Bearer /);
+			return new Response(JSON.stringify({ data: [{ id: "gpt-5.3-codex" }] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const result = await makeRequest(
+			baseUrl,
+			"/v1/openai-codex-proxy/models?client_version=1.0.0",
+			undefined,
+			"GET",
+			relayAuthHeaders(),
+		);
+
+		expect(result.status).toBe(200);
+		expect(vaultClientMock.getSecret).not.toHaveBeenCalled();
+		expect(
+			loggerMock.info.mock.calls.some(
+				([meta, message]) =>
+					message === "proxying to OpenAI Codex subscription backend" &&
+					(meta as { authSource?: string }).authSource === "relay-codex-vault-oauth2-refreshable",
+			),
+		).toBe(true);
+		expect(
+			loggerMock.warn.mock.calls.some(([_meta, message]) =>
+				String(message).includes("using static Codex access-token fallback"),
+			),
+		).toBe(false);
 	});
 
 	it("records a non-secret relay proof for the latest Codex response request from the peer", async () => {

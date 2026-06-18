@@ -29,12 +29,44 @@ import { promptSecret } from "./cli-prompt.js";
 
 const logger = getChildLogger({ module: "cmd-vault" });
 
+const OPENAI_CODEX_VAULT_TARGET = "openai-codex";
+const OPENAI_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const OPENAI_CODEX_OAUTH_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
+
 /**
  * Validate protocol string.
  */
 function parseProtocol(value: string): Protocol | null {
 	const result = ProtocolSchema.safeParse(value.toLowerCase());
 	return result.success ? result.data : null;
+}
+
+async function readStdinText(): Promise<string> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of process.stdin) {
+		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+	}
+	return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseCodexAuthJson(raw: string): {
+	tokens?: {
+		access_token?: unknown;
+		refresh_token?: unknown;
+		account_id?: unknown;
+	};
+} {
+	try {
+		return JSON.parse(raw) as {
+			tokens?: {
+				access_token?: unknown;
+				refresh_token?: unknown;
+				account_id?: unknown;
+			};
+		};
+	} catch {
+		throw new Error("Codex auth JSON is not valid JSON.");
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -134,6 +166,11 @@ export function registerVaultCommand(program: Command): void {
 		.option("--client-secret <clientSecret>", "OAuth2 client secret (will prompt if not provided)")
 		.option("--refresh-token <refreshToken>", "OAuth2 refresh token (will prompt if not provided)")
 		.option("--token-endpoint <url>", "OAuth2 token endpoint URL")
+		.option(
+			"--token-request-format <format>",
+			"OAuth2 refresh request body format (form or json)",
+			"form",
+		)
 		.option("--scope <scope>", "OAuth2 scope")
 		.option("--key <keyPath>", "Path to SSH private key file")
 		.option("--passphrase <passphrase>", "SSH key passphrase (will prompt if not provided)")
@@ -156,6 +193,7 @@ export function registerVaultCommand(program: Command): void {
 					clientSecret?: string;
 					refreshToken?: string;
 					tokenEndpoint?: string;
+					tokenRequestFormat?: string;
 					scope?: string;
 					key?: string;
 					passphrase?: string;
@@ -246,6 +284,14 @@ export function registerVaultCommand(program: Command): void {
 									console.error("Refresh token is required for oauth2");
 									process.exit(1);
 								}
+								if (
+									opts.tokenRequestFormat &&
+									opts.tokenRequestFormat !== "form" &&
+									opts.tokenRequestFormat !== "json"
+								) {
+									console.error("--token-request-format must be 'form' or 'json'");
+									process.exit(1);
+								}
 
 								credential = {
 									type: "oauth2",
@@ -253,6 +299,9 @@ export function registerVaultCommand(program: Command): void {
 									refreshToken,
 									tokenEndpoint: opts.tokenEndpoint,
 									scope: opts.scope,
+									...(opts.tokenRequestFormat === "json"
+										? { tokenRequestFormat: "json" as const }
+										: {}),
 									...(clientSecret ? { clientSecret } : {}),
 								};
 								break;
@@ -592,6 +641,80 @@ export function registerVaultCommand(program: Command): void {
 				process.exit(1);
 			}
 		});
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// Import Codex ChatGPT OAuth from Codex auth.json
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	vault
+		.command("import-codex-auth")
+		.description("Import Codex ChatGPT OAuth refresh credentials into the vault")
+		.option("--path <path>", "Path to Codex auth.json (default: ~/.codex/auth.json)")
+		.option("--stdin", "Read Codex auth.json from stdin")
+		.option("--target <target>", "Vault HTTP target", OPENAI_CODEX_VAULT_TARGET)
+		.option("--client-id <clientId>", "OAuth2 client ID", OPENAI_CODEX_OAUTH_CLIENT_ID)
+		.option(
+			"--token-endpoint <url>",
+			"OAuth2 refresh token endpoint",
+			OPENAI_CODEX_OAUTH_TOKEN_ENDPOINT,
+		)
+		.action(
+			async (opts: {
+				path?: string;
+				stdin?: boolean;
+				target: string;
+				clientId: string;
+				tokenEndpoint: string;
+			}) => {
+				try {
+					if (!(await isVaultAvailable())) {
+						console.error("Error: Vault daemon is not running.");
+						process.exit(1);
+					}
+
+					const source = opts.stdin
+						? "stdin"
+						: (opts.path ?? join(process.env.HOME ?? os.homedir(), ".codex", "auth.json"));
+					const raw = opts.stdin ? await readStdinText() : readFileSync(source, "utf8");
+					const parsed = parseCodexAuthJson(raw);
+					const refreshToken = parsed.tokens?.refresh_token;
+					if (typeof refreshToken !== "string" || refreshToken.trim() === "") {
+						console.error("Codex auth JSON is missing tokens.refresh_token.");
+						console.error("Run 'codex login' first, then retry import-codex-auth.");
+						process.exit(1);
+					}
+
+					const accessToken = parsed.tokens?.access_token;
+					if (accessToken !== undefined && typeof accessToken !== "string") {
+						console.error("Codex auth JSON has an invalid tokens.access_token.");
+						process.exit(1);
+					}
+
+					const client = getVaultClient();
+					await client.store({
+						protocol: "http",
+						target: opts.target,
+						credential: {
+							type: "oauth2",
+							clientId: opts.clientId,
+							refreshToken,
+							tokenEndpoint: opts.tokenEndpoint,
+							tokenRequestFormat: "json",
+						},
+						label: "OpenAI Codex ChatGPT OAuth (codex auth.json)",
+					});
+
+					console.log(
+						`  IMPORTED: Codex OAuth refresh credential from ${source} → http:${opts.target}`,
+					);
+					console.log("  The relay will now refresh Codex access tokens through the vault.");
+				} catch (err) {
+					logger.error({ error: String(err) }, "vault import-codex-auth failed");
+					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+					process.exit(1);
+				}
+			},
+		);
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	// Import Anthropic credentials from claude login
