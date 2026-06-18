@@ -10,8 +10,10 @@ import {
 import {
 	BROWSER_CONTEXT_TOKEN_MAX_TTL_MS,
 	BROWSER_CONTEXT_TOKEN_MIN_TTL_MS,
+	BROWSER_CONTEXT_TOKEN_SECRET_ENV,
 	createBrowserConnectContextVerifier,
 	mintBrowserContextToken,
+	resolveBrowserConnectProxyStartup,
 	verifyBrowserContextToken,
 } from "../../src/relay/browser-context-token.js";
 
@@ -141,6 +143,15 @@ describe("mint/verify browser context token", () => {
 			now: T0,
 		});
 		expect(result).toEqual({ ok: false, reason: "signature mismatch" });
+	});
+
+	it("rejects a token whose components are not base64url before any crypto work", () => {
+		const result = verifyBrowserContextToken("tc-browser-context-v1.bad payload!.sig", {
+			secret: SECRET,
+			peerAddress: PEER,
+			now: T0,
+		});
+		expect(result).toEqual({ ok: false, reason: "token components are malformed" });
 	});
 
 	it("rejects a token signed with a different secret", () => {
@@ -288,5 +299,79 @@ describe("origin-scope policy helpers", () => {
 			"google.com",
 			"x.io",
 		]);
+	});
+});
+
+describe("resolveBrowserConnectProxyStartup — fail-closed wiring", () => {
+	it("is disabled when the proxy is not enabled", () => {
+		expect(resolveBrowserConnectProxyStartup({}).action).toBe("disabled");
+		expect(
+			resolveBrowserConnectProxyStartup({
+				TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED: "0",
+				[BROWSER_CONTEXT_TOKEN_SECRET_ENV]: SECRET,
+			}).action,
+		).toBe("disabled");
+	});
+
+	it("fails closed when enabled without a context-token secret", () => {
+		const missing = resolveBrowserConnectProxyStartup({
+			TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED: "1",
+		});
+		expect(missing.action).toBe("fail-closed");
+		if (missing.action === "fail-closed") {
+			expect(missing.reason).toContain(BROWSER_CONTEXT_TOKEN_SECRET_ENV);
+		}
+
+		const blank = resolveBrowserConnectProxyStartup({
+			TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED: "1",
+			[BROWSER_CONTEXT_TOKEN_SECRET_ENV]: "   ",
+		});
+		expect(blank.action).toBe("fail-closed");
+	});
+
+	it("starts with a working verifier when enabled and a secret is present", async () => {
+		const decision = resolveBrowserConnectProxyStartup({
+			TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED: "1",
+			[BROWSER_CONTEXT_TOKEN_SECRET_ENV]: SECRET,
+		});
+		expect(decision.action).toBe("start");
+		if (decision.action !== "start") throw new Error("expected start");
+		// The verifier it hands back must actually validate a token minted with the
+		// same secret — proving it was wired with the real secret, not a placeholder.
+		// The helper builds the verifier without a `now` override, so it checks
+		// against real wall-clock time; mint with the default (real) clock too.
+		const token = mintBrowserContextToken({
+			secret: SECRET,
+			peerAddress: PEER,
+			contextId: "ctx-1",
+			sessionRef: "sess-1",
+			actor: "telegram:default",
+			cookieBearing: false,
+		});
+		const allowed = await decision.contextVerifier({
+			token,
+			targetHost: "example.org",
+			targetPort: 443,
+			remoteAddress: PEER,
+			headers: {},
+		});
+		expect(allowed).toMatchObject({ allowed: true });
+		// A token minted with a different secret must be rejected.
+		const foreign = mintBrowserContextToken({
+			secret: "different-secret",
+			peerAddress: PEER,
+			contextId: "ctx-1",
+			sessionRef: "sess-1",
+			actor: "telegram:default",
+			cookieBearing: false,
+		});
+		const denied = await decision.contextVerifier({
+			token: foreign,
+			targetHost: "example.org",
+			targetPort: 443,
+			remoteAddress: PEER,
+			headers: {},
+		});
+		expect(denied.allowed).toBe(false);
 	});
 });

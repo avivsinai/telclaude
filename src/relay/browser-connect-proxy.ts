@@ -20,6 +20,7 @@ import {
 	isPrivateIP,
 } from "../sandbox/network-proxy.js";
 import {
+	BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
 	type BrowserConnectContextVerification,
 	type BrowserConnectContextVerifier,
 	hostMatchesBrowserOriginScope,
@@ -485,7 +486,27 @@ function extractProxyContextToken(headers: http.IncomingHttpHeaders): string | n
 	if (!proxyAuthorization) return null;
 	const bearer = proxyAuthorization.match(/^Bearer\s+(.+)$/i);
 	if (bearer?.[1]) return bearer[1].trim();
+	// Firefox/Camoufox under Playwright can only present the per-context token as
+	// proxy credentials, which arrive as Basic auth. Accept it only when the
+	// username is the relay's sentinel marker; the password carries the token.
+	const basic = proxyAuthorization.match(/^Basic\s+(.+)$/i);
+	if (basic?.[1]) return extractBasicContextToken(basic[1].trim());
 	return null;
+}
+
+function extractBasicContextToken(encoded: string): string | null {
+	let decoded: string;
+	try {
+		decoded = Buffer.from(encoded, "base64").toString("utf8");
+	} catch {
+		return null;
+	}
+	const separator = decoded.indexOf(":");
+	if (separator < 0) return null;
+	const username = decoded.slice(0, separator);
+	const token = decoded.slice(separator + 1).trim();
+	if (username !== BROWSER_CONTEXT_PROXY_BASIC_USERNAME || !token) return null;
+	return token;
 }
 
 function firstHeaderValue(value: string | string[] | undefined): string | null {

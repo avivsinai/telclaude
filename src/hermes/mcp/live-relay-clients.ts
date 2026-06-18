@@ -21,7 +21,8 @@ import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantin
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
-import { filterOutput, redactSecrets } from "../../security/output-filter.js";
+import { redactSecrets } from "../../security/output-filter.js";
+import { assertSafeWebEgress } from "../../security/web-egress-preflight.js";
 import { generateImage } from "../../services/image-generation.js";
 import {
 	consumeRateLimit,
@@ -173,84 +174,6 @@ export class TelclaudeLiveMcpUnsupportedContentError extends Error {
 	constructor(contentType: string) {
 		super(`web fetch unsupported content type: ${contentType || "(none)"}`);
 		this.name = "TelclaudeLiveMcpUnsupportedContentError";
-	}
-}
-
-/**
- * A private turn can read private memory, so a secret-shaped value in an
- * outbound web URL or search query would turn the relay into an exfiltration
- * channel. Both tc_web_fetch.url and tc_web_search.query are scanned for
- * secret/token patterns and fail closed BEFORE any network or provider call.
- * The error carries only the field name — never the offending value.
- */
-export class TelclaudeLiveMcpOutboundSecretError extends Error {
-	readonly code = "mcp_outbound_secret_blocked";
-
-	constructor(field: string) {
-		super(`outbound ${field} blocked: secret-shaped material must not leave via web egress`);
-		this.name = "TelclaudeLiveMcpOutboundSecretError";
-	}
-}
-
-export class TelclaudeLiveMcpOutboundPrivateDataError extends Error {
-	readonly code = "mcp_outbound_private_data_blocked";
-
-	constructor(field: string, reason: string) {
-		super(`outbound ${field} blocked: private data must not leave via web egress (${reason})`);
-		this.name = "TelclaudeLiveMcpOutboundPrivateDataError";
-	}
-}
-
-/**
- * Outbound egress preflight. Uses pattern-based secret detection plus a small
- * high-confidence private-data denylist. This is not a DLP classifier; it is a
- * fail-closed guard for obvious accidental exfiltration before public web
- * fetch/search leaves the relay boundary.
- */
-function assertSafeWebEgress(value: string, field: string): void {
-	if (filterOutput(value).blocked) {
-		throw new TelclaudeLiveMcpOutboundSecretError(field);
-	}
-	const privateDataReason = privateDataEgressReason(value);
-	if (privateDataReason) {
-		throw new TelclaudeLiveMcpOutboundPrivateDataError(field, privateDataReason);
-	}
-}
-
-function privateDataEgressReason(value: string): string | undefined {
-	const decoded = decodeURIComponentSafe(value);
-	const normalized = decoded.replace(/\s+/g, " ").trim().toLowerCase();
-	if (!normalized) return undefined;
-	if (/\b\d{3}-\d{2}-\d{4}\b/.test(normalized)) return "ssn-like identifier";
-	if (
-		/\b(?:my|our|family|wife|husband|child|kid|son|daughter)\s+(?:home\s+)?address\s+(?:is|:)\s+\S/.test(
-			normalized,
-		)
-	) {
-		return "address disclosure phrase";
-	}
-	if (
-		/\b(?:my|our|family|wife|husband|child|kid|son|daughter)\s+(?:email|e-mail|phone|mobile|cell)\s+(?:is|:)\s+\S/.test(
-			normalized,
-		)
-	) {
-		return "contact disclosure phrase";
-	}
-	if (
-		/\b(?:my|our|family)\s+(?:passport|national id|identity number|bank account|iban|credit card)\s+(?:is|:)\s+\S/.test(
-			normalized,
-		)
-	) {
-		return "identity or financial disclosure phrase";
-	}
-	return undefined;
-}
-
-function decodeURIComponentSafe(value: string): string {
-	try {
-		return decodeURIComponent(value);
-	} catch {
-		return value;
 	}
 }
 
