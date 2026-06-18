@@ -98,7 +98,8 @@
         "media.tts",
         "skills.request",
         "schedule.read",
-        "schedule.write"
+        "schedule.write",
+        "browse.use"
       ],
       // WhatsApp is the live edge transport. Gmail/email access is through the
       // Google provider above; mutations still go through prepare/approve/execute.
