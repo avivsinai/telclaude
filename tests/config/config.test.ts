@@ -68,6 +68,7 @@ describe("config defaults", () => {
 					"skills.request",
 					"schedule.read",
 					"schedule.write",
+					"browse.use",
 				],
 				outboundChannels: ["whatsapp"],
 			},
@@ -107,6 +108,7 @@ describe("config defaults", () => {
 			"skills.request",
 			"schedule.read",
 			"schedule.write",
+			"browse.use",
 		]);
 		expect(cfg.hermes.privateRuntime.outboundChannels).toEqual(["whatsapp"]);
 	});
@@ -119,7 +121,7 @@ describe("config defaults", () => {
 				hermes: {
 					privateRuntime: {
 						providerScopes: ["google", "bank"],
-						capabilityScopes: ["web.search", "web.fetch"],
+						capabilityScopes: ["web.search", "web.fetch", "browse.use"],
 						outboundChannels: [],
 					},
 				},
@@ -128,7 +130,11 @@ describe("config defaults", () => {
 
 		const cfg = loadConfig();
 		expect(cfg.hermes.privateRuntime.providerScopes).toEqual(["google", "bank"]);
-		expect(cfg.hermes.privateRuntime.capabilityScopes).toEqual(["web.search", "web.fetch"]);
+		expect(cfg.hermes.privateRuntime.capabilityScopes).toEqual([
+			"web.search",
+			"web.fetch",
+			"browse.use",
+		]);
 		expect(cfg.hermes.privateRuntime.outboundChannels).toEqual([]);
 	});
 
@@ -177,7 +183,7 @@ describe("config defaults", () => {
 						soulPath: "docs/soul.md",
 						allowedSkills: ["telegram-reply"],
 						providerScopes: ["google"],
-						capabilityScopes: ["web.search"],
+						capabilityScopes: ["web.search", "browse.use"],
 						outboundChannels: ["telegram"],
 						defaultModel: {
 							providerId: "anthropic",
@@ -194,7 +200,7 @@ describe("config defaults", () => {
 			label: "Engineer",
 			allowedSkills: ["telegram-reply"],
 			providerScopes: ["google"],
-			capabilityScopes: ["web.search"],
+			capabilityScopes: ["web.search", "browse.use"],
 			outboundChannels: ["telegram"],
 		});
 	});
