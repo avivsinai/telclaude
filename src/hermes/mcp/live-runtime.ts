@@ -414,6 +414,7 @@ export function createFailClosedTelclaudeLiveMcpRelayClients(
 		auditNote: fail,
 		webFetch: fail,
 		webSearch: fail,
+		browse: fail,
 		imageGenerate: fail,
 		tts: fail,
 		skillRequest: fail,

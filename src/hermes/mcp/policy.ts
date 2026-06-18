@@ -16,6 +16,7 @@ export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_schedule_create",
 	"tc_schedule_list",
 	"tc_schedule_cancel",
+	"tc_browse",
 ] as const;
 
 export type TelclaudeMcpToolName = (typeof TELCLAUDE_MCP_TOOL_NAMES)[number];
@@ -34,6 +35,7 @@ export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
 	tc_schedule_create: "schedule.write",
 	tc_schedule_list: "schedule.read",
 	tc_schedule_cancel: "schedule.write",
+	tc_browse: "browse.use",
 } as const satisfies Partial<Record<TelclaudeMcpToolName, string>>;
 
 export type TelclaudeMcpCapabilityScope =

@@ -391,6 +391,34 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 			false,
 		),
 	},
+	{
+		name: "tc_browse",
+		description:
+			"Open a public web page in the relay-owned contained browser and read its text " +
+			"(requires the browse.use capability scope). Read-only: navigates to one https/http " +
+			"URL through the relay CONNECT proxy and returns the page title and untrusted-wrapped " +
+			"visible text. No logins, cookies, downloads, or interaction.",
+		inputSchema: objectSchema(
+			{
+				url: {
+					type: "string",
+					minLength: 1,
+					maxLength: 2048,
+				},
+				maxChars: {
+					type: "integer",
+					minimum: 1,
+					maximum: 200_000,
+				},
+				timeoutMs: {
+					type: "integer",
+					minimum: 1_000,
+					maximum: 120_000,
+				},
+			},
+			["url"],
+		),
+	},
 ] as const;
 
 export function telclaudeMcpToolDefinitions(): readonly TelclaudeMcpToolDefinition[] {
