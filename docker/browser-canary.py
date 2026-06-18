@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,7 +16,7 @@ def canary_payload() -> dict[str, object]:
     return {
         "ok": True,
         "service": "telclaude-browser",
-        "camoufox": getattr(camoufox, "__version__", "unknown"),
+        "camoufox": importlib.metadata.version("camoufox"),
         "proxy": {
             "http": bool(os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")),
             "https": bool(os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")),
