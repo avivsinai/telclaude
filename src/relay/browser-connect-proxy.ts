@@ -334,12 +334,24 @@ async function handleConnectRequest(
 
 	upstreamSocket.once("connect", () => {
 		upstreamSocket.off("error", handleDialError);
+		const initialBudget = addBrowserConnectClientBytes(
+			0,
+			head.length,
+			config.clientToUpstreamByteBudget,
+		);
+		if (!initialBudget.allowed) {
+			clientSocket.destroy(new Error("browser CONNECT client byte budget exceeded"));
+			upstreamSocket.destroy(new Error("browser CONNECT client byte budget exceeded"));
+			return;
+		}
+
 		clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 		if (head.length > 0) upstreamSocket.write(head);
 		void tunnelWithClientByteBudget(
 			clientSocket,
 			upstreamSocket,
 			config.clientToUpstreamByteBudget,
+			initialBudget.totalBytes,
 		);
 	});
 
@@ -388,8 +400,9 @@ async function tunnelWithClientByteBudget(
 	clientSocket: net.Socket,
 	upstreamSocket: net.Socket,
 	clientToUpstreamByteBudget: number,
+	initialClientBytes = 0,
 ): Promise<void> {
-	let clientBytes = 0;
+	let clientBytes = initialClientBytes;
 	clientSocket.on("data", (chunk: Buffer) => {
 		const budget = addBrowserConnectClientBytes(
 			clientBytes,
