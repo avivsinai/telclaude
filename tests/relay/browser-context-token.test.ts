@@ -145,6 +145,15 @@ describe("mint/verify browser context token", () => {
 		expect(result).toEqual({ ok: false, reason: "signature mismatch" });
 	});
 
+	it("rejects a token whose components are not base64url before any crypto work", () => {
+		const result = verifyBrowserContextToken("tc-browser-context-v1.bad payload!.sig", {
+			secret: SECRET,
+			peerAddress: PEER,
+			now: T0,
+		});
+		expect(result).toEqual({ ok: false, reason: "token components are malformed" });
+	});
+
 	it("rejects a token signed with a different secret", () => {
 		const token = baseMint();
 		const result = verifyBrowserContextToken(token, {

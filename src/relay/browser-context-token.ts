@@ -33,6 +33,8 @@ export const BROWSER_CONTEXT_TOKEN_SECRET_ENV = "TELCLAUDE_BROWSER_CONTEXT_TOKEN
 export const BROWSER_CONTEXT_TOKEN_DEFAULT_TTL_MS = 15 * 60_000;
 export const BROWSER_CONTEXT_TOKEN_MIN_TTL_MS = 60_000;
 export const BROWSER_CONTEXT_TOKEN_MAX_TTL_MS = 60 * 60_000;
+/** A token's payload and signature components are always base64url. */
+const BASE64URL_TOKEN_PART = /^[A-Za-z0-9_-]+$/;
 
 interface BrowserContextTokenPayload {
 	readonly version: 1;
@@ -117,6 +119,13 @@ export function verifyBrowserContextToken(
 		return { ok: false, reason: "token is not a browser context token" };
 	}
 	const [, encodedPayload, signature] = parts as [string, string, string];
+	// Both token components must be base64url before any crypto work. This
+	// rejects malformed proxy credentials (the token can arrive as a Basic-auth
+	// password from Camoufox) at the boundary, and confines the HMAC to a
+	// validated token component rather than an arbitrary credential string.
+	if (!BASE64URL_TOKEN_PART.test(encodedPayload) || !BASE64URL_TOKEN_PART.test(signature)) {
+		return { ok: false, reason: "token components are malformed" };
+	}
 	const expectedSignature = signBrowserContextToken(encodedPayload, input.secret);
 	if (!constantTimeEqual(signature, expectedSignature)) {
 		return { ok: false, reason: "signature mismatch" };
