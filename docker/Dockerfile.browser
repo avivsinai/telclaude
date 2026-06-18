@@ -6,6 +6,7 @@
 FROM python:3.12-slim-bookworm
 
 ARG CAMOUFOX_VERSION=0.4.11
+ARG PLAYWRIGHT_VERSION=1.60.0
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -48,7 +49,9 @@ RUN useradd --system --create-home --home-dir /home/browser --uid 10001 browser 
 USER browser
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir "camoufox[geoip]==${CAMOUFOX_VERSION}" \
+    && python -m pip install --no-cache-dir \
+        "playwright==${PLAYWRIGHT_VERSION}" \
+        "camoufox[geoip]==${CAMOUFOX_VERSION}" \
     && python -m camoufox fetch
 
 USER root
@@ -61,4 +64,4 @@ WORKDIR /home/browser
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD ["python", "/usr/local/bin/telclaude-browser-canary.py", "--health-once"]
 
-CMD ["python", "/usr/local/bin/telclaude-browser-canary.py", "--serve-health"]
+CMD ["python", "/usr/local/bin/telclaude-browser-canary.py", "--serve"]
