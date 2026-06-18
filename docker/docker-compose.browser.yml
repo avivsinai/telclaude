@@ -3,6 +3,9 @@
 # Usage:
 #   docker compose -f docker/docker-compose.yml -f docker/docker-compose.browser.yml up -d telclaude tc-browser
 #
+# Required operator env: TELCLAUDE_BROWSER_SUBNET, TELCLAUDE_BROWSER_RELAY_IP,
+# TELCLAUDE_BROWSER_IP, and TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET.
+#
 # `tc-browser` is intentionally not on provider, vault, model, WhatsApp, or
 # Hermes runtime networks. It can reach only the relay over relay-browser-net;
 # internet egress must go through the relay-owned CONNECT proxy.
@@ -18,11 +21,11 @@ services:
       - TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET=${TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET:?generate a relay-scoped browser context token secret}
       - TELCLAUDE_BROWSER_WS_ENDPOINT=ws://tc-browser:${TELCLAUDE_BROWSER_PORT:-3006}${TELCLAUDE_BROWSER_WS_PATH:-/playwright}
       - TELCLAUDE_BROWSER_CONNECT_PROXY_URL=http://telclaude:${TELCLAUDE_BROWSER_CONNECT_PROXY_PORT:-8794}
-      - TELCLAUDE_BROWSER_PEER_ADDRESS=${TELCLAUDE_BROWSER_IP:-172.30.94.11}
+      - TELCLAUDE_BROWSER_PEER_ADDRESS=${TELCLAUDE_BROWSER_IP:?set tc-browser static container IP for context token binding}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-browser}
     networks:
       relay-browser-net:
-        ipv4_address: ${TELCLAUDE_BROWSER_RELAY_IP:-172.30.94.10}
+        ipv4_address: ${TELCLAUDE_BROWSER_RELAY_IP:?set relay static container IP on relay-browser-net}
 
   tc-browser:
     build:
@@ -30,8 +33,8 @@ services:
       dockerfile: docker/Dockerfile.browser
       args:
         CAMOUFOX_VERSION: ${TELCLAUDE_CAMOUFOX_VERSION:-0.4.11}
-        PLAYWRIGHT_VERSION: ${TELCLAUDE_BROWSER_PLAYWRIGHT_VERSION:-1.60.0}
-    image: ${TELCLAUDE_BROWSER_IMAGE:-telclaude-browser:camoufox-0.4.11-pw-1.60.0}
+        PLAYWRIGHT_VERSION: ${TELCLAUDE_BROWSER_PLAYWRIGHT_VERSION:-1.59.0}
+    image: ${TELCLAUDE_BROWSER_IMAGE:-telclaude-browser:camoufox-0.4.11-pw-1.59.0}
     container_name: tc-browser
     depends_on:
       telclaude:
@@ -60,7 +63,7 @@ services:
     cpus: 2
     networks:
       relay-browser-net:
-        ipv4_address: ${TELCLAUDE_BROWSER_IP:-172.30.94.11}
+        ipv4_address: ${TELCLAUDE_BROWSER_IP:?set tc-browser static container IP on relay-browser-net}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "/usr/local/bin/telclaude-browser-canary.py", "--health-once"]
@@ -84,4 +87,4 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: ${TELCLAUDE_BROWSER_SUBNET:-172.30.94.0/24}
+        - subnet: ${TELCLAUDE_BROWSER_SUBNET:?set relay-browser subnet containing relay and tc-browser IPs}

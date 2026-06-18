@@ -6,11 +6,10 @@
 FROM python:3.12-slim-bookworm
 
 ARG CAMOUFOX_VERSION=0.4.11
-ARG PLAYWRIGHT_VERSION=1.60.0
+ARG PLAYWRIGHT_VERSION=1.59.0
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/camoufox
 ENV HOME=/home/browser
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,8 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --system --create-home --home-dir /home/browser --uid 10001 browser \
-    && mkdir -p /opt/camoufox \
-    && chown -R browser:browser /opt/camoufox /home/browser
+    && chown -R browser:browser /home/browser
 
 USER browser
 

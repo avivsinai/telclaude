@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import importlib.metadata
 import json
@@ -13,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 
@@ -201,11 +203,39 @@ def run_browser_front_server(host: str, public_port: int, internal_port: int, ws
 
 
 def start_camoufox_server(internal_port: int, ws_path: str) -> subprocess.Popen[str]:
-    script = (
-        "from camoufox.server import launch_server; "
-        f"launch_server(headless=True, port={internal_port!r}, ws_path={ws_path_for_camoufox(ws_path)!r})"
+    from camoufox.pkgman import LOCAL_DATA  # noqa: PLC0415
+    from camoufox.server import get_nodejs, to_camel_case_dict  # noqa: PLC0415
+    from camoufox.utils import launch_options  # noqa: PLC0415
+
+    config = launch_options(
+        headless=True,
+        port=internal_port,
+        ws_path=ws_path_for_camoufox(ws_path),
     )
-    return subprocess.Popen([sys.executable, "-c", script], text=True)  # noqa: S603
+    payload = base64.b64encode(
+        json.dumps(to_camel_case_dict(strip_none_values(config)), separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+    nodejs = get_nodejs()
+    process = subprocess.Popen(  # noqa: S603
+        [nodejs, str(LOCAL_DATA / "launchServer.js")],
+        cwd=Path(nodejs).parent / "package",
+        stdin=subprocess.PIPE,
+        text=True,
+    )
+    if process.stdin:
+        process.stdin.write(payload)
+        process.stdin.close()
+    return process
+
+
+def strip_none_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: strip_none_values(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [strip_none_values(child) for child in value]
+    return value
 
 
 def wait_for_port(host: str, port: int, *, timeout_seconds: float) -> None:

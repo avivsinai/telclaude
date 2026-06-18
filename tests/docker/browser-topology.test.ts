@@ -50,13 +50,15 @@ describe("Browser trust-domain Docker topology", () => {
 		const playwrightVersionArg = ["$", "{PLAYWRIGHT_VERSION}"].join("");
 
 		expect(dockerfile).toContain("ARG CAMOUFOX_VERSION=0.4.11");
-		expect(dockerfile).toContain("ARG PLAYWRIGHT_VERSION=1.60.0");
+		expect(dockerfile).toContain("ARG PLAYWRIGHT_VERSION=1.59.0");
 		expect(dockerfile).toContain(`"playwright==${playwrightVersionArg}"`);
 		expect(dockerfile).toContain(`"camoufox[geoip]==${camoufoxVersionArg}"`);
 		expect(dockerfile).toContain("python -m camoufox fetch");
 		expect(dockerfile).toContain("telclaude-browser-canary.py");
 		expect(dockerfile).toContain('"--serve"');
-		expect(canary).toContain("from camoufox.server import launch_server");
+		expect(canary).toContain("from camoufox.utils import launch_options");
+		expect(canary).toContain('LOCAL_DATA / "launchServer.js"');
+		expect(canary).toContain("strip_none_values(config)");
 		expect(canary).toContain("playwright.firefox.connect");
 		expect(canary).toContain('DEFAULT_WS_PATH = "/playwright"');
 		expect(dockerfile).not.toContain("TELCLAUDE_VAULT_SOCKET");
@@ -70,22 +72,29 @@ describe("Browser trust-domain Docker topology", () => {
 		const relayNetworks = networksSection(relay);
 		const browserNetworks = networksSection(browser);
 		const browserNetwork = networkBlock(compose, "relay-browser-net");
-		const browserIp = composeVariable("TELCLAUDE_BROWSER_IP:-172.30.94.11");
+		const browserPeerAddress = composeVariable(
+			"TELCLAUDE_BROWSER_IP:?set tc-browser static container IP for context token binding",
+		);
+		const browserNetworkIp = composeVariable(
+			"TELCLAUDE_BROWSER_IP:?set tc-browser static container IP on relay-browser-net",
+		);
 
 		expect(relay).toContain("TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED=1");
 		expect(relay).toContain("TELCLAUDE_BROWSER_CONNECT_PROXY_REQUIRE_CONTEXT=");
 		expect(relay).toContain("TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET=");
 		expect(relay).toContain("TELCLAUDE_BROWSER_WS_ENDPOINT=ws://tc-browser:");
-		expect(relay).toContain(`TELCLAUDE_BROWSER_PEER_ADDRESS=${browserIp}`);
+		expect(relay).toContain(`TELCLAUDE_BROWSER_PEER_ADDRESS=${browserPeerAddress}`);
 		expect(relayNetworks).toContain("relay-browser-net:");
 		expect(relayNetworks).toContain(
-			`ipv4_address: ${composeVariable("TELCLAUDE_BROWSER_RELAY_IP:-172.30.94.10")}`,
+			`ipv4_address: ${composeVariable(
+				"TELCLAUDE_BROWSER_RELAY_IP:?set relay static container IP on relay-browser-net",
+			)}`,
 		);
 
 		expect(browser).toContain("docker/Dockerfile.browser");
 		expect(browser).toContain("PLAYWRIGHT_VERSION:");
-		expect(browser).toContain(composeVariable("TELCLAUDE_BROWSER_PLAYWRIGHT_VERSION:-1.60.0"));
-		expect(browser).toContain("telclaude-browser:camoufox-0.4.11-pw-1.60.0");
+		expect(browser).toContain(composeVariable("TELCLAUDE_BROWSER_PLAYWRIGHT_VERSION:-1.59.0"));
+		expect(browser).toContain("telclaude-browser:camoufox-0.4.11-pw-1.59.0");
 		expect(browser).toContain(
 			`TELCLAUDE_BROWSER_PORT=${composeVariable("TELCLAUDE_BROWSER_PORT:-3006")}`,
 		);
@@ -104,7 +113,7 @@ describe("Browser trust-domain Docker topology", () => {
 		expect(browser).toContain("read_only: true");
 		expect(browser).toContain("no-new-privileges:true");
 		expect(browserNetworks).toContain("relay-browser-net:");
-		expect(browserNetworks).toContain(`ipv4_address: ${browserIp}`);
+		expect(browserNetworks).toContain(`ipv4_address: ${browserNetworkIp}`);
 		for (const forbidden of [
 			"relay-egress",
 			"relay-vault-net",
@@ -130,7 +139,9 @@ describe("Browser trust-domain Docker topology", () => {
 		expect(browserNetwork).toContain("name: telclaude-relay-browser");
 		expect(browserNetwork).toContain("internal: true");
 		expect(browserNetwork).toContain(
-			`subnet: ${composeVariable("TELCLAUDE_BROWSER_SUBNET:-172.30.94.0/24")}`,
+			`subnet: ${composeVariable(
+				"TELCLAUDE_BROWSER_SUBNET:?set relay-browser subnet containing relay and tc-browser IPs",
+			)}`,
 		);
 	});
 });
