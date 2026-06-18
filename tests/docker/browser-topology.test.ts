@@ -48,9 +48,16 @@ describe("Browser trust-domain Docker topology", () => {
 		const canary = readDockerFile("docker/browser-canary.py");
 		const camoufoxVersionArg = ["$", "{CAMOUFOX_VERSION}"].join("");
 		const playwrightVersionArg = ["$", "{PLAYWRIGHT_VERSION}"].join("");
+		const packageInstallIndex = dockerfile.indexOf("python -m pip install");
+		const runtimeUserIndex = dockerfile.indexOf("\nUSER browser");
 
 		expect(dockerfile).toContain("ARG CAMOUFOX_VERSION=0.4.11");
 		expect(dockerfile).toContain("ARG PLAYWRIGHT_VERSION=1.59.0");
+		expect(dockerfile).toContain("ENV PYTHONNOUSERSITE=1");
+		expect(dockerfile).toContain("ENV XDG_CACHE_HOME=/opt/camoufox-cache");
+		expect(packageInstallIndex).toBeGreaterThan(-1);
+		expect(runtimeUserIndex).toBeGreaterThan(-1);
+		expect(packageInstallIndex).toBeLessThan(runtimeUserIndex);
 		expect(dockerfile).toContain(`"playwright==${playwrightVersionArg}"`);
 		expect(dockerfile).toContain(`"camoufox[geoip]==${camoufoxVersionArg}"`);
 		expect(dockerfile).toContain("python -m camoufox fetch");
