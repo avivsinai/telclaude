@@ -23,7 +23,7 @@ jobs:
     # alone runs ~15 min as a single file (vitest can't parallelize within one file), which set a
     # floor above the old 10-min cap. Deploy needs:[verify], so this must complete post-merge too.
     # Follow-up: split hermes.test.ts so vitest parallelizes it and this can come back down.
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -38,7 +38,23 @@ jobs:
           cache: 'pnpm'
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 16
+        run: |
+          set -euo pipefail
+
+          sudo timeout 180s apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            -o DPkg::Lock::Timeout=30 \
+            update
+
+          sudo env DEBIAN_FRONTEND=noninteractive timeout 900s apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            -o DPkg::Lock::Timeout=30 \
+            install -y --no-install-recommends ffmpeg
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

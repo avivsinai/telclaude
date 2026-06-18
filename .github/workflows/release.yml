@@ -120,7 +120,7 @@ jobs:
     needs: prepare
     if: needs.prepare.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
     steps:
@@ -137,7 +137,23 @@ jobs:
           cache: pnpm
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 16
+        run: |
+          set -euo pipefail
+
+          sudo timeout 180s apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            -o DPkg::Lock::Timeout=30 \
+            update
+
+          sudo env DEBIAN_FRONTEND=noninteractive timeout 900s apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            -o DPkg::Lock::Timeout=30 \
+            install -y --no-install-recommends ffmpeg
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
