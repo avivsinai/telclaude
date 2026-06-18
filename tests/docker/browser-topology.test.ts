@@ -151,4 +151,25 @@ describe("Browser trust-domain Docker topology", () => {
 			)}`,
 		);
 	});
+
+	it("keeps firewall refresh rebuilding internal browser rules in permissive mode", () => {
+		const firewall = readDockerFile("docker/init-firewall.sh");
+		const refreshStart = firewall.indexOf("refresh_firewall() {");
+		expect(refreshStart).toBeGreaterThan(-1);
+		const refreshBody = firewall.slice(refreshStart, firewall.indexOf("\n# ─", refreshStart + 1));
+		const internalIndex = refreshBody.indexOf("[firewall-refresh] checking internal hosts");
+		const privateEndpointIndex = refreshBody.indexOf("re-added private endpoint rules");
+		const permissiveIndex = refreshBody.indexOf("TELCLAUDE_NETWORK_MODE=$NETWORK_MODE");
+		const domainIndex = refreshBody.indexOf("[firewall-refresh] checking allowed domains");
+
+		expect(refreshBody).toContain("iptables -F TELCLAUDE_ALLOW");
+		expect(internalIndex).toBeGreaterThan(-1);
+		expect(privateEndpointIndex).toBeGreaterThan(-1);
+		expect(permissiveIndex).toBeGreaterThan(-1);
+		expect(domainIndex).toBeGreaterThan(-1);
+		expect(internalIndex).toBeLessThan(permissiveIndex);
+		expect(privateEndpointIndex).toBeLessThan(permissiveIndex);
+		expect(permissiveIndex).toBeLessThan(domainIndex);
+		expect(refreshBody).not.toContain("skipping refresh (permissive mode - no domain allowlist)");
+	});
 });

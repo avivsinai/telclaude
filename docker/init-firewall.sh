@@ -641,12 +641,6 @@ refresh_firewall() {
         return 1
     fi
 
-    # In permissive/open mode, there's no domain allowlist to refresh
-    if [ "$NETWORK_MODE" = "permissive" ] || [ "$NETWORK_MODE" = "open" ]; then
-        echo "[firewall-refresh] skipping refresh (permissive mode - no domain allowlist)"
-        return 0
-    fi
-
     echo "[firewall-refresh] refreshing TELCLAUDE_ALLOW chain..."
 
     local updated=0
@@ -680,29 +674,6 @@ refresh_firewall() {
         echo "[firewall-refresh] allowed internal: $host"
     done
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Re-add allowed domain rules (handles DNS changes)
-    # ═══════════════════════════════════════════════════════════════════════════
-    echo "[firewall-refresh] checking allowed domains..."
-    for domain in "${ALLOWED_DOMAINS[@]}"; do
-        local new_ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
-
-        if [ -z "$new_ips" ]; then
-            echo "[firewall-refresh] warning: could not resolve $domain"
-            ((failed++)) || true
-            continue
-        fi
-
-        for ip in $new_ips; do
-            if is_public_ip "$ip"; then
-                iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
-            else
-                echo "[firewall-refresh] WARNING: $domain resolved to private IP $ip, skipping"
-            fi
-        done
-        ((updated++)) || true
-    done
-
     # Re-add private endpoint rules
     if [ -n "$PRIVATE_ENDPOINTS_RAW" ]; then
         while IFS='|' read -r target ports; do
@@ -720,6 +691,36 @@ refresh_firewall() {
             ((updated++)) || true
         done <<< "$PRIVATE_ENDPOINTS_RAW"
         echo "[firewall-refresh] re-added private endpoint rules"
+    fi
+
+    # In permissive/open mode there is no public-domain allowlist to refresh,
+    # but internal hosts and private endpoints above are still required because
+    # RFC1918/metadata blocks remain active in every mode.
+    if [ "$NETWORK_MODE" = "permissive" ] || [ "$NETWORK_MODE" = "open" ]; then
+        echo "[firewall-refresh] skipped domain allowlist refresh (TELCLAUDE_NETWORK_MODE=$NETWORK_MODE)"
+    else
+        # ═══════════════════════════════════════════════════════════════════════
+        # Re-add allowed domain rules (handles DNS changes)
+        # ═══════════════════════════════════════════════════════════════════════
+        echo "[firewall-refresh] checking allowed domains..."
+        for domain in "${ALLOWED_DOMAINS[@]}"; do
+            local new_ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+
+            if [ -z "$new_ips" ]; then
+                echo "[firewall-refresh] warning: could not resolve $domain"
+                ((failed++)) || true
+                continue
+            fi
+
+            for ip in $new_ips; do
+                if is_public_ip "$ip"; then
+                    iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
+                else
+                    echo "[firewall-refresh] WARNING: $domain resolved to private IP $ip, skipping"
+                fi
+            done
+            ((updated++)) || true
+        done
     fi
 
     echo "[firewall-refresh] rebuilt TELCLAUDE_ALLOW chain ($updated entries)"

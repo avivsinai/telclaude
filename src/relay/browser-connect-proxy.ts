@@ -447,8 +447,10 @@ function denyConnect(clientSocket: net.Socket, status: number, reason: string): 
 				: status === 502
 					? "Bad Gateway"
 					: "Forbidden";
+	const authHeader =
+		status === 407 ? 'Proxy-Authenticate: Basic realm="telclaude-browser"\r\n' : "";
 	clientSocket.end(
-		`HTTP/1.1 ${status} ${statusText}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${reason}`,
+		`HTTP/1.1 ${status} ${statusText}\r\n${authHeader}Content-Type: text/plain\r\nConnection: close\r\n\r\n${reason}`,
 	);
 }
 
