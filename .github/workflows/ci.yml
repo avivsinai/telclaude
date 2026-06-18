@@ -312,6 +312,58 @@ jobs:
           sed -i 's/^          //' "$hook_path"
           chmod 700 "$hook_path"
 
+      - name: Ensure William reminder capability scopes
+        run: |
+          set -euo pipefail
+          cd ~/telclaude
+          repair_js="$(mktemp)"
+          trap 'rm -f "$repair_js"' EXIT
+          cat > "$repair_js" <<'NODE'
+          const fs = require("fs");
+
+          const [configPath, label] = process.argv.slice(2);
+          if (!fs.existsSync(configPath)) {
+            console.log(`${label}_schedule_scope=skip reason=missing`);
+            process.exit(0);
+          }
+
+          const requiredScopes = ["schedule.read", "schedule.write"];
+          const raw = fs.readFileSync(configPath, "utf8");
+          const parsed = JSON.parse(raw);
+          const privateRuntime = parsed?.hermes?.privateRuntime;
+
+          if (!privateRuntime || !Array.isArray(privateRuntime.capabilityScopes)) {
+            console.log(`${label}_schedule_scope=skip reason=no_explicit_capabilityScopes`);
+            process.exit(0);
+          }
+
+          const missing = requiredScopes.filter(
+            (scope) => !privateRuntime.capabilityScopes.includes(scope),
+          );
+          if (missing.length === 0) {
+            console.log(`${label}_schedule_scope=present`);
+            process.exit(0);
+          }
+
+          privateRuntime.capabilityScopes = [...privateRuntime.capabilityScopes, ...missing];
+          const stat = fs.statSync(configPath);
+          const mode = stat.mode & 0o777;
+          const backupPath = `${configPath}.pre-schedule-scope-${Date.now()}.bak`;
+
+          fs.copyFileSync(configPath, backupPath, fs.constants.COPYFILE_EXCL);
+          fs.chmodSync(backupPath, mode);
+          fs.writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`, { mode });
+          console.log(`${label}_schedule_scope=updated added=${missing.join(",")} backup=${backupPath}`);
+          NODE
+
+          node "$repair_js" "$HOME/telclaude/docker/telclaude.json" "host_policy"
+
+          if docker ps --format '{{.Names}}' | grep -Fxq telclaude; then
+            docker exec -i -u 0 -w /app telclaude node - "/data/telclaude.json" "live_policy" < "$repair_js"
+          else
+            echo "live_policy_schedule_scope=skip reason=container_not_running"
+          fi
+
       - name: Build and deploy
         run: |
           set -euo pipefail
