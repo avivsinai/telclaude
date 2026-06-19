@@ -19,6 +19,7 @@ import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
 import type { BrowseRequest, BrowseResult } from "../../relay/browser-broker.js";
+import type { BrowserAuthorityDomain } from "../../relay/browser-cookie-store.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
@@ -630,6 +631,9 @@ export function createTelclaudeLiveMcpRelayClients(
 			consumeRateLimit("web_browse", request.actorId);
 			const result = await options.browser.browse({
 				actor: request.actorId,
+				profileId: request.profileId,
+				// Server-resolved trust domain — scopes which captured login may attach.
+				authorityDomain: request.domain as BrowserAuthorityDomain,
 				sessionRef: request.turnConversationRef ?? request.endpointId,
 				url: request.url,
 				...(request.maxChars !== undefined ? { maxChars: request.maxChars } : {}),

@@ -30,9 +30,22 @@ const BROWSER_COOKIE_STORE_MIN_KEY_LENGTH = 32;
 /** scrypt cost: harden the at-rest KDF above the Node default (N=2^14). Derived once + cached. */
 const BROWSER_COOKIE_STORE_SCRYPT_PARAMS = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 
+/**
+ * Trust domain a captured login belongs to. A private login must never resolve
+ * for a social/household/public authority (cross-persona credential bleed).
+ */
+export type BrowserAuthorityDomain = "private" | "public-social" | "household" | "public";
+
 /** A captured browser session: the cookies + origin scope for one logged-in domain. */
 export interface BrowserSessionRecord {
-	readonly sessionRef: string;
+	/** Persisted credential id (the store key); distinct from a per-browse sessionRef. */
+	readonly credentialRef: string;
+	/** Operator actor who owns this login — the resolver binds to it. */
+	readonly actorId: string;
+	/** Operator profile this login was captured under. */
+	readonly profileId: string;
+	/** Trust domain — a login only resolves for a request of the SAME authority. */
+	readonly authorityDomain: BrowserAuthorityDomain;
 	/** Registrable domain this session is logged into. */
 	readonly domain: string;
 	/** M1 login-origin set (registrable domains) the cookie-bearing context may egress to. */
@@ -46,11 +59,33 @@ export interface BrowserSessionRecord {
 
 /** Session metadata without the storageState — safe to surface to an operator. */
 export interface BrowserSessionMeta {
-	readonly sessionRef: string;
+	readonly credentialRef: string;
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly authorityDomain: BrowserAuthorityDomain;
 	readonly domain: string;
 	readonly originScope: readonly string[];
 	readonly createdAt: number;
 	readonly capturedBy: string;
+}
+
+/** The authority of a browse request — a session resolves only for a matching one. */
+export interface BrowserSessionAuthority {
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly authorityDomain: BrowserAuthorityDomain;
+}
+
+/** True iff the record belongs to the requesting authority (no cross-persona bleed). */
+export function sessionMatchesAuthority(
+	record: { actorId: string; profileId: string; authorityDomain: BrowserAuthorityDomain },
+	authority: BrowserSessionAuthority,
+): boolean {
+	return (
+		record.authorityDomain === authority.authorityDomain &&
+		record.profileId === authority.profileId &&
+		record.actorId === authority.actorId
+	);
 }
 
 interface EncryptedRecord {
@@ -88,17 +123,22 @@ export class BrowserCookieStore {
 
 	/** Store (or replace) a captured session. originScope is normalized; domain must be in it. */
 	putSession(record: BrowserSessionRecord): void {
-		const sessionRef = record.sessionRef.trim();
+		const credentialRef = record.credentialRef.trim();
+		const actorId = record.actorId.trim();
+		const profileId = record.profileId.trim();
 		const domain = record.domain.trim().toLowerCase();
-		if (!sessionRef || !domain) {
-			throw new Error("browser session requires sessionRef and domain");
+		if (!credentialRef || !actorId || !profileId || !domain) {
+			throw new Error("browser session requires credentialRef, actorId, profileId, and domain");
 		}
 		const originScope = buildBrowserOriginScope([domain, ...record.originScope]);
 		if (originScope.length === 0) {
 			throw new Error("browser session requires a non-empty origin scope");
 		}
 		const stored: BrowserSessionRecord = {
-			sessionRef,
+			credentialRef,
+			actorId,
+			profileId,
+			authorityDomain: record.authorityDomain,
 			domain,
 			originScope,
 			storageState: record.storageState,
@@ -111,23 +151,23 @@ export class BrowserCookieStore {
 			salt: file.salt,
 			sessions: {
 				...file.sessions,
-				[sessionRef]: this.encrypt(JSON.stringify(stored), key, sessionRef),
+				[credentialRef]: this.encrypt(JSON.stringify(stored), key, credentialRef),
 			},
 		};
 		this.writeFile(next);
 	}
 
 	/** Decrypt and return a session, or null if absent / undecryptable. */
-	getSession(sessionRef: string): BrowserSessionRecord | null {
+	getSession(credentialRef: string): BrowserSessionRecord | null {
 		const file = this.readFile();
-		const ref = sessionRef.trim();
+		const ref = credentialRef.trim();
 		const entry = file.sessions[ref];
 		if (!entry) return null;
 		try {
 			return JSON.parse(this.decrypt(entry, this.getKey(file), ref)) as BrowserSessionRecord;
 		} catch {
 			logger.warn(
-				{ sessionRef: ref },
+				{ credentialRef: ref },
 				"browser session record failed to decrypt (wrong key or tampered)",
 			);
 			return null;
@@ -143,7 +183,10 @@ export class BrowserCookieStore {
 			try {
 				const r = JSON.parse(this.decrypt(entry, key, ref)) as BrowserSessionRecord;
 				out.push({
-					sessionRef: r.sessionRef,
+					credentialRef: r.credentialRef,
+					actorId: r.actorId,
+					profileId: r.profileId,
+					authorityDomain: r.authorityDomain,
 					domain: r.domain,
 					originScope: r.originScope,
 					createdAt: r.createdAt,
@@ -151,16 +194,16 @@ export class BrowserCookieStore {
 				});
 			} catch {
 				// Skip (fail-closed) undecryptable rows rather than failing the whole listing.
-				logger.warn({ sessionRef: ref }, "skipping undecryptable browser session row");
+				logger.warn({ credentialRef: ref }, "skipping undecryptable browser session row");
 			}
 		}
 		return out.sort((a, b) => b.createdAt - a.createdAt);
 	}
 
 	/** Delete a session. Returns true if it existed. */
-	deleteSession(sessionRef: string): boolean {
+	deleteSession(credentialRef: string): boolean {
 		const file = this.readFile();
-		const ref = sessionRef.trim();
+		const ref = credentialRef.trim();
 		if (!file.sessions[ref]) return false;
 		const { [ref]: _removed, ...rest } = file.sessions;
 		this.writeFile({ salt: file.salt, sessions: rest });
