@@ -60,6 +60,7 @@ export interface BrowserActCommitterProbeResult {
 	readonly checks: readonly BrowserActCommitterProbeCheck[];
 }
 
+// A fixed, non-secret fixture used only to derive the probe's commitment subkey. gitleaks:allow
 const PROBE_CONTEXT_TOKEN_SECRET = "browser-act-committer-probe-secret-32bytes!";
 const COMMIT_HOST = "shop.example.com";
 const COMMIT_URL = "https://shop.example.com/checkout?step=review";
