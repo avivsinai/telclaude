@@ -83,6 +83,7 @@ describe("browser act evidence", () => {
 		expect(normalizeBrowserDom('<!--x--><main nonce="abc"> Hello   world </main>')).toBe(
 			"<main>Hello world</main>",
 		);
+		expect(normalizeBrowserDom("<main>Hello</main><!-- trailing")).toBe("<main>Hello</main>");
 		expect(firstEvidence.schemaVersion).toBe(BROWSER_ACT_EVIDENCE_SCHEMA_VERSION);
 		expect(firstEvidence.evidenceNonce).toBe("same-nonce");
 		expect(firstEvidence.domDigest).toBe(secondEvidence.domDigest);

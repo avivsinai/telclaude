@@ -142,13 +142,29 @@ export async function captureBrowserActEvidence(
 }
 
 export function normalizeBrowserDom(markup: string): string {
-	return markup
-		.replace(/<!--[\s\S]*?-->/g, "")
+	return stripHtmlComments(markup)
 		.replace(/\s(?:nonce|data-reactid|data-reactroot)=("[^"]*"|'[^']*')/g, "")
 		.replace(/\s+/g, " ")
 		.replace(/>\s+/g, ">")
 		.replace(/\s+</g, "<")
 		.trim();
+}
+
+function stripHtmlComments(markup: string): string {
+	let output = "";
+	let offset = 0;
+	while (offset < markup.length) {
+		const start = markup.indexOf("<!--", offset);
+		if (start === -1) {
+			output += markup.slice(offset);
+			break;
+		}
+		output += markup.slice(offset, start);
+		const end = markup.indexOf("-->", start + 4);
+		if (end === -1) break;
+		offset = end + 3;
+	}
+	return output;
 }
 
 export function classifyCommitSignal(
