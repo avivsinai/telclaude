@@ -130,9 +130,11 @@ function normalizeBrowserHost(host: string): string | null {
 	// Reject bare IPv4 literals — origin scopes are registrable domains.
 	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(trimmed)) return null;
 	// Reject bare public suffixes (co.uk, com, github.io): a scope/host keyed to an
-	// eTLD would match EVERY tenant under it (cross-tenant egress). tldts (with the
-	// private PSL section) returns null for a public suffix; a real host resolves to
-	// its eTLD+1, and a subdomain resolves to its registrable parent.
+	// eTLD would match EVERY tenant under it (cross-tenant egress). tldts returns null
+	// for a public suffix; a real host resolves to its eTLD+1, and a subdomain resolves
+	// to its registrable parent. allowPrivateDomains:true is deliberate — it treats the
+	// PSL private section (github.io, herokuapp.com, s3.amazonaws.com) as suffixes too,
+	// so a github.io login can't ride cookies onto victim.github.io.
 	if (!getDomain(trimmed, { allowPrivateDomains: true })) return null;
 	return trimmed;
 }

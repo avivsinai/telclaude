@@ -30,6 +30,14 @@ describe("browser origin scope — public-suffix (PSL) rejection", () => {
 		]);
 	});
 
+	it("keeps a real catastrophic host so refusal still works (the guard is shared)", () => {
+		// normalizeBrowserHost is shared with the catastrophic-domain path. A real
+		// catastrophic host is registrable-or-deeper, so it survives the PSL guard and
+		// still drives refusal; only a degenerate bare-suffix catastrophic entry drops.
+		expect(buildBrowserOriginScope(["myaccount.google.com"])).toEqual(["myaccount.google.com"]);
+		expect(buildBrowserOriginScope(["login.tailscale.com"])).toEqual(["login.tailscale.com"]);
+	});
+
 	it("a public-suffix scope can never match an arbitrary tenant under it", () => {
 		// Before the PSL guard, hostMatchesBrowserOriginScope("evil.co.uk", ["co.uk"])
 		// returned true — a session keyed to co.uk would ride cookies onto every
