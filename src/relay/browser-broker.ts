@@ -25,6 +25,7 @@ import { redactSecrets } from "../security/output-filter.js";
 import { assertSafeWebEgress } from "../security/web-egress-preflight.js";
 import { BROWSER_CONTEXT_PROXY_BASIC_USERNAME } from "./browser-connect-contract.js";
 import { mintBrowserContextToken } from "./browser-context-token.js";
+import type { BrowserAuthorityDomain } from "./browser-cookie-store.js";
 
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const MIN_NAVIGATION_TIMEOUT_MS = 1_000;
@@ -112,6 +113,10 @@ export interface BrowseSession {
 export interface BrowseRequest {
 	/** Server-resolved actor identity (the runtime never names its own). */
 	readonly actor: string;
+	/** Server-resolved operator profile (the runtime never names its own). */
+	readonly profileId: string;
+	/** Server-resolved trust domain — scopes which captured login may attach (M2). */
+	readonly authorityDomain: BrowserAuthorityDomain;
 	/** Server-resolved session reference for this browse. */
 	readonly sessionRef: string;
 	readonly url: string;

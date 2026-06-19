@@ -439,11 +439,13 @@ describe("Telclaude live MCP web capability clients", () => {
 
 		expect(result.content).toContain("UNTRUSTED");
 		expect(result.finalUrl).toBe("https://example.org/read?r=1");
-		// The broker is driven with the relay-stamped actor and a server-derived
-		// sessionRef — the runtime never names either.
+		// The broker is driven with the relay-stamped actor, profile, trust domain,
+		// and a server-derived sessionRef — the runtime never names any of them.
 		expect(browseCalls).toEqual([
 			{
 				actor: "operator",
+				profileId: "ops",
+				authorityDomain: "private",
 				sessionRef: "endpoint-private",
 				url: "https://example.org/read",
 				maxChars: 1_000,
@@ -462,11 +464,46 @@ describe("Telclaude live MCP web capability clients", () => {
 		]);
 	});
 
+	it("maps the social MCP domain to the public-social browser authority (not a cast)", async () => {
+		const browseCalls: { authorityDomain?: unknown }[] = [];
+		const broker: BrowseExecutor = {
+			browse: async (request) => {
+				browseCalls.push(request);
+				return {
+					url: request.url,
+					finalUrl: request.url,
+					httpStatus: 200,
+					title: "",
+					content: "[BROWSED WEB PAGE (TC_BROWSE) - UNTRUSTED]\nhi",
+					truncated: false,
+				};
+			},
+		};
+		const clients = makeClients({ browser: broker });
+		await clients.browse(
+			browse({
+				url: "https://example.org/read",
+				domain: "social",
+				actorId: "social",
+				profileId: "tc-public-social",
+				memorySource: "social",
+				writableNamespace: "social",
+				endpointId: "endpoint-social",
+				networkNamespace: "netns-social",
+			}),
+		);
+		// MCP 'social' → browser 'public-social', so a social authority can never
+		// resolve a session captured under any other domain.
+		expect(browseCalls[0]?.authorityDomain).toBe("public-social");
+	});
+
 	it("fails closed when no browser broker is configured", async () => {
 		const clients = makeClients();
-		await expect(clients.browse(browse({ url: "https://example.org/read" }))).rejects.toMatchObject({
-			code: "mcp_tool_not_configured",
-		});
+		await expect(clients.browse(browse({ url: "https://example.org/read" }))).rejects.toMatchObject(
+			{
+				code: "mcp_tool_not_configured",
+			},
+		);
 	});
 
 	it("refuses a secret-shaped browse URL before reaching the broker", async () => {

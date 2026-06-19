@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	BrowserCookieStore,
 	type BrowserSessionRecord,
+	browserAuthorityDomainFromMcp,
 } from "../../src/relay/browser-cookie-store.js";
 
 const KEY = "cookie-store-test-key-0123456789";
@@ -24,7 +25,10 @@ afterEach(() => {
 
 function record(overrides: Partial<BrowserSessionRecord> = {}): BrowserSessionRecord {
 	return {
-		sessionRef: "sess-google-1",
+		credentialRef: "sess-google-1",
+		actorId: "telegram:default",
+		profileId: "default",
+		authorityDomain: "private",
 		domain: "google.com",
 		originScope: ["accounts.google.com", "mail.google.com"],
 		storageState: {
@@ -61,13 +65,13 @@ describe("BrowserCookieStore", () => {
 
 	it("lists metadata only (never storageState), newest first", () => {
 		const store = new BrowserCookieStore(filePath, KEY);
-		store.putSession(record({ sessionRef: "a", createdAt: 1 }));
+		store.putSession(record({ credentialRef: "a", createdAt: 1 }));
 		store.putSession(
-			record({ sessionRef: "b", domain: "github.com", originScope: [], createdAt: 2 }),
+			record({ credentialRef: "b", domain: "github.com", originScope: [], createdAt: 2 }),
 		);
 
 		const list = store.listSessions();
-		expect(list.map((m) => m.sessionRef)).toEqual(["b", "a"]);
+		expect(list.map((m) => m.credentialRef)).toEqual(["b", "a"]);
 		expect(JSON.stringify(list)).not.toContain("storageState");
 		expect(JSON.stringify(list)).not.toContain("secret-cookie-value");
 	});
@@ -92,10 +96,10 @@ describe("BrowserCookieStore", () => {
 
 	it("binds each record to its sessionRef via AES-GCM AAD — an on-disk swap fails closed", () => {
 		const store = new BrowserCookieStore(filePath, KEY);
-		store.putSession(record({ sessionRef: "low", domain: "example.org", originScope: [] }));
+		store.putSession(record({ credentialRef: "low", domain: "example.org", originScope: [] }));
 		store.putSession(
 			record({
-				sessionRef: "bank",
+				credentialRef: "bank",
 				domain: "bank.example",
 				originScope: [],
 				storageState: { cookies: [{ name: "B", value: "bank-cookie", domain: "bank.example" }] },
@@ -118,6 +122,11 @@ describe("BrowserCookieStore", () => {
 		expect(() => store.putSession(record({ domain: "localhost", originScope: [] }))).toThrow(
 			/origin scope/,
 		);
+		// an invalid authorityDomain (e.g. the MCP 'social' vocab) is rejected at
+		// capture so a bad value can never silently isolate sessions later.
+		expect(() => store.putSession(record({ authorityDomain: "social" as never }))).toThrow(
+			/valid authorityDomain/,
+		);
 	});
 
 	it("persists across store instances (durable)", () => {
@@ -125,5 +134,20 @@ describe("BrowserCookieStore", () => {
 		expect(existsSync(filePath)).toBe(true);
 		const reopened = new BrowserCookieStore(filePath, KEY);
 		expect(reopened.getSession("sess-google-1")?.domain).toBe("google.com");
+	});
+});
+
+describe("browserAuthorityDomainFromMcp", () => {
+	it("maps MCP trust domains to the browser authority vocabulary (social → public-social)", () => {
+		expect(browserAuthorityDomainFromMcp("private")).toBe("private");
+		expect(browserAuthorityDomainFromMcp("social")).toBe("public-social");
+		expect(browserAuthorityDomainFromMcp("household")).toBe("household");
+		expect(browserAuthorityDomainFromMcp("public")).toBe("public");
+	});
+
+	it("maps specialist + any unknown domain to 'public' (fail-closed — not an operator capture domain)", () => {
+		expect(browserAuthorityDomainFromMcp("specialist")).toBe("public");
+		expect(browserAuthorityDomainFromMcp("bogus")).toBe("public");
+		expect(browserAuthorityDomainFromMcp("")).toBe("public");
 	});
 });

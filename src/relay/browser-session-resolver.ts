@@ -15,7 +15,11 @@ import {
 	buildBrowserOriginScope,
 	hostMatchesBrowserOriginScope,
 } from "./browser-connect-contract.js";
-import type { BrowserCookieStore } from "./browser-cookie-store.js";
+import {
+	type BrowserCookieStore,
+	type BrowserSessionAuthority,
+	sessionMatchesAuthority,
+} from "./browser-cookie-store.js";
 
 /** Anything that can run a browse — the broker, or a wrapper around it. */
 type BrowseRunner = { browse(request: BrowseRequest): Promise<BrowseResult> };
@@ -52,6 +56,7 @@ export function parseBrowserCatastrophicDomains(env: NodeJS.ProcessEnv = process
 export function resolveBrowseSession(
 	store: BrowserCookieStore,
 	url: string,
+	authority: BrowserSessionAuthority,
 	options: ResolveBrowseSessionOptions = {},
 ): BrowseSession | null {
 	let host: string;
@@ -70,6 +75,10 @@ export function resolveBrowseSession(
 	}
 
 	for (const meta of store.listSessions()) {
+		// (0) Authority scope: a login resolves ONLY for the same actor/profile/domain
+		// it was captured under — a private telegram login never resolves for a
+		// social/household/public authority (cross-persona credential bleed).
+		if (!sessionMatchesAuthority(meta, authority)) continue;
 		if (!hostMatchesBrowserOriginScope(host, meta.originScope)) continue;
 		// (b) A session's egress is pinned registrable-domain-wide, so a session whose
 		// scope can REACH any catastrophic host (e.g. a google.com session vs a
@@ -78,7 +87,7 @@ export function resolveBrowseSession(
 		// Refuse such a session entirely → cookie-less (fresh login at use). Prevention
 		// at resolution time is stronger than re-checking finalUrl after cookies flew.
 		if (sessionScopeReachesCatastrophic(meta.originScope, catastrophicDomains)) continue;
-		const record = store.getSession(meta.sessionRef);
+		const record = store.getSession(meta.credentialRef);
 		if (record) {
 			return { storageState: record.storageState, originScope: record.originScope };
 		}
@@ -118,7 +127,18 @@ export function createSessionAwareBrowseExecutor(
 ): BrowseRunner {
 	return {
 		async browse(request) {
-			const session = resolveBrowseSession(store, request.url, options);
+			// The authority is server-stamped on the request (actor/profile/domain);
+			// the resolver only attaches a session captured under that same authority.
+			const session = resolveBrowseSession(
+				store,
+				request.url,
+				{
+					actorId: request.actor,
+					profileId: request.profileId,
+					authorityDomain: request.authorityDomain,
+				},
+				options,
+			);
 			return runner.browse(session ? { ...request, session } : request);
 		},
 	};
