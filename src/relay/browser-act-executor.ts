@@ -111,6 +111,15 @@ export interface BrowserActRequest {
 	readonly sessionRef: string;
 	readonly host: string;
 	readonly originScope: readonly string[];
+	/**
+	 * Server-resolved ENTRY url the live page is auto-loaded to before capture/
+	 * dispatch (Option A). NOT a runtime free-field beyond the already-validated +
+	 * secret-preflighted tool `url`; the relay derives `host`/`originScope` from it
+	 * and the M1 origin-pinned proxy denies an off-scope entry navigation at the
+	 * network layer. Distinct from a `goto` act's destination, which lives in
+	 * `submittedValues` and only navigates post-approval.
+	 */
+	readonly url: string;
 	readonly verb: BrowserActVerb;
 	readonly target?: string;
 	readonly submittedValues?: BrowserActJsonValue;

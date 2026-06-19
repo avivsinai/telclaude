@@ -133,6 +133,7 @@ function commitRequest(actionRef: string): BrowserActRequest & { readonly action
 		sessionRef: "probe-session",
 		host: COMMIT_HOST,
 		originScope: [COMMIT_HOST],
+		url: `https://${COMMIT_HOST}/checkout`,
 		verb: "click",
 		target: "#checkout-form",
 		submittedValues: APPROVED_VALUES,

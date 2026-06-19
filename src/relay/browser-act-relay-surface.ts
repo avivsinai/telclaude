@@ -125,6 +125,12 @@ export function createBrowserActExecutorSurface(
 			sessionRef: request.sessionRef,
 			host,
 			originScope,
+			// Thread the SERVER-RESOLVED entry url so the driver auto-loads the page to
+			// it before capture/dispatch (Option A). This is the same already-validated
+			// + secret-preflighted tool `url` that `host`/`originScope` are derived from
+			// — never a separate runtime-controlled navigation. An off-scope entry url is
+			// denied by the M1 origin-pinned CONNECT proxy at the network layer.
+			url: request.url,
 			verb: request.verb,
 			...(request.target !== undefined ? { target: request.target } : {}),
 			...(request.submittedValues !== undefined

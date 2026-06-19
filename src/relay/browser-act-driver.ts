@@ -216,6 +216,37 @@ function dedupeUpper(methods: readonly string[]): string[] {
 	return [...seen];
 }
 
+/**
+ * The server-resolved entry url the page is auto-loaded to. Fail closed if it is
+ * missing or not http(s): the relay always stamps a validated url here, so an
+ * empty/non-web value means a wiring bug, never a runtime free-field.
+ */
+function requireEntryUrl(url: string): string {
+	const trimmed = url?.trim();
+	if (!trimmed) {
+		throw new BrowserActDriverError(
+			"browser_act_entry_url_missing",
+			"browser act driver requires a server-resolved entry url to load",
+		);
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(trimmed);
+	} catch {
+		throw new BrowserActDriverError(
+			"browser_act_entry_url_invalid",
+			"browser act entry url is not a valid URL",
+		);
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new BrowserActDriverError(
+			"browser_act_entry_url_invalid",
+			"browser act entry url must be http(s)",
+		);
+	}
+	return trimmed;
+}
+
 function requireTarget(verb: BrowserActVerb, target: string | undefined): string {
 	const trimmed = target?.trim();
 	if (!trimmed) {
@@ -307,6 +338,12 @@ export function createBrowserActDriverFactory(
 			now: now(),
 		});
 
+		const navigationTimeoutMs = clampTimeout(
+			request.settleTimeoutMs ??
+				options.config.navigationTimeoutMs ??
+				DEFAULT_NAVIGATION_TIMEOUT_MS,
+		);
+
 		const browser = await connector.connect(options.config.browserWsEndpoint);
 		let context: PlaywrightActContext | undefined;
 		try {
@@ -315,12 +352,19 @@ export function createBrowserActDriverFactory(
 				...(session !== undefined ? { storageState: session.storageState } : {}),
 			});
 			const page = await context.newPage();
+			// Option A — entry-URL auto-load, M1-scoped; in-scope GET-load is an accepted
+			// risk; the committing action is separately human-approved. A blank page would
+			// bind the wrong revision (capture/dispatch on about:blank), so we land on the
+			// server-resolved entry url BEFORE handing the driver to the executor. This
+			// navigation rides the SAME M1 origin-pinned proxy context above (NOT a bypass):
+			// an off-scope or RFC1918/metadata entry url is denied by the CONNECT proxy at
+			// the network layer, so it cannot escape the session's logged-in origin scope.
+			await page.goto(requireEntryUrl(request.url), {
+				timeout: navigationTimeoutMs,
+				waitUntil: "domcontentloaded",
+			});
 			return new PlaywrightBrowserActDriver(browser, context, page, {
-				navigationTimeoutMs: clampTimeout(
-					request.settleTimeoutMs ??
-						options.config.navigationTimeoutMs ??
-						DEFAULT_NAVIGATION_TIMEOUT_MS,
-				),
+				navigationTimeoutMs,
 			});
 		} catch (error) {
 			// Persistent context handoff failed before the pool could take custody:

@@ -7,9 +7,9 @@ import type {
 	BrowserActPrepareResult,
 	BrowserActRequest,
 } from "../../src/relay/browser-act-executor.js";
+import { createBrowserActExecutorSurface } from "../../src/relay/browser-act-relay-surface.js";
 import type { BrowseSession } from "../../src/relay/browser-broker.js";
 import { BrowserCookieStore } from "../../src/relay/browser-cookie-store.js";
-import { createBrowserActExecutorSurface } from "../../src/relay/browser-act-relay-surface.js";
 
 const COOKIE_KEY = "cookie-store-key-thats-at-least-32-chars-long!";
 
@@ -35,7 +35,10 @@ function fakeExecutor() {
 				return { committing: false, evidence: minimalEvidence() };
 			},
 			async prepareIntent(
-				request: BrowserActRequest & { readonly session?: BrowseSession; readonly actionRef: string },
+				request: BrowserActRequest & {
+					readonly session?: BrowseSession;
+					readonly actionRef: string;
+				},
 			): Promise<BrowserActPrepareResult> {
 				prepareRequests.push(request);
 				return { committing: true, record: "browser-write", prepared: minimalPrepared(request) };
@@ -81,6 +84,9 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 		expect(resolved?.host).toBe("shop.example.com");
 		expect(resolved?.originScope).toEqual(["shop.example.com"]);
 		expect(resolved?.session).toBeUndefined();
+		// The SERVER-RESOLVED entry url is threaded into the executor request (Option A)
+		// so the driver auto-loads the live page to it before capture/dispatch.
+		expect(resolved?.url).toBe("https://shop.example.com/cart?step=1");
 	});
 
 	it("attaches a stored login + its origin scope for a matching authority", async () => {
@@ -188,7 +194,11 @@ function minimalEvidence() {
 		screenshotRef: "/relay/media/x.png",
 		revision: "hmac-sha256:r",
 		submittedValuesHash: "hmac-sha256:v",
-		commitSignal: { forceConfirm: false, reasons: [], observed: { navigation: false, formSubmit: false, mutatingRequest: false } },
+		commitSignal: {
+			forceConfirm: false,
+			reasons: [],
+			observed: { navigation: false, formSubmit: false, mutatingRequest: false },
+		},
 	};
 }
 
@@ -205,7 +215,11 @@ function minimalPrepared(request: { readonly actor: string; readonly profileId: 
 		evidenceNonce: "n",
 		bindingHash: `sha256:${"a".repeat(64)}`,
 		display: { verb: "click", target: "#pay-origin", urlOrigin: "https://shop.example.com" },
-		commitSignal: { forceConfirm: true, reasons: ["action.verb.click"], observed: { navigation: false, formSubmit: true, mutatingRequest: false } },
+		commitSignal: {
+			forceConfirm: true,
+			reasons: ["action.verb.click"],
+			observed: { navigation: false, formSubmit: true, mutatingRequest: false },
+		},
 		createdAtMs: 1,
 		expiresAtMs: 2,
 	};

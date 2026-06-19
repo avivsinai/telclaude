@@ -25,6 +25,8 @@ const CONTEXT_TOKEN_SECRET = "browser-act-executor-test-secret-32bytes!";
 const PAGE_URL = "https://shop.example.com/checkout?step=review";
 const PAGE_DOM = "<html><body>review order</body></html>";
 const HOST = "shop.example.com";
+/** The server-resolved entry url the driver factory navigates the live page to. */
+const ENTRY_URL = "https://shop.example.com/checkout?step=review";
 const APPROVED_VALUES: BrowserActJsonValue = { qty: "1", to: "alice@example.com" };
 
 class FakeLivePage implements BrowserActLivePage {
@@ -99,6 +101,7 @@ function commitRequest(
 		sessionRef: "sess-1",
 		host: HOST,
 		originScope: [HOST],
+		url: ENTRY_URL,
 		verb: "click",
 		target: "#checkout-form",
 		submittedValues: APPROVED_VALUES,
@@ -220,6 +223,71 @@ describe("deriveBrowserActCommitmentSecret", () => {
 		expect(() => deriveBrowserActCommitmentSecret("too-short")).toThrowError(
 			BrowserActExecutorError,
 		);
+	});
+});
+
+describe("BrowserActExecutor entry-page navigation (Option A)", () => {
+	it("inline fill captures the navigated ENTRY page (not blank) — factory navigates before capture", async () => {
+		// Model the real driver factory contract: the page is created blank, then the
+		// factory navigates it to request.url BEFORE the executor captures/dispatches.
+		// If the entry nav were skipped, evidence would bind the about:blank revision.
+		const blankUrl = "about:blank";
+		const page = new FakeLivePage(blankUrl, PAGE_DOM);
+		const driver = new FakeDriver(page, new FakeContext(), {});
+		const pool = new BrowserActSessionPool<BrowserActDriver>({ sweepIntervalMs: 0 });
+		const navigatingFactory = (request: BrowserActRequest): BrowserActDriver => {
+			// The factory lands the live page on the server-resolved entry url.
+			page.currentUrl = request.url;
+			return driver;
+		};
+		const executor = new BrowserActExecutor({
+			driverFactory: navigatingFactory,
+			pool,
+			screenshotSink: new FakeSink(),
+			contextTokenSecret: CONTEXT_TOKEN_SECRET,
+			resolveApprover: () => "telegram:default:human",
+		});
+
+		const result = await executor.act(
+			commitRequest("n/a", { verb: "fill", target: "#email", submittedValues: "a@b.com" }),
+		);
+		expect(result.committing).toBe(false);
+		if (result.committing) throw new Error("unreachable");
+		// Evidence reflects the ENTRY page origin/url, never about:blank.
+		expect(result.evidence.urlOrigin).toBe("https://shop.example.com");
+		expect(page.currentUrl).toBe(ENTRY_URL);
+		expect(page.currentUrl).not.toBe(blankUrl);
+		// The inline fill ran against the navigated entry page.
+		expect(driver.dispatched).toEqual([
+			{ verb: "fill", target: "#email", submittedValues: "a@b.com" },
+		]);
+	});
+
+	it("prepareIntent captures the navigated ENTRY page for the WYSIWYS binding (not blank)", async () => {
+		const page = new FakeLivePage("about:blank", PAGE_DOM);
+		const driver = new FakeDriver(page, new FakeContext());
+		const pool = new BrowserActSessionPool<BrowserActDriver>({ sweepIntervalMs: 0 });
+		const navigatingFactory = (request: BrowserActRequest): BrowserActDriver => {
+			page.currentUrl = request.url;
+			return driver;
+		};
+		const executor = new BrowserActExecutor({
+			driverFactory: navigatingFactory,
+			pool,
+			screenshotSink: new FakeSink(),
+			contextTokenSecret: CONTEXT_TOKEN_SECRET,
+			resolveApprover: () => "telegram:default:human",
+		});
+
+		const prepared = await executor.prepareIntent(commitRequest("effect-entry"));
+		expect(prepared.committing).toBe(true);
+		if (!prepared.committing) throw new Error("unreachable");
+		// The binding's display origin is the ENTRY page — the prepare captured the
+		// navigated page, so the revision is bound to the real page, not about:blank.
+		expect(prepared.prepared.display.urlOrigin).toBe("https://shop.example.com");
+		expect(page.currentUrl).toBe(ENTRY_URL);
+		// prepare still never fires the committing act.
+		expect(driver.dispatched).toHaveLength(0);
 	});
 });
 

@@ -26,6 +26,8 @@ const CONFIG: BrowserBrokerConfig = {
 	contextTokenSecret: SECRET,
 };
 
+const ENTRY_URL = "https://shop.example.com/checkout";
+
 const ACT_REQUEST: BrowserActDriverRequest = {
 	actor: "telegram:default:operator",
 	profileId: "default",
@@ -33,6 +35,7 @@ const ACT_REQUEST: BrowserActDriverRequest = {
 	sessionRef: "sess-act-1",
 	host: "shop.example.com",
 	originScope: ["shop.example.com"],
+	url: ENTRY_URL,
 	verb: "click",
 	target: "#submit",
 };
@@ -222,6 +225,10 @@ interface FakeCalls {
 	contextClosed: number;
 	browserClosed: number;
 	pageClosed: number;
+	/** Every navigation the factory drove, in order (entry-url auto-load lands here first). */
+	gotos: Array<{ url: string; waitUntil?: string }>;
+	/** True once newPage() returned — used to prove the entry goto fires AFTER page open. */
+	pageCreated: boolean;
 }
 
 const MAIN_FRAME: PlaywrightActFrame = { mainFrame: true };
@@ -240,6 +247,8 @@ function fakePlaywright(): {
 		contextClosed: 0,
 		browserClosed: 0,
 		pageClosed: 0,
+		gotos: [],
+		pageCreated: false,
 	};
 	const requestHandlers = new Set<(r: PlaywrightActRequest) => void>();
 	const navHandlers = new Set<(f: PlaywrightActFrame) => void>();
@@ -250,8 +259,11 @@ function fakePlaywright(): {
 		releaseLoadState = resolve;
 	});
 
+	// Starts blank; the entry-url auto-load navigates it. Capture/evidence reads
+	// this, so a missing entry goto would leave it on about:blank.
+	let currentUrl = "about:blank";
 	const page: PlaywrightActPage = {
-		url: () => "https://shop.example.com/checkout",
+		url: () => currentUrl,
 		evaluate: async <T>() => "<html></html>" as T,
 		screenshot: async () => Buffer.from("png"),
 		fill: async () => {},
@@ -259,7 +271,11 @@ function fakePlaywright(): {
 		click: async () => {},
 		selectOption: async () => undefined,
 		press: async () => {},
-		goto: async () => undefined,
+		goto: async (url, opts) => {
+			calls.gotos.push({ url, ...(opts?.waitUntil ? { waitUntil: opts.waitUntil } : {}) });
+			currentUrl = url;
+			return undefined;
+		},
 		waitForLoadState: async () => {
 			await loadGate;
 		},
@@ -276,7 +292,10 @@ function fakePlaywright(): {
 	};
 
 	const context: PlaywrightActContext = {
-		newPage: async () => page,
+		newPage: async () => {
+			calls.pageCreated = true;
+			return page;
+		},
 		on: (event, handler) => {
 			if (event === "framenavigated") navHandlers.add(handler);
 		},
@@ -352,6 +371,83 @@ describe("createBrowserActDriverFactory — M1/M2 wiring + persistence", () => {
 		await driver.context.close();
 		expect(calls.contextClosed).toBe(1);
 		expect(calls.browserClosed).toBe(1);
+	});
+
+	it("auto-loads the ENTRY url after newPage (Option A) so capture lands on the entry page, not blank", async () => {
+		const { connector, calls } = fakePlaywright();
+		const factory = createBrowserActDriverFactory({ config: CONFIG, connector });
+
+		const driver = await factory(ACT_REQUEST);
+
+		// The page was created, THEN navigated to the server-resolved entry url —
+		// exactly once, with the domcontentloaded gate.
+		expect(calls.pageCreated).toBe(true);
+		expect(calls.gotos).toHaveLength(1);
+		expect(calls.gotos[0]).toEqual({ url: ENTRY_URL, waitUntil: "domcontentloaded" });
+		// The live page (capture/recapture view) reflects the ENTRY url, not about:blank.
+		expect(driver.page.url()).toBe(ENTRY_URL);
+		await driver.context.close();
+	});
+
+	it("fails closed (and closes the browser) if the server-resolved entry url is missing/non-web", async () => {
+		const empty = fakePlaywright();
+		const emptyFactory = createBrowserActDriverFactory({
+			config: CONFIG,
+			connector: empty.connector,
+		});
+		await expect(emptyFactory({ ...ACT_REQUEST, url: "   " })).rejects.toMatchObject({
+			code: "browser_act_entry_url_missing",
+		});
+		// A blank entry url leaks nothing: the context + browser are torn down.
+		expect(empty.calls.contextClosed).toBe(1);
+		expect(empty.calls.browserClosed).toBe(1);
+
+		const nonWeb = fakePlaywright();
+		const nonWebFactory = createBrowserActDriverFactory({
+			config: CONFIG,
+			connector: nonWeb.connector,
+		});
+		await expect(
+			nonWebFactory({ ...ACT_REQUEST, url: "file:///etc/passwd" }),
+		).rejects.toMatchObject({ code: "browser_act_entry_url_invalid" });
+		expect(nonWeb.calls.gotos).toHaveLength(0);
+		expect(nonWeb.calls.browserClosed).toBe(1);
+	});
+
+	it("an OFF-SCOPE entry url is denied by the M1 origin-pinned proxy (network layer, not bypassed)", async () => {
+		// The entry navigation rides the SAME per-context proxy token the factory mints.
+		// Prove that token refuses an entry host outside the session's origin scope — so
+		// even though the executor would 'goto' it, the CONNECT proxy blocks it.
+		const { connector, calls } = fakePlaywright();
+		const factory = createBrowserActDriverFactory({ config: CONFIG, connector });
+		const storageState = { cookies: [], origins: [] };
+
+		await factory({
+			...ACT_REQUEST,
+			url: "https://shop.example.com/account",
+			session: { storageState, originScope: ["shop.example.com"] },
+		});
+
+		const proxy = calls.proxyOptions[0];
+		const verifier = createBrowserConnectContextVerifier({ secret: SECRET });
+		// The entry host is in scope → CONNECT allowed.
+		const inScope = await verifier({
+			token: proxy?.password ?? "",
+			targetHost: "shop.example.com",
+			targetPort: 443,
+			remoteAddress: PEER,
+			headers: {},
+		});
+		expect(inScope.allowed).toBe(true);
+		// An off-scope entry host (e.g. an injected redirect target) → CONNECT denied.
+		const offScope = await verifier({
+			token: proxy?.password ?? "",
+			targetHost: "evil.test",
+			targetPort: 443,
+			remoteAddress: PEER,
+			headers: {},
+		});
+		expect(offScope.allowed).toBe(false);
 	});
 
 	it("M2: hydrates storageState and pins egress (M1) to the session origin scope", async () => {
