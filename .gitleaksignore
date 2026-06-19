@@ -87,3 +87,4 @@ e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/store.test.ts:github-pat:
 e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:33
 e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:38
 e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:58
+90c27316c2c5d7343fd9a8e9cacf44191cde4a02:src/relay/browser-act-committer-probe.ts:credentials-javascript:63
