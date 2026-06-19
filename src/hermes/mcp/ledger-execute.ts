@@ -171,25 +171,29 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (!resolved.ok) return resolved;
 			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
+			const approvalId = authorized.approvalId ?? resolved.approvalId;
+			// Single-flight CAS: claim the ref after verify so two distinct valid tokens
+			// cannot both reach the provider sidecar. The loser fails terminally in-flight.
+			const claim = options.ledger.claimExecuting(request.actionRef, approvalId);
+			if (!claim.ok) return claim;
 			if (!options.providerProxy) {
-				const executed = await options.ledger.markExecuted(
-					request.actionRef,
-					authorized.approvalId ?? resolved.approvalId,
-				);
+				const executed = await options.ledger.markExecuted(request.actionRef, approvalId);
 				if (executed.ok) resolved.finalize?.();
 				return executed;
 			}
 			resolved.finalize?.();
 			const executed = await executeProviderSidecar(
 				options.providerProxy,
-				authorized.record as TelclaudeMcpProviderSideEffectRecord,
+				claim.record as TelclaudeMcpProviderSideEffectRecord,
 				options.providerApprovalTokenIssuer,
 			);
-			if (!executed.ok) return executed;
-			return options.ledger.markExecuted(
-				request.actionRef,
-				authorized.approvalId ?? resolved.approvalId,
-			);
+			if (!executed.ok) {
+				// Provider sidecar failures are retryable by design: release the claim back
+				// to `prepared` rather than failing terminally (browser-write differs), and
+				// report the released (prepared) record on the failure.
+				return releaseAndReport(options.ledger, request.actionRef, executed);
+			}
+			return options.ledger.markExecuted(request.actionRef, approvalId);
 		},
 		async outboundExecute(request) {
 			const nowMs = options.nowMs?.() ?? Date.now();
@@ -217,17 +221,26 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (!resolved.ok) return resolved;
 			const authorized = await options.ledger.verify(request.outboundRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
-			if (options.outboundDeliveryDispatcher && checked.record.channel === "whatsapp") {
+			const approvalId = authorized.approvalId ?? resolved.approvalId;
+			// Single-flight CAS: claim the ref after verify so two distinct valid tokens
+			// cannot both reach the outbound delivery dispatcher.
+			const claim = options.ledger.claimExecuting(request.outboundRef, approvalId);
+			if (!claim.ok) return claim;
+			if (
+				options.outboundDeliveryDispatcher &&
+				claim.record.kind === "outbound" &&
+				claim.record.channel === "whatsapp"
+			) {
 				const delivered = await executeOutboundDelivery(
 					options.outboundDeliveryDispatcher,
-					authorized.record as TelclaudeMcpOutboundSideEffectRecord,
+					claim.record as TelclaudeMcpOutboundSideEffectRecord,
 				);
-				if (!delivered.ok) return delivered;
+				if (!delivered.ok) {
+					// Delivery failure is retryable: release the claim to `prepared`.
+					return releaseAndReport(options.ledger, request.outboundRef, delivered);
+				}
 			}
-			const executed = await options.ledger.markExecuted(
-				request.outboundRef,
-				authorized.approvalId ?? resolved.approvalId,
-			);
+			const executed = await options.ledger.markExecuted(request.outboundRef, approvalId);
 			if (executed.ok) resolved.finalize?.();
 			return executed;
 		},
@@ -253,22 +266,38 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				checked.record,
 			);
 			if (!resolved.ok) return resolved;
+			// Verify the approval token FIRST (so an invalid token cannot DoS a prepared
+			// ref by stealing its single-flight claim), THEN atomically claim the ref.
 			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
-			const record = authorized.record as TelclaudeMcpBrowserWriteSideEffectRecord;
+			const approvalId = authorized.approvalId ?? resolved.approvalId;
+
+			// Single-flight CAS: only the winner of `prepared -> executing` may proceed to
+			// the irreversible committer. A concurrent execute bearing a second distinct
+			// valid token (e.g. a second human approval) loses HERE — before recapture or
+			// commit — with a terminal in-flight/invalid-state error. A serial second
+			// execute is already rejected at `verify` (executed/failed are terminal).
+			const claim = options.ledger.claimExecuting(request.actionRef, approvalId);
+			if (!claim.ok) return claim;
+			const record = claim.record as TelclaudeMcpBrowserWriteSideEffectRecord;
 
 			// Recapture the live page immediately-before, with the STORED nonce, then
 			// re-derive the binding over the CURRENT action + fresh evidence. Any drift
 			// (page mutated, action redirected, values changed, wrong nonce) fails closed
-			// here — before any commit and before the ref is marked executed.
+			// here. Because the ref is already claimed and a browser commit is irreversible,
+			// a post-claim failure closes the record TERMINALLY (`failed`) — it is NOT
+			// reverted to `prepared` and the consumed approval is NOT reopened. The operator
+			// must re-prepare.
 			let currentEvidence: BrowserActEvidence;
 			try {
 				currentEvidence = await options.browserWriteCommitter.recaptureEvidence(record);
 			} catch (error) {
+				const reason = redactSecrets(error instanceof Error ? error.message : String(error));
+				options.ledger.markFailed(request.actionRef, `browser_write_recapture_failed: ${reason}`);
 				return terminalFailure(
 					"browser_write_recapture_failed",
-					redactSecrets(error instanceof Error ? error.message : String(error)),
-					record,
+					reason,
+					options.ledger.get(request.actionRef) ?? record,
 				);
 			}
 			const verification = verifyBrowserWriteExecution({
@@ -279,10 +308,11 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				now: nowMs,
 			});
 			if (!verification.ok) {
+				options.ledger.markFailed(request.actionRef, `browser_write_${verification.reason}`);
 				return terminalFailure(
 					`browser_write_${verification.reason}`,
 					"browser write failed confirmation re-verification",
-					record,
+					options.ledger.get(request.actionRef) ?? record,
 				);
 			}
 
@@ -290,16 +320,17 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			try {
 				committed = await options.browserWriteCommitter.commit(record);
 			} catch (error) {
+				// Ambiguous commit failure: fail closed, terminal, NO second commit attempt
+				// on this ref. The side effect may or may not have landed.
+				const reason = redactSecrets(error instanceof Error ? error.message : String(error));
+				options.ledger.markFailed(request.actionRef, `browser_write_commit_failed: ${reason}`);
 				return terminalFailure(
 					"browser_write_commit_failed",
-					redactSecrets(error instanceof Error ? error.message : String(error)),
-					record,
+					reason,
+					options.ledger.get(request.actionRef) ?? record,
 				);
 			}
-			const executed = await options.ledger.markExecuted(
-				request.actionRef,
-				authorized.approvalId ?? resolved.approvalId,
-			);
+			const executed = await options.ledger.markExecuted(request.actionRef, approvalId);
 			if (!executed.ok) return executed;
 			resolved.finalize?.();
 			return { ok: true, receipt: committed.receipt };
@@ -933,4 +964,20 @@ function terminalFailureForRecord(
 		retryable: false,
 		record,
 	};
+}
+
+/**
+ * Provider/outbound only: a sidecar/delivery failure after the single-flight claim is
+ * retryable by design, so revert `executing -> prepared` and report the released
+ * (prepared) record on the failure. Browser-write never uses this — its post-claim
+ * failures are terminal (`markFailed`) because the commit is irreversible.
+ */
+function releaseAndReport<T extends Extract<TelclaudeMcpSideEffectAuthorizeResult, { ok: false }>>(
+	ledger: TelclaudeMcpSideEffectLedger,
+	ref: string,
+	failure: T,
+): T {
+	ledger.releaseExecuting(ref);
+	const released = ledger.get(ref);
+	return released ? { ...failure, record: released } : failure;
 }

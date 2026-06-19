@@ -35,7 +35,12 @@ export type TelclaudeMcpSideEffectDomain =
 	| "public"
 	| "specialist";
 
-export type TelclaudeMcpSideEffectStatus = "prepared" | "executed" | "revoked";
+export type TelclaudeMcpSideEffectStatus =
+	| "prepared"
+	| "executing"
+	| "executed"
+	| "revoked"
+	| "failed";
 export type TelclaudeMcpOutboundResolvedDestination = PreparedOutbound["resolvedDestination"];
 export type TelclaudeMcpOutboundPreparedMediaRef = Pick<
 	EdgeAttachmentRef,
@@ -70,10 +75,14 @@ export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly status: TelclaudeMcpSideEffectStatus;
 	readonly createdAtMs: number;
 	readonly expiresAtMs: number;
+	readonly executingAtMs?: number;
+	readonly executionApprovalId?: string;
 	readonly executedAtMs?: number;
 	readonly approvalId?: string;
 	readonly revokedAtMs?: number;
 	readonly revokeReason?: string;
+	readonly failedAtMs?: number;
+	readonly failReason?: string;
 };
 
 export type TelclaudeMcpOutboundSideEffectRecord = {
@@ -104,10 +113,14 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly status: TelclaudeMcpSideEffectStatus;
 	readonly createdAtMs: number;
 	readonly expiresAtMs: number;
+	readonly executingAtMs?: number;
+	readonly executionApprovalId?: string;
 	readonly executedAtMs?: number;
 	readonly approvalId?: string;
 	readonly revokedAtMs?: number;
 	readonly revokeReason?: string;
+	readonly failedAtMs?: number;
+	readonly failReason?: string;
 };
 
 export type TelclaudeMcpBrowserWriteSideEffectRecord = {
@@ -142,10 +155,14 @@ export type TelclaudeMcpBrowserWriteSideEffectRecord = {
 	readonly status: TelclaudeMcpSideEffectStatus;
 	readonly createdAtMs: number;
 	readonly expiresAtMs: number;
+	readonly executingAtMs?: number;
+	readonly executionApprovalId?: string;
 	readonly executedAtMs?: number;
 	readonly approvalId?: string;
 	readonly revokedAtMs?: number;
 	readonly revokeReason?: string;
+	readonly failedAtMs?: number;
+	readonly failReason?: string;
 };
 
 export type TelclaudeMcpSideEffectRecord =
@@ -372,12 +389,43 @@ export type TelclaudeMcpSideEffectRevokeResult =
 	  }
 	| TelclaudeMcpSideEffectTerminalFailure;
 
+export type TelclaudeMcpSideEffectClaimResult =
+	| {
+			readonly ok: true;
+			readonly record: TelclaudeMcpSideEffectRecord;
+	  }
+	| TelclaudeMcpSideEffectTerminalFailure;
+
 export type TelclaudeMcpSideEffectLedger = {
 	prepare(input: TelclaudeMcpSideEffectPrepareInput): TelclaudeMcpSideEffectRecord;
 	get(ref: string): TelclaudeMcpSideEffectRecord | null;
 	list(): TelclaudeMcpSideEffectRecord[];
 	revoke(ref: string, reason?: string): TelclaudeMcpSideEffectRevokeResult;
 	verify(ref: string, approvalToken: string): Promise<TelclaudeMcpSideEffectVerifyResult>;
+	/**
+	 * Atomic single-flight CAS over the in-memory record map: transitions ONLY
+	 * `prepared -> executing` (stamping `executingAtMs` + `executionApprovalId`). A
+	 * record already `executing`/`executed`/`failed`/`revoked` (or expired/self-approved)
+	 * loses with a terminal failure. The winner is the only caller allowed to reach the
+	 * irreversible committer; subsequent concurrent or serial executes lose here, before
+	 * any recapture or commit. This closes the double-commit window where two distinct
+	 * valid approval tokens could both pass `verify` and both reach `commit()`.
+	 */
+	claimExecuting(ref: string, approvalId?: string): TelclaudeMcpSideEffectClaimResult;
+	/**
+	 * Terminally closes a claimed (`executing`) record as `failed` after a pre-side-effect
+	 * failure (recapture threw, drift detected) or an ambiguous commit failure. The
+	 * consumed approval is NOT reopened; the operator must re-prepare. Browser-write uses
+	 * this so an irreversible commit is never re-attempted on the same ref.
+	 */
+	markFailed(ref: string, reason?: string): TelclaudeMcpSideEffectClaimResult;
+	/**
+	 * Reverts a claimed (`executing`) record back to `prepared` after a retryable
+	 * post-claim failure. Used only by provider/outbound, whose sidecar/delivery failures
+	 * are designed to leave the ref retryable. Browser-write never reverts — it fails
+	 * terminally via `markFailed`.
+	 */
+	releaseExecuting(ref: string): TelclaudeMcpSideEffectClaimResult;
 	markExecuted(ref: string, approvalId?: string): TelclaudeMcpSideEffectAuthorizeResult;
 	authorize(ref: string, approvalToken: string): Promise<TelclaudeMcpSideEffectAuthorizeResult>;
 };
@@ -473,6 +521,91 @@ export function createTelclaudeMcpSideEffectLedger(
 			};
 		},
 
+		claimExecuting(ref, approvalId) {
+			const normalizedRef = requiredTrimmed(ref, "ref");
+			const authorizationNowMs = nowMs();
+			const current = records.get(normalizedRef);
+			if (!current) {
+				return terminalFailure("effect_not_found", "side effect was not prepared");
+			}
+			// Already claimed or executed: the in-flight/replay loser. Distinct from
+			// revoked/failed (terminalFailureForRecord) so the caller can surface a precise
+			// in-flight code before any committer call.
+			if (current.status === "executing") {
+				return terminalFailure(
+					"effect_execution_in_flight",
+					"side effect execution is already in flight for this ref",
+					current,
+				);
+			}
+			const currentFailure = terminalFailureForRecord(current);
+			if (currentFailure) return currentFailure;
+			if (isExpired(current, authorizationNowMs)) {
+				return terminalFailure("effect_expired", "side effect approval window expired", current);
+			}
+			const approverFailure = terminalFailureForSelfApproval(current);
+			if (approverFailure) return approverFailure;
+			if (current.status !== "prepared") {
+				return terminalFailure("effect_invalid_state", "side effect is not prepared", current);
+			}
+
+			const claimed = deepFreeze({
+				...current,
+				status: "executing" as const,
+				executingAtMs: authorizationNowMs,
+				...(approvalId ? { executionApprovalId: requiredTrimmed(approvalId, "approvalId") } : {}),
+			});
+			records.set(normalizedRef, claimed);
+			return { ok: true, record: cloneRecord(claimed) };
+		},
+
+		markFailed(ref, reason) {
+			const normalizedRef = requiredTrimmed(ref, "ref");
+			const current = records.get(normalizedRef);
+			if (!current) {
+				return terminalFailure("effect_not_found", "side effect was not prepared");
+			}
+			if (current.status !== "executing") {
+				return (
+					terminalFailureForRecord(current) ??
+					terminalFailure("effect_invalid_state", "side effect is not executing", current)
+				);
+			}
+			const failed = deepFreeze({
+				...current,
+				status: "failed" as const,
+				failedAtMs: nowMs(),
+				...(reason ? { failReason: reason } : {}),
+			});
+			records.set(normalizedRef, failed);
+			return { ok: true, record: cloneRecord(failed) };
+		},
+
+		releaseExecuting(ref) {
+			const normalizedRef = requiredTrimmed(ref, "ref");
+			const current = records.get(normalizedRef);
+			if (!current) {
+				return terminalFailure("effect_not_found", "side effect was not prepared");
+			}
+			if (current.status !== "executing") {
+				return (
+					terminalFailureForRecord(current) ??
+					terminalFailure("effect_invalid_state", "side effect is not executing", current)
+				);
+			}
+			const {
+				executingAtMs: _executingAtMs,
+				executionApprovalId: _executionApprovalId,
+				...rest
+			} = current;
+			const released = deepFreeze({
+				...rest,
+				status: "prepared" as const,
+			});
+			records.set(normalizedRef, released);
+			return { ok: true, record: cloneRecord(released) };
+		},
+
 		markExecuted(ref, approvalId) {
 			const normalizedRef = requiredTrimmed(ref, "ref");
 			const authorizationNowMs = nowMs();
@@ -484,12 +617,32 @@ export function createTelclaudeMcpSideEffectLedger(
 			if (currentFailure) return currentFailure;
 			const approverFailure = terminalFailureForSelfApproval(current);
 			if (approverFailure) return approverFailure;
+			// Execution may only finalize a record that the winner already claimed. A
+			// record still `prepared` was never single-flighted; refuse to jump straight
+			// to `executed` (this is the hard rule for irreversible browser-write).
+			if (current.status !== "executing") {
+				return terminalFailure(
+					"effect_invalid_state",
+					"side effect must be claimed (executing) before it can be marked executed",
+					current,
+				);
+			}
+			const normalizedApprovalId = approvalId
+				? requiredTrimmed(approvalId, "approvalId")
+				: undefined;
+			if (current.executionApprovalId && normalizedApprovalId !== current.executionApprovalId) {
+				return terminalFailure(
+					"effect_invalid_state",
+					"executed approvalId does not match the claimed execution approval",
+					current,
+				);
+			}
 
 			const executed = deepFreeze({
 				...current,
 				status: "executed" as const,
 				executedAtMs: authorizationNowMs,
-				...(approvalId ? { approvalId: requiredTrimmed(approvalId, "approvalId") } : {}),
+				...(normalizedApprovalId ? { approvalId: normalizedApprovalId } : {}),
 			});
 			records.set(normalizedRef, executed);
 			return { ok: true, record: cloneRecord(executed) };
@@ -498,6 +651,8 @@ export function createTelclaudeMcpSideEffectLedger(
 		async authorize(ref, approvalToken) {
 			const verified = await this.verify(ref, approvalToken);
 			if (!verified.ok) return verified;
+			const claimed = this.claimExecuting(ref, verified.approvalId);
+			if (!claimed.ok) return claimed;
 			return this.markExecuted(ref, verified.approvalId);
 		},
 	};
@@ -928,6 +1083,9 @@ function terminalFailureForRecord(
 	}
 	if (record.status === "revoked") {
 		return terminalFailure("effect_revoked", "side effect was revoked", record);
+	}
+	if (record.status === "failed") {
+		return terminalFailure("effect_failed", "side effect terminally failed; re-prepare", record);
 	}
 	return null;
 }

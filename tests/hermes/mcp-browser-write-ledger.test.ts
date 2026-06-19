@@ -462,7 +462,9 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.code).toBe("browser_write_write_confirm_binding_drift");
 		expect(committer.commits).toEqual([]);
-		expect(ledger.get(record.ref)?.status).toBe("prepared");
+		// Drift is detected AFTER the single-flight claim, so the record fails terminally
+		// (the consumed approval is not reopened); the operator must re-prepare.
+		expect(ledger.get(record.ref)?.status).toBe("failed");
 	});
 
 	it("fails binding_drift when the committer recaptures with a FRESH random nonce on an unchanged page", async () => {
@@ -479,6 +481,7 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.code).toBe("browser_write_write_confirm_binding_drift");
 		expect(committer.commits).toEqual([]);
-		expect(ledger.get(record.ref)?.status).toBe("prepared");
+		// Drift after the claim is terminal — the ref ends `failed`, not `prepared`.
+		expect(ledger.get(record.ref)?.status).toBe("failed");
 	});
 });
