@@ -91,6 +91,11 @@ describe("Browser trust-domain Docker topology", () => {
 		expect(relay).toContain("TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET=");
 		expect(relay).toContain("TELCLAUDE_BROWSER_WS_ENDPOINT=ws://tc-browser:");
 		expect(relay).toContain(`TELCLAUDE_BROWSER_PEER_ADDRESS=${browserPeerAddress}`);
+		expect(relay).toContain(
+			"TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-hermes-contained,tc-hermes-social,tc-browser}",
+		);
+		expect(relay).toContain("tc-browser:");
+		expect(relay).toContain("condition: service_healthy");
 		expect(relayNetworks).toContain("relay-browser-net:");
 		expect(relayNetworks).toContain(
 			`ipv4_address: ${composeVariable(
@@ -99,6 +104,7 @@ describe("Browser trust-domain Docker topology", () => {
 		);
 
 		expect(browser).toContain("docker/Dockerfile.browser");
+		expect(browser).not.toContain("depends_on:");
 		expect(browser).toContain("PLAYWRIGHT_VERSION:");
 		expect(browser).toContain(composeVariable("TELCLAUDE_BROWSER_PLAYWRIGHT_VERSION:-1.59.0"));
 		expect(browser).toContain("telclaude-browser:camoufox-0.4.11-pw-1.59.0");
@@ -132,6 +138,7 @@ describe("Browser trust-domain Docker topology", () => {
 			"whatsapp-egress",
 		]) {
 			expect(browserNetworks).not.toContain(`- ${forbidden}`);
+			expect(browserNetworks).not.toMatch(new RegExp(`(^|\\n)\\s*${forbidden}:`));
 		}
 		for (const forbiddenEnv of [
 			"TELCLAUDE_VAULT_SOCKET",
@@ -171,5 +178,105 @@ describe("Browser trust-domain Docker topology", () => {
 		expect(privateEndpointIndex).toBeLessThan(permissiveIndex);
 		expect(permissiveIndex).toBeLessThan(domainIndex);
 		expect(refreshBody).not.toContain("skipping refresh (permissive mode - no domain allowlist)");
+	});
+
+	it("keeps production deploys on the browser overlay and restarts the relay after tc-browser is ready", () => {
+		const workflow = readDockerFile(".github/workflows/ci.yml");
+		const deployStart = workflow.indexOf("  deploy:");
+		expect(deployStart).toBeGreaterThan(-1);
+		const deployJob = workflow.slice(deployStart);
+		const browserComposeIndex = deployJob.indexOf("-f docker-compose.browser.yml");
+		const browserUpIndex = deployJob.indexOf("up -d --remove-orphans tc-browser");
+		const waitBrowserIndex = deployJob.indexOf("wait_for_container_ready tc-browser 180");
+		const stackUpIndex = deployJob.indexOf("up -d --remove-orphans\n");
+		const restartIndex = deployJob.indexOf("docker restart telclaude");
+		const waitRelayIndex = deployJob.indexOf("wait_for_container_ready telclaude 180");
+		const fullWaitIndex = deployJob.indexOf("up -d --remove-orphans --wait --wait-timeout 480");
+
+		expect(browserComposeIndex).toBeGreaterThan(-1);
+		expect(browserUpIndex).toBeGreaterThan(-1);
+		expect(waitBrowserIndex).toBeGreaterThan(browserUpIndex);
+		expect(stackUpIndex).toBeGreaterThan(waitBrowserIndex);
+		expect(restartIndex).toBeGreaterThan(stackUpIndex);
+		expect(waitRelayIndex).toBeGreaterThan(restartIndex);
+		expect(fullWaitIndex).toBeGreaterThan(waitRelayIndex);
+		expect(browserComposeIndex).toBeLessThan(browserUpIndex);
+		expect(deployJob).toContain("tc-browser");
+		expect(deployJob).toContain("telclaude-relay-browser");
+		expect(deployJob).toContain("docker_browser-net");
+	});
+
+	it("redacts post-deploy health-gate diagnostics", () => {
+		const workflow = readDockerFile(".github/workflows/ci.yml");
+		const hookStart = workflow.indexOf("Install William post-deploy health gate");
+		const nextStep = workflow.indexOf("Ensure William reminder capability scopes", hookStart);
+		expect(hookStart).toBeGreaterThan(-1);
+		expect(nextStep).toBeGreaterThan(hookStart);
+		const hookStep = workflow.slice(hookStart, nextStep);
+
+		expect(hookStep).toContain("redact_deploy_logs() {");
+		expect(hookStep).toContain(
+			'docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps 2>&1 | redact_deploy_logs || true',
+		);
+		expect(hookStep).toContain(
+			"docker inspect --format '{{json .State}}' \"$container\" 2>&1 | redact_deploy_logs || true",
+		);
+		expect(hookStep).toContain(
+			'docker logs --tail=120 "$container" 2>&1 | redact_deploy_logs || true',
+		);
+	});
+
+	it("persists required William browser network and session-cookie deploy settings", () => {
+		const workflow = readDockerFile(".github/workflows/ci.yml");
+		const persistStart = workflow.indexOf("Persist William Hermes deploy keys");
+		const installHookStart = workflow.indexOf("Install William post-deploy health gate");
+		expect(persistStart).toBeGreaterThan(-1);
+		expect(installHookStart).toBeGreaterThan(persistStart);
+		const persistStep = workflow.slice(persistStart, installHookStart);
+		const readDeployEnvStart = persistStep.indexOf("read_deploy_env() {");
+		const readDeployEnv = persistStep.slice(
+			readDeployEnvStart,
+			persistStep.indexOf("\n          }", readDeployEnvStart) + "\n          }".length,
+		);
+		expect(readDeployEnv).toContain('for file in "$compose_env_file" "$shell_env_file"; do');
+		expect(persistStep).toContain("normalize_internal_hosts() {");
+		expect(persistStep).toContain(
+			"required_internal_hosts='telclaude,google-services,tc-hermes-contained,tc-hermes-social,tc-browser'",
+		);
+		expect(persistStep).toContain(
+			'internal_hosts="$(read_deploy_env TELCLAUDE_INTERNAL_HOSTS || true)"',
+		);
+		expect(persistStep).toContain(
+			'internal_hosts="$(normalize_internal_hosts "$internal_hosts" "$required_internal_hosts")"',
+		);
+		expect(persistStep).toContain(
+			'printf \'TELCLAUDE_INTERNAL_HOSTS=%s\\n\' "$internal_hosts" >> "$GITHUB_ENV"',
+		);
+		expect(persistStep).toContain(
+			"printf 'export TELCLAUDE_INTERNAL_HOSTS=%q\\n' \"$internal_hosts\"",
+		);
+		expect(persistStep).toContain("printf 'TELCLAUDE_INTERNAL_HOSTS=%s\\n' \"$internal_hosts\"");
+
+		for (const [key, variable] of [
+			["TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET", "browser_context_token"],
+			["TELCLAUDE_BROWSER_COOKIE_STORE_KEY", "browser_cookie_store_key"],
+			["TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS", "browser_catastrophic_domains"],
+			["TELCLAUDE_BROWSER_SUBNET", "browser_subnet"],
+			["TELCLAUDE_BROWSER_RELAY_IP", "browser_relay_ip"],
+			["TELCLAUDE_BROWSER_IP", "browser_ip"],
+		] as const) {
+			expect(persistStep).toContain(key);
+			expect(persistStep).toContain(`${variable}="$(read_deploy_env ${key} || true)"`);
+			expect(persistStep).toContain(`printf 'export ${key}=`);
+			expect(persistStep).toContain(`printf '${key}=`);
+		}
+		for (const variable of ["browser_context_token", "browser_cookie_store_key"]) {
+			expect(persistStep).toContain(
+				`[ -n "$${variable}" ] || ${variable}="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"`,
+			);
+		}
+		expect(persistStep).not.toContain(
+			`[ -n "$browser_catastrophic_domains" ] || browser_catastrophic_domains=`,
+		);
 	});
 });
