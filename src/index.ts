@@ -7,6 +7,7 @@ import {
 } from "./commands/access-control.js";
 import { registerApprovalsCommand } from "./commands/approvals.js";
 import { registerBackgroundCommand } from "./commands/background.js";
+import { registerBrowserCommand } from "./commands/browser.js";
 import { registerCronCommand } from "./commands/cron.js";
 import { registerCuratorCommand } from "./commands/curator.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
@@ -83,6 +84,7 @@ registerRuntimesCommand(program);
 registerHermesCommand(program);
 registerHermesSkillsCommand(program);
 registerCuratorCommand(program);
+registerBrowserCommand(program);
 registerSendCommand(program);
 registerSessionsCommand(program);
 
