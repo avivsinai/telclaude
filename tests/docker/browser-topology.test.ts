@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -277,6 +278,41 @@ describe("Browser trust-domain Docker topology", () => {
 		}
 		expect(persistStep).not.toContain(
 			`[ -n "$browser_catastrophic_domains" ] || browser_catastrophic_domains=`,
+		);
+	});
+
+	it("normalizes persisted internal hosts without dropping trailing browser entries", () => {
+		const workflow = readDockerFile(".github/workflows/ci.yml");
+		const persistStart = workflow.indexOf("Persist William Hermes deploy keys");
+		const installHookStart = workflow.indexOf("Install William post-deploy health gate");
+		expect(persistStart).toBeGreaterThan(-1);
+		expect(installHookStart).toBeGreaterThan(persistStart);
+		const persistStep = workflow.slice(persistStart, installHookStart);
+		const normalizeStart = persistStep.indexOf("normalize_internal_hosts() {");
+		const normalizeEnd = persistStep.indexOf(
+			"\n          generate_ed25519_pair() {",
+			normalizeStart,
+		);
+		expect(normalizeStart).toBeGreaterThan(-1);
+		expect(normalizeEnd).toBeGreaterThan(normalizeStart);
+		const normalizeFunction = persistStep.slice(normalizeStart, normalizeEnd);
+		const result = spawnSync(
+			"bash",
+			[
+				"-c",
+				[
+					"set -euo pipefail",
+					normalizeFunction,
+					"normalize_internal_hosts 'telclaude,google-services,totp,vault,whatsapp-bridge' 'telclaude,google-services,tc-hermes-contained,tc-hermes-social,tc-browser'",
+				].join("\n"),
+			],
+			{ encoding: "utf8" },
+		);
+
+		expect(result.stderr).toBe("");
+		expect(result.status).toBe(0);
+		expect(result.stdout).toBe(
+			"telclaude,google-services,totp,vault,whatsapp-bridge,tc-hermes-contained,tc-hermes-social,tc-browser",
 		);
 	});
 });
