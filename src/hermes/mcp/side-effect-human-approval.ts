@@ -583,6 +583,23 @@ function defaultBrowserWriteRender(
 	].join(" — ");
 }
 
+/**
+ * The browser-write approval binding carries the RAW actionTarget — it is the drift
+ * commitment and must stay raw in the signed/hashed inputs. But the human-facing
+ * canonical-binding echo must never print a URL-token target verbatim, so swap in the
+ * already-redacted display target for the echo only (the Binding hash/digest lines
+ * still prove integrity over the real binding).
+ */
+function displaySafeBinding(
+	record: TelclaudeMcpSideEffectRecord,
+	binding: TelclaudeMcpSideEffectApprovalBinding,
+): TelclaudeMcpSideEffectApprovalBinding {
+	if (binding.kind === "browser-write" && record.kind === "browser-write") {
+		return { ...binding, actionTarget: record.display.target };
+	}
+	return binding;
+}
+
 function formatSideEffectHumanApprovalBody(
 	record: TelclaudeMcpSideEffectRecord,
 	binding: TelclaudeMcpSideEffectApprovalBinding,
@@ -606,7 +623,7 @@ function formatSideEffectHumanApprovalBody(
 		humanVisibleRender,
 		"",
 		"Canonical approval binding:",
-		canonicalJson(binding),
+		canonicalJson(displaySafeBinding(record, binding)),
 	];
 	if (record.kind === "provider") {
 		return [
