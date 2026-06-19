@@ -111,6 +111,44 @@ describe("Telclaude live MCP browser-act clients", () => {
 		expect(surface.actCalls).toEqual([]);
 	});
 
+	it("preflights the goto DESTINATION (submittedValues), not just the entry url", async () => {
+		const surface = recordingSurface();
+		const clients = makeClients({ surface });
+		// Canonical AWS docs example key — never a live credential. gitleaks:allow
+		const fakeKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+		// A clean entry url but a secret-shaped goto destination must fail closed
+		// BEFORE the surface is reached.
+		await expect(
+			clients.browseAct(
+				actRequest({
+					verb: "goto",
+					submittedValues: `https://shop.example.com/go?token=${fakeKey}`,
+				}),
+			),
+		).rejects.toMatchObject({ code: "mcp_outbound_secret_blocked" });
+		// A non-http(s) goto destination is rejected (typed) before any browser work.
+		await expect(
+			clients.browseAct(actRequest({ verb: "goto", submittedValues: "file:///etc/passwd" })),
+		).rejects.toMatchObject({ code: "browser_act_goto_destination_invalid" });
+		// A non-string goto destination is rejected too.
+		await expect(
+			clients.browseAct(actRequest({ verb: "goto", submittedValues: { not: "a-string" } })),
+		).rejects.toMatchObject({ code: "browser_act_goto_destination_invalid" });
+		expect(surface.actCalls).toEqual([]);
+
+		// The same preflight runs on the prepare path.
+		await expect(
+			clients.browseActPrepare(
+				prepareRequest({
+					verb: "goto",
+					target: undefined,
+					submittedValues: "file:///etc/passwd",
+				}),
+			),
+		).rejects.toMatchObject({ code: "browser_act_goto_destination_invalid" });
+		expect(surface.prepareCalls).toEqual([]);
+	});
+
 	it("prepares a committing act into the ledger and returns only actionRef + safe display", async () => {
 		const ledger = testLedger();
 		const surface = recordingSurface();
@@ -133,7 +171,11 @@ describe("Telclaude live MCP browser-act clients", () => {
 		// The returned envelope carries ONLY the opaque actionRef + a redacted display
 		// summary — never the raw target, the submitted values, or any approval token.
 		expect(prepared.actionRef).toMatch(/^effect-/);
-		expect(prepared.display).toEqual({ verb: "click", target: "#pay-origin", urlOrigin: "https://shop.example.com" });
+		expect(prepared.display).toEqual({
+			verb: "click",
+			target: "#pay-origin",
+			urlOrigin: "https://shop.example.com",
+		});
 		expect(JSON.stringify(prepared)).not.toContain("confirm");
 		expect(prepared).not.toHaveProperty("bindingHash");
 		expect(prepared).not.toHaveProperty("approvalToken");
@@ -163,9 +205,7 @@ describe("Telclaude live MCP browser-act clients", () => {
 		// The approved submitted values never enter the ledger record (hashes only).
 		expect(JSON.stringify(record)).not.toContain("confirm");
 		expect(requestedApprovals).toEqual([prepared.actionRef]);
-		expect(auditEntries).toEqual([
-			expect.objectContaining({ kind: "web.browse_act_prepare" }),
-		]);
+		expect(auditEntries).toEqual([expect.objectContaining({ kind: "web.browse_act_prepare" })]);
 	});
 
 	it("denies prepare when the browser-write approver is missing or equals the actor", async () => {
@@ -268,7 +308,11 @@ function fakeEvidence() {
 		screenshotRef: "/relay/media/secret-screenshot.png",
 		revision: "hmac-sha256:fake-revision",
 		submittedValuesHash: "hmac-sha256:values",
-		commitSignal: { forceConfirm: false, reasons: [], observed: { navigation: false, formSubmit: false, mutatingRequest: false } },
+		commitSignal: {
+			forceConfirm: false,
+			reasons: [],
+			observed: { navigation: false, formSubmit: false, mutatingRequest: false },
+		},
 	};
 }
 

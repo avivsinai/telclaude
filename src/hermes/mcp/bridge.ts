@@ -164,9 +164,11 @@ export type TelclaudeMcpBrowserActPrepareRequest = TelclaudeMcpAuthorityStamp & 
 	verb: TelclaudeMcpBrowserActVerb;
 	target?: string;
 	submittedValues?: unknown;
-	/** Escalate-only: force confirmation even for an otherwise non-committing verb. */
-	forceConfirm?: boolean;
 	timeoutMs?: number;
+	// NOTE: no `forceConfirm` — it is RELAY-set + escalate-only and never crosses
+	// the runtime boundary. The bridge input schema strips any runtime-supplied
+	// forceConfirm fail-closed. The relay surface/executor still thread a relay-set
+	// forceConfirm internally for a future relay-side escalation path.
 };
 
 /** Execute a previously prepared + approved committing browser act by actionRef. */
@@ -396,13 +398,17 @@ const BrowserActInputSchema = z
 	})
 	.strip();
 
+// `forceConfirm` is RELAY-set + escalate-only and is intentionally NOT part of
+// the runtime-facing input: the contained runtime may never escalate (or suppress)
+// its own confirmation. `.strip()` drops any runtime-supplied forceConfirm
+// fail-closed. The executor/surface still thread a relay-set forceConfirm
+// internally for a future relay-side escalation path.
 const BrowserActPrepareInputSchema = z
 	.object({
 		url: z.url({ protocol: /^https?$/ }).max(2048),
 		verb: BrowserActVerbSchema,
 		target: BrowserActTargetSchema.optional(),
 		submittedValues: z.unknown().optional(),
-		forceConfirm: z.boolean().optional(),
 		timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
 	})
 	.strip();
@@ -717,7 +723,6 @@ export function createTelclaudeMcpBridge(
 				...(parsed.submittedValues !== undefined
 					? { submittedValues: parsed.submittedValues }
 					: {}),
-				...(parsed.forceConfirm !== undefined ? { forceConfirm: parsed.forceConfirm } : {}),
 				...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
 			});
 		},

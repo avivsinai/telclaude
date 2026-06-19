@@ -682,8 +682,13 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			enforceRateLimit("web_browse", request.actorId, webRateLimit());
 			// Same egress preflight as a browse: refuse a secret-shaped entry URL
-			// before any browser work, then fail closed if no live act surface is wired.
+			// before any browser work. For a `goto` the real navigation target is the
+			// submittedValues string (NOT request.url), so preflight that destination
+			// too — secret-shaped or non-http(s) destinations fail closed here. (goto is
+			// committing, so the executor below also refuses it inline; this guards the
+			// destination before any browser/executor work regardless.)
 			assertSafeWebEgress(request.url, "url");
+			assertSafeBrowserGotoDestination(request.verb, request.submittedValues);
 			if (!options.browserAct) {
 				throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act");
 			}
@@ -706,6 +711,9 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			enforceRateLimit("web_browse", request.actorId, webRateLimit());
 			assertSafeWebEgress(request.url, "url");
+			// For a staged `goto`, the navigation destination is submittedValues, not
+			// request.url — preflight it before any browser/executor work too.
+			assertSafeBrowserGotoDestination(request.verb, request.submittedValues);
 			if (!options.browserAct) {
 				throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act_prepare");
 			}
@@ -721,9 +729,11 @@ export function createTelclaudeLiveMcpRelayClients(
 				request.target,
 				request.submittedValues,
 			);
+			// No runtime-supplied forceConfirm is threaded here: it is RELAY-set +
+			// escalate-only and stripped at the bridge input boundary. A relay-side
+			// escalation would construct the surface request with forceConfirm directly.
 			const staged = await options.browserAct.prepareIntent({
 				...surfaceRequest,
-				...(request.forceConfirm !== undefined ? { forceConfirm: request.forceConfirm } : {}),
 				actionRef,
 			});
 			const prepared = staged.prepared;
@@ -1417,6 +1427,40 @@ function browserWriteApproverFor(
 		);
 	}
 	return browserWriteApproverActorId;
+}
+
+/** A `goto` destination that is not a parseable http(s) URL. */
+class BrowserGotoDestinationError extends Error {
+	readonly code = "browser_act_goto_destination_invalid";
+	constructor() {
+		super("browser act goto destination must be an http(s) URL string");
+		this.name = "BrowserGotoDestinationError";
+	}
+}
+
+/**
+ * For a `goto` act the navigation destination is the submittedValues string (the
+ * driver does `page.goto(submittedValues)`), NOT request.url. That destination is
+ * an outbound web egress target in a cookie-bearing session, so preflight it the
+ * same way we preflight request.url: it must be a parseable http(s) URL AND must
+ * pass the secret/private-data egress check. Fails closed before any executor or
+ * browser work. No-op for every non-goto verb.
+ */
+function assertSafeBrowserGotoDestination(verb: string, submittedValues: unknown): void {
+	if (verb !== "goto") return;
+	if (typeof submittedValues !== "string") {
+		throw new BrowserGotoDestinationError();
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(submittedValues);
+	} catch {
+		throw new BrowserGotoDestinationError();
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new BrowserGotoDestinationError();
+	}
+	assertSafeWebEgress(submittedValues, "goto_destination");
 }
 
 /**

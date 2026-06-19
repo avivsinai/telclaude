@@ -212,7 +212,14 @@ export class BrowserActExecutor {
 	async act(request: BrowserActRequest): Promise<BrowserActInlineResult> {
 		this.assertActIdentity(request);
 		const commitSignal = classifyCommitSignal(
-			{ verb: request.verb, ...(request.target ? { target: request.target } : {}) },
+			{
+				verb: request.verb,
+				...(request.target ? { target: request.target } : {}),
+				// forceConfirm is RELAY-set + escalate-only. Threading it here lets a
+				// relay-escalated non-committing verb refuse the inline path (and route to
+				// prepare); dropping it would silently downgrade an escalation.
+				...(request.forceConfirm !== undefined ? { forceConfirm: request.forceConfirm } : {}),
+			},
 			{},
 		);
 		if (commitSignal.forceConfirm) {
@@ -268,8 +275,22 @@ export class BrowserActExecutor {
 			try {
 				// Capture the SETTLED pre-commit page. Generate + lock the nonce so
 				// recapture/commit re-use the EXACT nonce the binding was bound under.
+				// Thread the relay-set escalate-only forceConfirm so an escalated
+				// non-committing verb stages instead of failing browser_act_not_committing.
 				const evidenceNonce = crypto.randomBytes(16).toString("base64url");
-				const evidence = await this.captureEvidence(driver.page, request, {}, evidenceNonce);
+				const evidence = await this.captureEvidence(
+					driver.page,
+					{
+						verb: request.verb,
+						...(request.target ? { target: request.target } : {}),
+						...(request.submittedValues !== undefined
+							? { submittedValues: request.submittedValues }
+							: {}),
+						...(request.forceConfirm !== undefined ? { forceConfirm: request.forceConfirm } : {}),
+					},
+					{},
+					evidenceNonce,
+				);
 				if (!evidence.commitSignal.forceConfirm) {
 					throw new BrowserActExecutorError(
 						"browser_act_not_committing",
@@ -358,13 +379,17 @@ export class BrowserActExecutor {
 						submittedValues: entry.approvedSubmittedValues,
 					});
 					const observed = await driver.settle({ timeoutMs: DEFAULT_SETTLE_MS });
-					const finalUrl = driver.page.url();
+					// Redact to ORIGIN ONLY (scheme + host): the post-commit landing URL can
+					// carry a token/session in its path or query, and this receipt is returned
+					// to the contained runtime via tc_browse_act_execute. Origin-only confirms
+					// where we landed without leaking the secret-bearing path/query.
+					const finalUrlOrigin = redactFinalUrlToOrigin(driver.page.url());
 					return {
 						receipt: {
 							committedAtMs: this.now(),
 							host: record.host,
 							verb: record.actionVerb,
-							finalUrl,
+							finalUrlOrigin,
 							observed: {
 								navigation: Boolean(observed.navigation),
 								formSubmit: Boolean(observed.formSubmit),
@@ -401,6 +426,7 @@ export class BrowserActExecutor {
 			readonly verb: string;
 			readonly target?: string;
 			readonly submittedValues?: BrowserActJsonValue;
+			readonly forceConfirm?: boolean;
 		},
 		observed: BrowserActObservedSignals,
 		evidenceNonce?: string,
@@ -409,6 +435,7 @@ export class BrowserActExecutor {
 			verb: action.verb,
 			...(action.target ? { target: action.target } : {}),
 			...(action.submittedValues !== undefined ? { submittedValues: action.submittedValues } : {}),
+			...(action.forceConfirm !== undefined ? { forceConfirm: action.forceConfirm } : {}),
 		};
 		return captureBrowserActEvidence(page, intent, {
 			screenshotSink: this.screenshotSink,
@@ -448,6 +475,21 @@ export class BrowserActExecutor {
 
 function normalizeApprovedValues(value: BrowserActJsonValue | undefined): BrowserActJsonValue {
 	return value === undefined ? null : value;
+}
+
+/**
+ * Reduce a post-commit landing URL to its ORIGIN (scheme + host), dropping any
+ * path/query/fragment that could carry a token or session id. The receipt is
+ * returned to the contained runtime, so the path/query must never leak. Returns
+ * `null` for an unparseable or opaque-origin URL.
+ */
+function redactFinalUrlToOrigin(url: string): string | null {
+	try {
+		const origin = new URL(url).origin;
+		return origin === "null" ? null : origin;
+	} catch {
+		return null;
+	}
 }
 
 /**

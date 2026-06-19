@@ -246,6 +246,42 @@ describe("BrowserActExecutor non-committing act", () => {
 			code: "browser_act_requires_prepare",
 		});
 	});
+
+	it("refuses an inline goto (committing) WITHOUT dispatching the navigation", async () => {
+		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
+		const { executor, pool } = buildExecutor({ driver });
+		await expect(
+			executor.act(
+				commitRequest("n/a", {
+					verb: "goto",
+					target: undefined,
+					submittedValues: "https://shop.example.com/account/delete",
+				}),
+			),
+		).rejects.toMatchObject({ code: "browser_act_requires_prepare" });
+		// The navigation never fired: classify refuses BEFORE any driver dispatch.
+		expect(driver.dispatched).toHaveLength(0);
+		expect(driver.dispatched.some((d) => d.verb === "goto")).toBe(false);
+		expect(driver.settleCalls).toBe(0);
+		expect(pool.size()).toBe(0);
+	});
+
+	it("stages an escalated non-committing fill (forceConfirm:true) instead of refusing", async () => {
+		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
+		const { executor } = buildExecutor({ driver });
+		await expect(
+			executor.act(
+				commitRequest("n/a", {
+					verb: "fill",
+					target: "#email",
+					submittedValues: "a@b.com",
+					forceConfirm: true,
+				}),
+			),
+		).rejects.toMatchObject({ code: "browser_act_requires_prepare" });
+		// An escalated act must NOT run inline either; the driver never dispatched.
+		expect(driver.dispatched).toHaveLength(0);
+	});
 });
 
 describe("BrowserActExecutor prepareIntent", () => {
@@ -263,6 +299,61 @@ describe("BrowserActExecutor prepareIntent", () => {
 		expect(pool.size()).toBe(1);
 		const entry = pool.get("sess-1", "effect-1");
 		expect(entry?.approvedSubmittedValues).toEqual(APPROVED_VALUES);
+	});
+
+	it("stages a goto (committing) without firing the navigation; commit fires it post-approval", async () => {
+		const dest = "https://shop.example.com/account/delete";
+		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext());
+		const { executor, pool } = buildExecutor({ driver });
+		const prepared = await executor.prepareIntent(
+			commitRequest("effect-goto", {
+				verb: "goto",
+				target: undefined,
+				submittedValues: dest,
+			}),
+		);
+		expect(prepared.committing).toBe(true);
+		if (!prepared.committing) throw new Error("unreachable");
+		// goto is committing → forceConfirm true → staged, not refused.
+		expect(prepared.prepared.commitSignal.forceConfirm).toBe(true);
+		// prepare never navigates; the page is held live, not closed.
+		expect(driver.dispatched).toHaveLength(0);
+		expect(driver.page.closes).toBe(0);
+		expect(pool.size()).toBe(1);
+
+		// The committer fires the goto exactly once, post-approval, with the approved dest.
+		const record = recordFor(prepared.prepared, "effect-goto", {
+			actionVerb: "goto",
+			actionTarget: null,
+		});
+		const committer = executor.committer();
+		await committer.recaptureEvidence(record);
+		await committer.commit(record);
+		const gotos = driver.dispatched.filter((d) => d.verb === "goto");
+		expect(gotos).toHaveLength(1);
+		expect(gotos[0]?.submittedValues).toBe(dest);
+		expect(pool.size()).toBe(0);
+	});
+
+	it("stages an escalated non-committing fill (forceConfirm:true) instead of browser_act_not_committing", async () => {
+		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
+		const { executor, pool } = buildExecutor({ driver });
+		const prepared = await executor.prepareIntent(
+			commitRequest("effect-esc", {
+				verb: "fill",
+				target: "#email",
+				submittedValues: "a@b.com",
+				forceConfirm: true,
+			}),
+		);
+		expect(prepared.committing).toBe(true);
+		if (!prepared.committing) throw new Error("unreachable");
+		// The relay-set forceConfirm escalates a non-committing verb into a staged write.
+		expect(prepared.prepared.commitSignal.forceConfirm).toBe(true);
+		expect(prepared.prepared.commitSignal.reasons).toContain("action.force_confirm");
+		// Still no firing at prepare time; page held for approval.
+		expect(driver.dispatched).toHaveLength(0);
+		expect(pool.size()).toBe(1);
 	});
 });
 
@@ -286,6 +377,27 @@ describe("BrowserActExecutor committer (W3 recapture + commit)", () => {
 		// Pool entry evicted after commit; the live page is closed.
 		expect(pool.size()).toBe(0);
 		expect(driver.page.closes).toBe(1);
+	});
+
+	it("returns an ORIGIN-ONLY finalUrl in the commit receipt (no path/query/token leak)", async () => {
+		const page = new FakeLivePage(PAGE_URL, PAGE_DOM);
+		const driver = new FakeDriver(page, new FakeContext());
+		const { executor } = buildExecutor({ driver });
+		const prepared = await executor.prepareIntent(commitRequest("effect-1"));
+		if (!prepared.committing) throw new Error("unreachable");
+		const record = recordFor(prepared.prepared, "effect-1");
+		const committer = executor.committer();
+		await committer.recaptureEvidence(record);
+		// The post-commit landing URL carries a secret-bearing token in the query.
+		page.currentUrl = "https://shop.example.com/account?session=SECRET_TOKEN_abc123&path=/private";
+		const { receipt } = await committer.commit(record);
+		// Receipt exposes ONLY the origin — no path, query, or token.
+		expect(receipt.finalUrlOrigin).toBe("https://shop.example.com");
+		expect(receipt).not.toHaveProperty("finalUrl");
+		const serialized = JSON.stringify(receipt);
+		expect(serialized).not.toContain("SECRET_TOKEN");
+		expect(serialized).not.toContain("session=");
+		expect(serialized).not.toContain("/private");
 	});
 
 	it("fails binding drift when the page mutates between prepare and recapture", async () => {

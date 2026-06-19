@@ -485,9 +485,6 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 					maxLength: 2048,
 				},
 				submittedValues: {},
-				forceConfirm: {
-					type: "boolean",
-				},
 				timeoutMs: {
 					type: "integer",
 					minimum: 1_000,

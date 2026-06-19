@@ -623,9 +623,9 @@ describe("Telclaude MCP bridge foundation", () => {
 					target: "#pay",
 				}),
 			).rejects.toThrow("capability scope denied: browse.act");
-			await expect(
-				bridge.tc_browse_act_execute({ actionRef: "effect-1" }),
-			).rejects.toThrow("capability scope denied: browse.act");
+			await expect(bridge.tc_browse_act_execute({ actionRef: "effect-1" })).rejects.toThrow(
+				"capability scope denied: browse.act",
+			);
 		}
 		expect(calls).toEqual([]);
 	});
@@ -666,12 +666,14 @@ describe("Telclaude MCP bridge foundation", () => {
 				verb: "click",
 				target: "#pay",
 				submittedValues: { confirm: true },
+				// forceConfirm is RELAY-set + escalate-only; a runtime-supplied value must
+				// be stripped at the bridge boundary (asserted below).
 				forceConfirm: true,
 			}),
 		).resolves.toEqual({ actionRef: "effect-bw-1" });
-		await expect(
-			bridge.tc_browse_act_execute({ actionRef: "effect-bw-1" }),
-		).resolves.toEqual({ ok: true });
+		await expect(bridge.tc_browse_act_execute({ actionRef: "effect-bw-1" })).resolves.toEqual({
+			ok: true,
+		});
 
 		const stamp = {
 			actorId: "operator",
@@ -684,8 +686,16 @@ describe("Telclaude MCP bridge foundation", () => {
 		};
 		// The runtime names only the typed action + url; authority is server-stamped.
 		expect(calls.browseAct).toEqual([
-			{ ...stamp, url: "https://example.com/cart", verb: "fill", target: "#qty", submittedValues: "2" },
+			{
+				...stamp,
+				url: "https://example.com/cart",
+				verb: "fill",
+				target: "#qty",
+				submittedValues: "2",
+			},
 		]);
+		// forceConfirm is stripped at the bridge boundary — the dependency never sees a
+		// runtime-supplied forceConfirm (RELAY-set + escalate-only).
 		expect(calls.browseActPrepare).toEqual([
 			{
 				...stamp,
@@ -693,9 +703,9 @@ describe("Telclaude MCP bridge foundation", () => {
 				verb: "click",
 				target: "#pay",
 				submittedValues: { confirm: true },
-				forceConfirm: true,
 			},
 		]);
+		expect(calls.browseActPrepare[0]).not.toHaveProperty("forceConfirm");
 		// Execute is immutable: only the actionRef + stamp, never a token/values.
 		expect(calls.browseActExecute).toEqual([{ ...stamp, actionRef: "effect-bw-1" }]);
 		expect(calls.browseActExecute[0]).not.toHaveProperty("approvalToken");
