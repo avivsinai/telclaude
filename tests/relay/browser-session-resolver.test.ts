@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type { BrowseRequest, BrowseResult } from "../../src/relay/browser-broker.js";
 import { BrowserCookieStore } from "../../src/relay/browser-cookie-store.js";
-import { resolveBrowseSession } from "../../src/relay/browser-session-resolver.js";
+import {
+	createSessionAwareBrowseExecutor,
+	resolveBrowseSession,
+} from "../../src/relay/browser-session-resolver.js";
 
 const KEY = "resolver-test-key-0123456789abcd";
 
@@ -80,5 +84,59 @@ describe("resolveBrowseSession", () => {
 
 	it("returns null from an empty store", () => {
 		expect(resolveBrowseSession(store, "https://mail.google.com/")).toBeNull();
+	});
+});
+
+describe("createSessionAwareBrowseExecutor", () => {
+	function recordingRunner() {
+		const seen: BrowseRequest[] = [];
+		const runner = {
+			async browse(request: BrowseRequest): Promise<BrowseResult> {
+				seen.push(request);
+				return {
+					url: request.url,
+					finalUrl: request.url,
+					httpStatus: 200,
+					title: "",
+					content: "",
+					truncated: false,
+				};
+			},
+		};
+		return { runner, seen };
+	}
+
+	it("attaches the resolved session for a matching host, none otherwise", async () => {
+		seedGoogle();
+		const { runner, seen } = recordingRunner();
+		const exec = createSessionAwareBrowseExecutor(runner, store);
+
+		await exec.browse({ actor: "a", sessionRef: "s", url: "https://mail.google.com/" });
+		await exec.browse({ actor: "a", sessionRef: "s", url: "https://example.org/" });
+
+		expect(seen[0]?.session?.originScope).toEqual([
+			"google.com",
+			"accounts.google.com",
+			"mail.google.com",
+		]);
+		expect(seen[1]?.session).toBeUndefined();
+	});
+
+	it("never attaches a session for a catastrophic surface", async () => {
+		store.putSession({
+			sessionRef: "sess-bank",
+			domain: "mybank.example",
+			originScope: ["secure.mybank.example"],
+			storageState: { cookies: [], origins: [] },
+			createdAt: 1,
+			capturedBy: "telegram:default",
+		});
+		const { runner, seen } = recordingRunner();
+		const exec = createSessionAwareBrowseExecutor(runner, store, {
+			catastrophicDomains: ["mybank.example"],
+		});
+
+		await exec.browse({ actor: "a", sessionRef: "s", url: "https://secure.mybank.example/" });
+		expect(seen[0]?.session).toBeUndefined();
 	});
 });

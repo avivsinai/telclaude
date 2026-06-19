@@ -54,6 +54,11 @@ import {
 } from "../relay/browser-broker.js";
 import { startBrowserConnectProxy } from "../relay/browser-connect-proxy.js";
 import { resolveBrowserConnectProxyStartup } from "../relay/browser-context-token.js";
+import { resolveBrowserCookieStore } from "../relay/browser-cookie-store.js";
+import {
+	createSessionAwareBrowseExecutor,
+	parseBrowserCatastrophicDomains,
+} from "../relay/browser-session-resolver.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
@@ -302,8 +307,24 @@ export function registerRelayCommand(program: Command): void {
 				const liveMcpBrowserBroker = liveMcpBrowserBrokerConfig
 					? new BrowserBroker(createPlaywrightBrowserDriver(), liveMcpBrowserBrokerConfig)
 					: undefined;
+				// M2: when a cookie-store key is provisioned, wrap the broker so the relay
+				// resolves a persistent login per browse (never the model). Without the
+				// key, browsing stays cookie-less. Catastrophic surfaces get fresh login.
+				const liveMcpBrowserCookieStore = liveMcpBrowserBroker
+					? resolveBrowserCookieStore(CONFIG_DIR)
+					: null;
+				const liveMcpBrowseExecutor =
+					liveMcpBrowserBroker && liveMcpBrowserCookieStore
+						? createSessionAwareBrowseExecutor(liveMcpBrowserBroker, liveMcpBrowserCookieStore, {
+								catastrophicDomains: parseBrowserCatastrophicDomains(),
+							})
+						: liveMcpBrowserBroker;
 				if (liveMcpBrowserBroker) {
-					console.log("  tc_browse: enabled (contained browser broker wired)");
+					console.log(
+						liveMcpBrowserCookieStore
+							? "  tc_browse: enabled (broker + persistent-login store wired)"
+							: "  tc_browse: enabled (broker wired; cookie-less — no session store key)",
+					);
 				}
 				const liveMcpAttachmentQuarantineStore = createAttachmentQuarantineStore();
 				const liveMcpAttachmentQuarantineCleanup = setInterval(() => {
@@ -418,7 +439,7 @@ export function registerRelayCommand(program: Command): void {
 							ledger,
 							conversationStore: liveMcpConversationStore,
 							edgeRuntime: liveMcpEdgeRuntime,
-							browser: liveMcpBrowserBroker,
+							browser: liveMcpBrowseExecutor,
 							resolveOutboundMediaRefs: createStoredAttachmentOutboundMediaResolver({
 								edgeRuntime: liveMcpEdgeRuntime,
 								quarantineStore: liveMcpAttachmentQuarantineStore,

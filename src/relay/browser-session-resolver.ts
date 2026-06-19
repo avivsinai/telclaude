@@ -10,12 +10,17 @@
  * into a cookie-bearing, origin-pinned (M1), ephemeral (M6) context.
  */
 
-import type { BrowseSession } from "./browser-broker.js";
+import type { BrowseRequest, BrowseResult, BrowseSession } from "./browser-broker.js";
 import {
 	buildBrowserOriginScope,
 	hostMatchesBrowserOriginScope,
 } from "./browser-connect-contract.js";
 import type { BrowserCookieStore } from "./browser-cookie-store.js";
+
+/** Anything that can run a browse — the broker, or a wrapper around it. */
+type BrowseRunner = { browse(request: BrowseRequest): Promise<BrowseResult> };
+
+export const BROWSER_CATASTROPHIC_DOMAINS_ENV = "TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS";
 
 export interface ResolveBrowseSessionOptions {
 	/**
@@ -23,6 +28,20 @@ export interface ResolveBrowseSessionOptions {
 	 * is required at use time. Matched against the request host like an origin scope.
 	 */
 	readonly catastrophicDomains?: readonly string[];
+}
+
+/**
+ * Parse the operator-declared catastrophic registrable domains (comma- or
+ * space-separated) — surfaces like primary email admin or banking that must
+ * never run from a standing session.
+ */
+export function parseBrowserCatastrophicDomains(env: NodeJS.ProcessEnv = process.env): string[] {
+	const raw = env[BROWSER_CATASTROPHIC_DOMAINS_ENV]?.trim();
+	if (!raw) return [];
+	return raw
+		.split(/[,\s]+/)
+		.map((entry) => entry.trim().toLowerCase())
+		.filter(Boolean);
 }
 
 /**
@@ -58,4 +77,23 @@ export function resolveBrowseSession(
 		}
 	}
 	return null;
+}
+
+/**
+ * Wrap a browse runner so every browse first resolves a persistent login from
+ * the cookie store. The contained runtime supplies only a URL through
+ * `tc_browse`; this wrapper — relay-side — attaches the matching session (or
+ * none), so a logged-in browse is never something the model can request or name.
+ */
+export function createSessionAwareBrowseExecutor(
+	runner: BrowseRunner,
+	store: BrowserCookieStore,
+	options: ResolveBrowseSessionOptions = {},
+): BrowseRunner {
+	return {
+		async browse(request) {
+			const session = resolveBrowseSession(store, request.url, options);
+			return runner.browse(session ? { ...request, session } : request);
+		},
+	};
 }

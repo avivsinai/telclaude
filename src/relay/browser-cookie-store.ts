@@ -15,7 +15,7 @@
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import { getChildLogger } from "../logging.js";
 import { buildBrowserOriginScope } from "./browser-connect-contract.js";
@@ -23,6 +23,7 @@ import { buildBrowserOriginScope } from "./browser-connect-contract.js";
 const logger = getChildLogger({ module: "browser-cookie-store" });
 
 export const BROWSER_COOKIE_STORE_KEY_ENV = "TELCLAUDE_BROWSER_COOKIE_STORE_KEY";
+export const BROWSER_COOKIE_STORE_FILE = "browser-sessions.json";
 
 /** A captured browser session: the cookies + origin scope for one logged-in domain. */
 export interface BrowserSessionRecord {
@@ -204,4 +205,18 @@ export class BrowserCookieStore {
 	private writeFile(file: CookieStoreFile): void {
 		writeFileSync(this.filePath, JSON.stringify(file), { mode: 0o600 });
 	}
+}
+
+/**
+ * Construct the relay-owned cookie store from the environment, or null when the
+ * encryption key is unset — M2 is then off and browsing is cookie-less only. The
+ * store file lives under the relay data dir; the key never leaves the relay.
+ */
+export function resolveBrowserCookieStore(
+	dataDir: string,
+	env: NodeJS.ProcessEnv = process.env,
+): BrowserCookieStore | null {
+	const key = env[BROWSER_COOKIE_STORE_KEY_ENV]?.trim();
+	if (!key) return null;
+	return new BrowserCookieStore(join(dataDir, BROWSER_COOKIE_STORE_FILE), key);
 }
