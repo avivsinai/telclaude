@@ -34,6 +34,7 @@ interface FakePageScript {
 interface FakeCalls {
 	connectEndpoints: string[];
 	proxyOptions: BrowserProxyOptions[];
+	storageStates: unknown[];
 	gotoUrls: string[];
 	pageClosed: number;
 	contextClosed: number;
@@ -44,6 +45,7 @@ function fakeDriver(script: FakePageScript = {}): { driver: BrowserDriver; calls
 	const calls: FakeCalls = {
 		connectEndpoints: [],
 		proxyOptions: [],
+		storageStates: [],
 		gotoUrls: [],
 		pageClosed: 0,
 		contextClosed: 0,
@@ -77,8 +79,9 @@ function fakeDriver(script: FakePageScript = {}): { driver: BrowserDriver; calls
 	};
 
 	const connection: BrowserDriverConnection = {
-		async newContext(options: { proxy: BrowserProxyOptions }) {
+		async newContext(options: { proxy: BrowserProxyOptions; storageState?: unknown }) {
 			calls.proxyOptions.push(options.proxy);
+			calls.storageStates.push(options.storageState);
 			return context;
 		},
 		async close() {
@@ -148,6 +151,47 @@ describe("BrowserBroker — read-only browse", () => {
 		expect(verification.context?.cookieBearing).toBe(false);
 		expect(verification.context?.actor).toBe("telegram:default");
 		expect(verification.context?.sessionRef).toBe("sess-browse-1");
+	});
+
+	it("M2: hydrates a relay-resolved session into a cookie-bearing, origin-pinned context", async () => {
+		const { driver, calls } = fakeDriver({ text: "logged-in dashboard" });
+		const broker = new BrowserBroker(driver, CONFIG);
+		const storageState = {
+			cookies: [{ name: "SID", value: "secret", domain: ".example.org" }],
+			origins: [],
+		};
+
+		await broker.browse({
+			...REQUEST,
+			url: "https://example.org/account",
+			session: { storageState, originScope: ["example.org"] },
+		});
+
+		// The captured storageState reaches the driver so the context is logged in.
+		expect(calls.storageStates[0]).toEqual(storageState);
+
+		const proxy = calls.proxyOptions[0];
+		const verifier = createBrowserConnectContextVerifier({ secret: SECRET });
+		// The token is cookie-bearing AND its egress is pinned (M1) to the login origin.
+		const inScope = await verifier({
+			token: proxy?.password ?? "",
+			targetHost: "example.org",
+			targetPort: 443,
+			remoteAddress: PEER,
+			headers: {},
+		});
+		expect(inScope.allowed).toBe(true);
+		expect(inScope.context?.cookieBearing).toBe(true);
+		// A host outside the session's origin scope is refused by the same token —
+		// a hijacked logged-in session cannot exfiltrate cookies to another host.
+		const outOfScope = await verifier({
+			token: proxy?.password ?? "",
+			targetHost: "evil.test",
+			targetPort: 443,
+			remoteAddress: PEER,
+			headers: {},
+		});
+		expect(outOfScope.allowed).toBe(false);
 	});
 
 	it("redacts secret-shaped material that appears in page text", async () => {

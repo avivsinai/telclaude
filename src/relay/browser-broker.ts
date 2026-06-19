@@ -57,8 +57,19 @@ export interface BrowserDriverContext {
 	close(): Promise<void>;
 }
 
+/**
+ * Playwright `storageState` (cookies + per-origin localStorage) captured at
+ * one-time session capture and stored encrypted relay-side. Opaque to the
+ * broker — it only forwards it to the driver to hydrate a cookie-bearing context.
+ */
+export type BrowserStorageState = unknown;
+
 export interface BrowserDriverConnection {
-	newContext(options: { readonly proxy: BrowserProxyOptions }): Promise<BrowserDriverContext>;
+	newContext(options: {
+		readonly proxy: BrowserProxyOptions;
+		/** M2: captured storageState to hydrate a cookie-bearing (logged-in) context. */
+		readonly storageState?: BrowserStorageState;
+	}): Promise<BrowserDriverContext>;
 	close(): Promise<void>;
 }
 
@@ -85,12 +96,27 @@ export interface BrowserBrokerConfig {
 	readonly tokenTtlMs?: number;
 }
 
+/**
+ * A relay-resolved persistent login for a cookie-bearing browse. The relay
+ * resolves this from the encrypted cookie store by the URL's registrable domain
+ * — the runtime never names or supplies a session. When present, the browse runs
+ * in a cookie-bearing context whose egress is pinned (M1) to `originScope`.
+ */
+export interface BrowseSession {
+	/** Decrypted Playwright storageState (cookies + per-origin localStorage). */
+	readonly storageState: BrowserStorageState;
+	/** M1 login-origin set; the cookie-bearing context may only egress to these. */
+	readonly originScope: readonly string[];
+}
+
 export interface BrowseRequest {
 	/** Server-resolved actor identity (the runtime never names its own). */
 	readonly actor: string;
 	/** Server-resolved session reference for this browse. */
 	readonly sessionRef: string;
 	readonly url: string;
+	/** M2: a relay-resolved persistent login. Absent → cookie-less browse. */
+	readonly session?: BrowseSession;
 	readonly maxChars?: number;
 	readonly timeoutMs?: number;
 }
@@ -150,16 +176,20 @@ export class BrowserBroker {
 			request.timeoutMs ?? this.config.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS,
 		);
 
-		// Read-only slice: cookie-less context, no origin scope. The proxy lets a
-		// cookie-less context reach any public host; the relay CONNECT proxy still
-		// blocks private/metadata/provider/model targets at the network layer.
+		// M2: a relay-resolved session makes this a cookie-bearing browse whose
+		// egress is pinned (M1) to the session's login origins. Absent → a
+		// cookie-less context that may reach any public host. Either way the relay
+		// CONNECT proxy blocks private/metadata/provider/model targets, and M6
+		// discards the context (and any hydrated cookies) after the browse.
+		const session = request.session;
 		const token = mintBrowserContextToken({
 			secret: this.config.contextTokenSecret,
 			peerAddress: this.config.tcBrowserPeerAddress,
 			contextId: `browse-${crypto.randomUUID()}`,
 			sessionRef,
 			actor,
-			cookieBearing: false,
+			cookieBearing: session !== undefined,
+			...(session !== undefined ? { originScope: session.originScope } : {}),
 			now: this.now(),
 			...(this.config.tokenTtlMs !== undefined ? { ttlMs: this.config.tokenTtlMs } : {}),
 		});
@@ -172,6 +202,7 @@ export class BrowserBroker {
 					username: BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
 					password: token,
 				},
+				...(session !== undefined ? { storageState: session.storageState } : {}),
 			});
 			try {
 				const page = await context.newPage();
@@ -269,8 +300,17 @@ export function createPlaywrightBrowserDriver(): BrowserDriver {
 				timeout: PLAYWRIGHT_CONNECT_TIMEOUT_MS,
 			});
 			return {
-				async newContext({ proxy }) {
-					const context = await browser.newContext({ proxy });
+				async newContext({ proxy, storageState }) {
+					const context = await browser.newContext({
+						proxy,
+						...(storageState !== undefined
+							? {
+									storageState: storageState as NonNullable<
+										Parameters<typeof browser.newContext>[0]
+									>["storageState"],
+								}
+							: {}),
+					});
 					return {
 						async newPage() {
 							const page = await context.newPage();
