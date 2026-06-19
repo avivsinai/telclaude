@@ -439,11 +439,13 @@ describe("Telclaude live MCP web capability clients", () => {
 
 		expect(result.content).toContain("UNTRUSTED");
 		expect(result.finalUrl).toBe("https://example.org/read?r=1");
-		// The broker is driven with the relay-stamped actor and a server-derived
-		// sessionRef — the runtime never names either.
+		// The broker is driven with the relay-stamped actor, profile, trust domain,
+		// and a server-derived sessionRef — the runtime never names any of them.
 		expect(browseCalls).toEqual([
 			{
 				actor: "operator",
+				profileId: "ops",
+				authorityDomain: "private",
 				sessionRef: "endpoint-private",
 				url: "https://example.org/read",
 				maxChars: 1_000,
