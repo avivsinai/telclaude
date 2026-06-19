@@ -128,13 +128,33 @@ jobs:
           read_deploy_env() {
             local key="$1"
             local file line
-            for file in "$shell_env_file" "$compose_env_file"; do
+            # Prefer the Docker .env value because shell env values are written
+            # with %q escaping and are not safe to round-trip into Compose.
+            for file in "$compose_env_file" "$shell_env_file"; do
               line="$(grep -E "^(export[[:space:]]+)?${key}=" "$file" 2>/dev/null | tail -n 1 || true)"
               [ -n "$line" ] || continue
               printf '%s' "$line" | sed -E "s/^(export[[:space:]]+)?${key}=//"
               return 0
             done
             return 1
+          }
+          normalize_internal_hosts() {
+            local existing="$1"
+            local required="$2"
+            local hosts=()
+            local host current
+            append_host() {
+              host="$(printf '%s' "$1" | xargs)"
+              [ -n "$host" ] || return 0
+              for current in "${hosts[@]}"; do
+                [ "$current" = "$host" ] && return 0
+              done
+              hosts+=("$host")
+            }
+            while IFS= read -r host; do append_host "$host"; done < <(printf '%s' "$existing" | tr ',[:space:]' '\n')
+            while IFS= read -r host; do append_host "$host"; done < <(printf '%s' "$required" | tr ',[:space:]' '\n')
+            local IFS=,
+            printf '%s' "${hosts[*]}"
           }
           generate_ed25519_pair() {
             local stem="$1"
@@ -151,6 +171,13 @@ jobs:
           whatsapp_inbound_secret="$(read_deploy_env TELCLAUDE_WHATSAPP_INBOUND_SECRET || true)"
           israel_sidecar_hmac_key="$(read_deploy_env TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY || true)"
           israel_sidecar_hmac_vault_target="$(read_deploy_env TELCLAUDE_ISRAEL_SIDECAR_HMAC_VAULT_TARGET || true)"
+          browser_context_token="$(read_deploy_env TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET || true)"
+          browser_cookie_store_key="$(read_deploy_env TELCLAUDE_BROWSER_COOKIE_STORE_KEY || true)"
+          browser_catastrophic_domains="$(read_deploy_env TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS || true)"
+          browser_subnet="$(read_deploy_env TELCLAUDE_BROWSER_SUBNET || true)"
+          browser_relay_ip="$(read_deploy_env TELCLAUDE_BROWSER_RELAY_IP || true)"
+          browser_ip="$(read_deploy_env TELCLAUDE_BROWSER_IP || true)"
+          internal_hosts="$(read_deploy_env TELCLAUDE_INTERNAL_HOSTS || true)"
           if [ -z "$operator_agent_private_key" ] || [ -z "$operator_agent_public_key" ] || [ -z "$operator_relay_private_key" ] || [ -z "$operator_relay_public_key" ]; then
             while IFS='=' read -r key value; do
               case "$key" in
@@ -166,23 +193,32 @@ jobs:
           fi
           [ -n "$whatsapp_bridge_secret" ] || whatsapp_bridge_secret="$(openssl rand -hex 32)"
           [ -n "$whatsapp_inbound_secret" ] || whatsapp_inbound_secret="$(openssl rand -hex 32)"
-          for secret in "$TELCLAUDE_HERMES_API_SERVER_KEY" "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY" "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN" "$operator_agent_private_key" "$operator_agent_public_key" "$operator_relay_private_key" "$operator_relay_public_key" "$whatsapp_bridge_secret" "$whatsapp_inbound_secret" "$israel_sidecar_hmac_key"; do
+          [ -n "$browser_context_token" ] || browser_context_token="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+          [ -n "$browser_cookie_store_key" ] || browser_cookie_store_key="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+          for secret in "$TELCLAUDE_HERMES_API_SERVER_KEY" "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY" "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN" "$operator_agent_private_key" "$operator_agent_public_key" "$operator_relay_private_key" "$operator_relay_public_key" "$whatsapp_bridge_secret" "$whatsapp_inbound_secret" "$israel_sidecar_hmac_key" "$browser_context_token" "$browser_cookie_store_key"; do
             [ -n "$secret" ] && echo "::add-mask::${secret}"
           done
           hermes_private_subnet='172.30.92.0/24'
           hermes_social_subnet='172.30.93.0/24'
+          [ -n "$browser_subnet" ] || browser_subnet='172.30.94.0/24'
           hermes_private_prefix="${hermes_private_subnet%.*}"
           hermes_social_prefix="${hermes_social_subnet%.*}"
+          browser_prefix="${browser_subnet%.*}"
           hermes_relay_ip="${hermes_private_prefix}.10"
           hermes_social_relay_ip="${hermes_social_prefix}.10"
           hermes_contained_ip="${hermes_private_prefix}.11"
           hermes_social_ip="${hermes_social_prefix}.11"
+          [ -n "$browser_relay_ip" ] || browser_relay_ip="${browser_prefix}.10"
+          [ -n "$browser_ip" ] || browser_ip="${browser_prefix}.11"
           hermes_live_mcp_enabled=1
           hermes_live_mcp_admin_enabled=1
           hermes_live_mcp_additional_binds="${hermes_social_relay_ip}@telclaude-hermes-social"
           hermes_live_mcp_allowed_peers="${hermes_contained_ip},${hermes_social_ip}"
-          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
-          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
+          required_internal_hosts='telclaude,google-services,tc-hermes-contained,tc-hermes-social,tc-browser'
+          internal_hosts="$(normalize_internal_hosts "$internal_hosts" "$required_internal_hosts")"
+          printf 'TELCLAUDE_INTERNAL_HOSTS=%s\n' "$internal_hosts" >> "$GITHUB_ENV"
+          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_INTERNAL_HOSTS|TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_BROWSER_(CONTEXT_TOKEN_SECRET|COOKIE_STORE_KEY|CATASTROPHIC_DOMAINS|SUBNET|RELAY_IP|IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
+          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_INTERNAL_HOSTS|TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_BROWSER_(CONTEXT_TOKEN_SECRET|COOKIE_STORE_KEY|CATASTROPHIC_DOMAINS|SUBNET|RELAY_IP|IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
           grep -Ev "$shell_key_pattern" "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
@@ -201,6 +237,13 @@ jobs:
             printf 'export TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=%s\n' "$hermes_live_mcp_additional_binds"
             printf 'export TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=%s\n' "$hermes_live_mcp_allowed_peers"
             printf 'export TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP=%s\n' "$hermes_social_ip"
+            printf 'export TELCLAUDE_INTERNAL_HOSTS=%q\n' "$internal_hosts"
+            printf 'export TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET=%q\n' "$browser_context_token"
+            printf 'export TELCLAUDE_BROWSER_COOKIE_STORE_KEY=%q\n' "$browser_cookie_store_key"
+            printf 'export TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS=%q\n' "$browser_catastrophic_domains"
+            printf 'export TELCLAUDE_BROWSER_SUBNET=%s\n' "$browser_subnet"
+            printf 'export TELCLAUDE_BROWSER_RELAY_IP=%s\n' "$browser_relay_ip"
+            printf 'export TELCLAUDE_BROWSER_IP=%s\n' "$browser_ip"
             printf 'export TELCLAUDE_WHATSAPP_BRIDGE_SECRET=%q\n' "$whatsapp_bridge_secret"
             printf 'export TELCLAUDE_WHATSAPP_INBOUND_SECRET=%q\n' "$whatsapp_inbound_secret"
             [ -z "$israel_sidecar_hmac_key" ] || printf 'export TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY=%q\n' "$israel_sidecar_hmac_key"
@@ -228,6 +271,13 @@ jobs:
             printf 'TELCLAUDE_HERMES_LIVE_MCP_ADDITIONAL_BINDS=%s\n' "$hermes_live_mcp_additional_binds"
             printf 'TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=%s\n' "$hermes_live_mcp_allowed_peers"
             printf 'TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP=%s\n' "$hermes_social_ip"
+            printf 'TELCLAUDE_INTERNAL_HOSTS=%s\n' "$internal_hosts"
+            printf 'TELCLAUDE_BROWSER_CONTEXT_TOKEN_SECRET=%s\n' "$browser_context_token"
+            printf 'TELCLAUDE_BROWSER_COOKIE_STORE_KEY=%s\n' "$browser_cookie_store_key"
+            printf 'TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS=%s\n' "$browser_catastrophic_domains"
+            printf 'TELCLAUDE_BROWSER_SUBNET=%s\n' "$browser_subnet"
+            printf 'TELCLAUDE_BROWSER_RELAY_IP=%s\n' "$browser_relay_ip"
+            printf 'TELCLAUDE_BROWSER_IP=%s\n' "$browser_ip"
             printf 'TELCLAUDE_WHATSAPP_BRIDGE_SECRET=%s\n' "$whatsapp_bridge_secret"
             printf 'TELCLAUDE_WHATSAPP_INBOUND_SECRET=%s\n' "$whatsapp_inbound_secret"
             [ -z "$israel_sidecar_hmac_key" ] || printf 'TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY=%s\n' "$israel_sidecar_hmac_key"
@@ -273,7 +323,7 @@ jobs:
           fi
 
           cd "$docker_dir"
-          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
+          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml)
           compose_profiles=(--profile whatsapp)
           containers=(
             telclaude
@@ -283,7 +333,14 @@ jobs:
             telclaude-whatsapp-bridge
             tc-hermes-contained
             tc-hermes-social
+            tc-browser
           )
+
+          redact_deploy_logs() {
+            sed -E \
+              -e 's/(B[e]arer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
+              -e 's/((KEY|TOKEN|SECRET|PRIVATE_KEY)=)[^[:space:]]+/\1[REDACTED]/g'
+          }
 
           container_ready() {
             local container="$1"
@@ -309,13 +366,13 @@ jobs:
 
             if [ "$SECONDS" -ge "$deadline" ]; then
               echo "healthy=0 not_ready=${not_ready[*]} deployed_sha=$deployed_sha origin_sha=$origin_sha"
-              docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps || true
+              docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps 2>&1 | redact_deploy_logs || true
               for container in "${containers[@]}"; do
                 echo "::group::${container} state"
-                docker inspect --format '{{json .State}}' "$container" 2>&1 || true
+                docker inspect --format '{{json .State}}' "$container" 2>&1 | redact_deploy_logs || true
                 echo "::endgroup::"
                 echo "::group::${container} logs"
-                docker logs --tail=120 "$container" 2>&1 || true
+                docker logs --tail=120 "$container" 2>&1 | redact_deploy_logs || true
                 echo "::endgroup::"
               done
               exit 1
@@ -388,14 +445,14 @@ jobs:
           # checks TELCLAUDE_REVISION first, so this runtime value is authoritative
           # and immune to the Docker layer cache that left the baked .revision stale.
           export TELCLAUDE_REVISION="${GITHUB_SHA:0:7}"
-          if ! ./docker/build.sh; then
+          if ! TELCLAUDE_BUILD_BROWSER=1 ./docker/build.sh; then
             echo "Initial Docker build failed; pruning BuildKit cache and retrying once"
             docker builder prune -af || true
             docker buildx prune -af || true
-            ./docker/build.sh
+            TELCLAUDE_BUILD_BROWSER=1 ./docker/build.sh
           fi
           cd docker
-          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
+          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml)
           compose_profiles=(--profile whatsapp)
           redact_deploy_logs() {
             sed -E \
@@ -411,19 +468,44 @@ jobs:
             docker logs --tail=160 "$container" 2>&1 | redact_deploy_logs || true
             echo "::endgroup::"
           }
-          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps || true; for container in telclaude telclaude-whatsapp-bridge tc-hermes-contained tc-hermes-social; do dump_container_diagnostics "$container"; done; docker network ls || true; fi; exit "$status"' EXIT
+          container_ready() {
+            local container="$1"
+            local status health
+            status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
+            health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)"
+            [ "$status" = "running" ] && { [ "$health" = "healthy" ] || [ "$health" = "none" ]; }
+          }
+          wait_for_container_ready() {
+            local container="$1"
+            local timeout_seconds="${2:-180}"
+            local deadline=$((SECONDS + timeout_seconds))
+            until container_ready "$container"; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "container_not_ready=$container"
+                dump_container_diagnostics "$container"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps 2>&1 | redact_deploy_logs || true; for container in telclaude telclaude-whatsapp-bridge tc-hermes-contained tc-hermes-social tc-browser; do dump_container_diagnostics "$container"; done; docker network ls || true; fi; exit "$status"' EXIT
           docker compose "${compose_files[@]}" "${compose_profiles[@]}" down --remove-orphans || true
-          docker rm -f tc-hermes-contained tc-hermes-social telclaude-agent telclaude-agent-social >/dev/null 2>&1 || true
-          for network in telclaude-hermes-private telclaude-hermes-social docker_hermes-private-net docker_hermes-social-net telclaude-hermes-relay telclaude-agent-relay telclaude-agent-egress telclaude-social-relay telclaude-social-egress; do
+          docker rm -f tc-hermes-contained tc-hermes-social tc-browser telclaude-agent telclaude-agent-social >/dev/null 2>&1 || true
+          for network in telclaude-hermes-private telclaude-hermes-social telclaude-relay-browser docker_hermes-private-net docker_hermes-social-net docker_relay-browser-net docker_browser-net telclaude-hermes-relay telclaude-agent-relay telclaude-agent-egress telclaude-social-relay telclaude-social-egress; do
             docker network rm "$network" >/dev/null 2>&1 || true
           done
           while IFS= read -r network_id; do
             [ -n "$network_id" ] || continue
             subnet="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$network_id" 2>/dev/null || true)"
             case "$subnet" in
-              *192.0.2.0/24*|*192.0.3.0/24*|*172.30.92.0/24*|*172.30.93.0/24*) docker network rm "$network_id" >/dev/null 2>&1 || true ;;
+              *192.0.2.0/24*|*192.0.3.0/24*|*172.30.92.0/24*|*172.30.93.0/24*|*172.30.94.0/24*) docker network rm "$network_id" >/dev/null 2>&1 || true ;;
             esac
           done < <(docker network ls -q)
+          docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans tc-browser
+          wait_for_container_ready tc-browser 180
+          docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans
+          docker restart telclaude >/dev/null
+          wait_for_container_ready telclaude 180
           docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480
 
       - name: Verify live Hermes runtime gates

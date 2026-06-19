@@ -12,6 +12,9 @@
 
 services:
   telclaude:
+    depends_on:
+      tc-browser:
+        condition: service_healthy
     environment:
       - TELCLAUDE_BROWSER_CONNECT_PROXY_ENABLED=1
       - TELCLAUDE_BROWSER_CONNECT_PROXY_HOST=0.0.0.0
@@ -23,11 +26,11 @@ services:
       - TELCLAUDE_BROWSER_CONNECT_PROXY_URL=http://telclaude:${TELCLAUDE_BROWSER_CONNECT_PROXY_PORT:-8794}
       - TELCLAUDE_BROWSER_PEER_ADDRESS=${TELCLAUDE_BROWSER_IP:?set tc-browser static container IP for context token binding}
       # S2 persistent logins (optional): a high-entropy key enables the encrypted
-      # cookie store + M2; unset → browsing stays cookie-less. Catastrophic domains
+      # cookie store + M2; unset -> browsing stays cookie-less. Catastrophic domains
       # (comma/space-separated) never run from a standing session.
       - TELCLAUDE_BROWSER_COOKIE_STORE_KEY=${TELCLAUDE_BROWSER_COOKIE_STORE_KEY:-}
       - TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS=${TELCLAUDE_BROWSER_CATASTROPHIC_DOMAINS:-}
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-browser}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-hermes-contained,tc-hermes-social,tc-browser}
     networks:
       relay-browser-net:
         ipv4_address: ${TELCLAUDE_BROWSER_RELAY_IP:?set relay static container IP on relay-browser-net}
@@ -41,9 +44,6 @@ services:
         PLAYWRIGHT_VERSION: ${TELCLAUDE_BROWSER_PLAYWRIGHT_VERSION:-1.59.0}
     image: ${TELCLAUDE_BROWSER_IMAGE:-telclaude-browser:camoufox-0.4.11-pw-1.59.0}
     container_name: tc-browser
-    depends_on:
-      telclaude:
-        condition: service_healthy
     environment:
       - TELCLAUDE_BROWSER_HOST=tc-browser
       - TELCLAUDE_BROWSER_PORT=${TELCLAUDE_BROWSER_PORT:-3006}
