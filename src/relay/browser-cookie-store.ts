@@ -88,6 +88,41 @@ export function sessionMatchesAuthority(
 	);
 }
 
+/**
+ * Map an MCP trust domain (`private|social|household|public|specialist`) to the
+ * browser authority domain. This is an explicit mapping, NOT a cast: the MCP
+ * vocabulary uses `social` where the browser layer uses `public-social`, so a
+ * cast would isolate social sessions out of existence. Unknown / `specialist`
+ * → `public` (least-privileged; operators never capture logins under `public`,
+ * so it resolves cookie-less, fail-closed).
+ */
+export function browserAuthorityDomainFromMcp(mcpDomain: string): BrowserAuthorityDomain {
+	switch (mcpDomain) {
+		case "private":
+			return "private";
+		case "social":
+			return "public-social";
+		case "household":
+			return "household";
+		default:
+			return "public";
+	}
+}
+
+const BROWSER_AUTHORITY_DOMAINS: readonly BrowserAuthorityDomain[] = [
+	"private",
+	"public-social",
+	"household",
+	"public",
+];
+
+/** Runtime guard — capture must store one of the browser authority domains. */
+export function isBrowserAuthorityDomain(value: unknown): value is BrowserAuthorityDomain {
+	return (
+		typeof value === "string" && (BROWSER_AUTHORITY_DOMAINS as readonly string[]).includes(value)
+	);
+}
+
 interface EncryptedRecord {
 	readonly iv: string;
 	readonly data: string;
@@ -129,6 +164,11 @@ export class BrowserCookieStore {
 		const domain = record.domain.trim().toLowerCase();
 		if (!credentialRef || !actorId || !profileId || !domain) {
 			throw new Error("browser session requires credentialRef, actorId, profileId, and domain");
+		}
+		if (!isBrowserAuthorityDomain(record.authorityDomain)) {
+			throw new Error(
+				`browser session requires a valid authorityDomain (got ${JSON.stringify(record.authorityDomain)})`,
+			);
 		}
 		const originScope = buildBrowserOriginScope([domain, ...record.originScope]);
 		if (originScope.length === 0) {

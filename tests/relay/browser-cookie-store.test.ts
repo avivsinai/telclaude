@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	BrowserCookieStore,
 	type BrowserSessionRecord,
+	browserAuthorityDomainFromMcp,
 } from "../../src/relay/browser-cookie-store.js";
 
 const KEY = "cookie-store-test-key-0123456789";
@@ -121,6 +122,11 @@ describe("BrowserCookieStore", () => {
 		expect(() => store.putSession(record({ domain: "localhost", originScope: [] }))).toThrow(
 			/origin scope/,
 		);
+		// an invalid authorityDomain (e.g. the MCP 'social' vocab) is rejected at
+		// capture so a bad value can never silently isolate sessions later.
+		expect(() => store.putSession(record({ authorityDomain: "social" as never }))).toThrow(
+			/valid authorityDomain/,
+		);
 	});
 
 	it("persists across store instances (durable)", () => {
@@ -128,5 +134,20 @@ describe("BrowserCookieStore", () => {
 		expect(existsSync(filePath)).toBe(true);
 		const reopened = new BrowserCookieStore(filePath, KEY);
 		expect(reopened.getSession("sess-google-1")?.domain).toBe("google.com");
+	});
+});
+
+describe("browserAuthorityDomainFromMcp", () => {
+	it("maps MCP trust domains to the browser authority vocabulary (social → public-social)", () => {
+		expect(browserAuthorityDomainFromMcp("private")).toBe("private");
+		expect(browserAuthorityDomainFromMcp("social")).toBe("public-social");
+		expect(browserAuthorityDomainFromMcp("household")).toBe("household");
+		expect(browserAuthorityDomainFromMcp("public")).toBe("public");
+	});
+
+	it("maps specialist + any unknown domain to 'public' (fail-closed — not an operator capture domain)", () => {
+		expect(browserAuthorityDomainFromMcp("specialist")).toBe("public");
+		expect(browserAuthorityDomainFromMcp("bogus")).toBe("public");
+		expect(browserAuthorityDomainFromMcp("")).toBe("public");
 	});
 });
