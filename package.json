@@ -123,7 +123,7 @@
     "telegram-markdown-v2": "^0.0.4",
     "undici": "^8.3.0",
     "zod": "^4.4.3",
-    "playwright-core": "~1.59.0"
+    "playwright-core": "1.59.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
