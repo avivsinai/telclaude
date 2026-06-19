@@ -308,6 +308,11 @@ function safeUrlOrigin(url: string): string | null {
 const COMMITTING_VERBS = new Set([
 	"check",
 	"click",
+	// `goto` performs a real navigation in a cookie-bearing session, and many
+	// account mutations are GET-triggered (confirm/unsubscribe/delete links), so an
+	// inline goto would be an approval bypass. Treat it as committing: inline act()
+	// refuses it (must prepareIntent), and prepare stages it for approval.
+	"goto",
 	"press",
 	"select",
 	"setinputfiles",

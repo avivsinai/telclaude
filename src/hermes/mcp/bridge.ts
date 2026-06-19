@@ -129,6 +129,53 @@ export type TelclaudeMcpBrowseRequest = TelclaudeMcpAuthorityStamp & {
 	timeoutMs?: number;
 };
 
+/** A typed interactive browser action verb the runtime may name. */
+export type TelclaudeMcpBrowserActVerb =
+	| "click"
+	| "fill"
+	| "selectOption"
+	| "press"
+	| "goto"
+	| "type";
+
+/**
+ * A non-committing interactive act (fill/type/select/press/non-committing
+ * click/navigate). The runtime names only the typed action + the entry url; the
+ * relay server-stamps authority and resolves the session/host/origin scope just
+ * like tc_browse. Runs inline with NO ledger and NO approval. A committing act
+ * (or forceConfirm) is rejected here and must go through prepare/execute.
+ */
+export type TelclaudeMcpBrowserActRequest = TelclaudeMcpAuthorityStamp & {
+	url: string;
+	verb: TelclaudeMcpBrowserActVerb;
+	target?: string;
+	submittedValues?: unknown;
+	timeoutMs?: number;
+};
+
+/**
+ * Stage a COMMITTING interactive act (submit / a click that navigates or posts)
+ * for human approval WITHOUT firing it. Same server-stamped authority + relay
+ * session resolution as the inline act. Returns only an opaque actionRef + a
+ * redacted display summary — never the raw target/values or any token.
+ */
+export type TelclaudeMcpBrowserActPrepareRequest = TelclaudeMcpAuthorityStamp & {
+	url: string;
+	verb: TelclaudeMcpBrowserActVerb;
+	target?: string;
+	submittedValues?: unknown;
+	timeoutMs?: number;
+	// NOTE: no `forceConfirm` — it is RELAY-set + escalate-only and never crosses
+	// the runtime boundary. The bridge input schema strips any runtime-supplied
+	// forceConfirm fail-closed. The relay surface/executor still thread a relay-set
+	// forceConfirm internally for a future relay-side escalation path.
+};
+
+/** Execute a previously prepared + approved committing browser act by actionRef. */
+export type TelclaudeMcpBrowserActExecuteRequest = TelclaudeMcpAuthorityStamp & {
+	actionRef: string;
+};
+
 export type TelclaudeMcpImageGenerateRequest = TelclaudeMcpAuthorityStamp & {
 	prompt: string;
 	size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto";
@@ -179,6 +226,9 @@ export type TelclaudeMcpBridgeDependencies = {
 	webFetch(request: TelclaudeMcpWebFetchRequest): Promise<unknown>;
 	webSearch(request: TelclaudeMcpWebSearchRequest): Promise<unknown>;
 	browse(request: TelclaudeMcpBrowseRequest): Promise<unknown>;
+	browseAct(request: TelclaudeMcpBrowserActRequest): Promise<unknown>;
+	browseActPrepare(request: TelclaudeMcpBrowserActPrepareRequest): Promise<unknown>;
+	browseActExecute(request: TelclaudeMcpBrowserActExecuteRequest): Promise<unknown>;
 	imageGenerate(request: TelclaudeMcpImageGenerateRequest): Promise<unknown>;
 	tts(request: TelclaudeMcpTtsRequest): Promise<unknown>;
 	skillRequest(request: TelclaudeMcpSkillRequestRequest): Promise<unknown>;
@@ -201,6 +251,9 @@ export type TelclaudeMcpBridge = {
 	tc_web_fetch(input: unknown): Promise<unknown>;
 	tc_web_search(input: unknown): Promise<unknown>;
 	tc_browse(input: unknown): Promise<unknown>;
+	tc_browse_act(input: unknown): Promise<unknown>;
+	tc_browse_act_prepare(input: unknown): Promise<unknown>;
+	tc_browse_act_execute(input: unknown): Promise<unknown>;
 	tc_image_generate(input: unknown): Promise<unknown>;
 	tc_tts(input: unknown): Promise<unknown>;
 	tc_skill_request(input: unknown): Promise<unknown>;
@@ -329,6 +382,42 @@ const BrowseInputSchema = z
 		timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
 	})
 	.strip();
+
+const BrowserActVerbSchema = z.enum(["click", "fill", "selectOption", "press", "goto", "type"]);
+const BrowserActTargetSchema = NonEmptyString.max(2048);
+
+const BrowserActInputSchema = z
+	.object({
+		url: z.url({ protocol: /^https?$/ }).max(2048),
+		verb: BrowserActVerbSchema,
+		target: BrowserActTargetSchema.optional(),
+		// Any JSON value the relay evidence layer normalizes/validates; never an
+		// authority field (the live server strips those before we get here).
+		submittedValues: z.unknown().optional(),
+		timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+	})
+	.strip();
+
+// `forceConfirm` is RELAY-set + escalate-only and is intentionally NOT part of
+// the runtime-facing input: the contained runtime may never escalate (or suppress)
+// its own confirmation. `.strip()` drops any runtime-supplied forceConfirm
+// fail-closed. The executor/surface still thread a relay-set forceConfirm
+// internally for a future relay-side escalation path.
+const BrowserActPrepareInputSchema = z
+	.object({
+		url: z.url({ protocol: /^https?$/ }).max(2048),
+		verb: BrowserActVerbSchema,
+		target: BrowserActTargetSchema.optional(),
+		submittedValues: z.unknown().optional(),
+		timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+	})
+	.strip();
+
+const BrowserActExecuteInputSchema = z
+	.object({
+		actionRef: RefSchema,
+	})
+	.strict();
 
 const ImageGenerateInputSchema = z
 	.object({
@@ -598,6 +687,54 @@ export function createTelclaudeMcpBridge(
 				...(parsed.maxChars !== undefined ? { maxChars: parsed.maxChars } : {}),
 				...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
 			});
+		},
+
+		async tc_browse_act(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_browse_act,
+			);
+			const parsed = BrowserActInputSchema.parse(input);
+			return dependencies.browseAct({
+				...stamp,
+				url: parsed.url,
+				verb: parsed.verb,
+				...(parsed.target !== undefined ? { target: parsed.target } : {}),
+				...(parsed.submittedValues !== undefined
+					? { submittedValues: parsed.submittedValues }
+					: {}),
+				...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+			});
+		},
+
+		async tc_browse_act_prepare(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_browse_act_prepare,
+			);
+			const parsed = BrowserActPrepareInputSchema.parse(input);
+			return dependencies.browseActPrepare({
+				...stamp,
+				url: parsed.url,
+				verb: parsed.verb,
+				...(parsed.target !== undefined ? { target: parsed.target } : {}),
+				...(parsed.submittedValues !== undefined
+					? { submittedValues: parsed.submittedValues }
+					: {}),
+				...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+			});
+		},
+
+		async tc_browse_act_execute(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_browse_act_execute,
+			);
+			const parsed = BrowserActExecuteInputSchema.parse(input);
+			return dependencies.browseActExecute({ ...stamp, actionRef: parsed.actionRef });
 		},
 
 		async tc_image_generate(input) {

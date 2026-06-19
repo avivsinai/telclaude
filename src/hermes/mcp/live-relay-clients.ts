@@ -18,6 +18,10 @@ import {
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
+import type {
+	BrowserActExecutorSurface,
+	BrowserActSurfaceRequest,
+} from "../../relay/browser-act-relay-surface.js";
 import type { BrowseRequest, BrowseResult } from "../../relay/browser-broker.js";
 import { browserAuthorityDomainFromMcp } from "../../relay/browser-cookie-store.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
@@ -62,6 +66,8 @@ import type {
 	TelclaudeMcpAuthorityStamp,
 	TelclaudeMcpBridgeDependencies,
 	TelclaudeMcpBrowseRequest,
+	TelclaudeMcpBrowserActPrepareRequest,
+	TelclaudeMcpBrowserActRequest,
 	TelclaudeMcpDomain,
 	TelclaudeMcpImageGenerateRequest,
 	TelclaudeMcpMemorySearchRequest,
@@ -139,6 +145,8 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly makeApprovalRequestId?: () => string;
 	readonly providerWriteApproverActorId?: string;
 	readonly outboundApproverActorId?: string;
+	/** Distinct human approver actor for a staged browser write (must differ from actor). */
+	readonly browserWriteApproverActorId?: string;
 	readonly conversationStore?: RelayConversationStore;
 	readonly edgeRuntime?: TelclaudeEdgeRuntime;
 	readonly resolveOutboundMediaRefs?: OutboundMediaResolver;
@@ -155,6 +163,14 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	 * not-configured error rather than silently succeeding.
 	 */
 	readonly browser?: BrowseExecutor;
+	/**
+	 * Relay-owned interactive browser-act surface backing tc_browse_act /
+	 * tc_browse_act_prepare. Omitted until a live tc-browser endpoint is wired —
+	 * the act tools then fail closed with a typed not-configured error. The
+	 * committing-act EXECUTE path is served separately by the ledger's
+	 * browser-write committer (injected at the live MCP server), not here.
+	 */
+	readonly browserAct?: BrowserActExecutorSurface;
 	/**
 	 * Resolves the schedule owner for an authority (schedule tools). Defaults to
 	 * a home-target-backed resolver that keys off the authority's subjectUserId.
@@ -251,6 +267,9 @@ export type TelclaudeMcpCapabilityClients = Pick<
 	| "webFetch"
 	| "webSearch"
 	| "browse"
+	| "browseAct"
+	| "browseActPrepare"
+	| "browseActExecute"
 	| "imageGenerate"
 	| "tts"
 	| "skillRequest"
@@ -275,6 +294,15 @@ export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcp
 		},
 		async browse() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse");
+		},
+		async browseAct() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act");
+		},
+		async browseActPrepare() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act_prepare");
+		},
+		async browseActExecute() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act_execute");
 		},
 		async imageGenerate() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_image_generate");
@@ -383,6 +411,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		options.makeApprovalRequestId ?? (() => `mcp-approval-${crypto.randomUUID()}`);
 	const providerWriteApproverActorId = optionalTrimmed(options.providerWriteApproverActorId);
 	const outboundApproverActorId = optionalTrimmed(options.outboundApproverActorId);
+	const browserWriteApproverActorId = optionalTrimmed(options.browserWriteApproverActorId);
 	const conversationStore = options.conversationStore ?? createRelayConversationStore();
 	const edgeRuntime = options.edgeRuntime ?? new TelclaudeEdgeRuntime();
 	const resolveOutboundMediaRefs =
@@ -647,6 +676,108 @@ export function createTelclaudeLiveMcpRelayClients(
 				truncated: result.truncated,
 			});
 			return result;
+		},
+
+		async browseAct(request: TelclaudeMcpBrowserActRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("web_browse", request.actorId, webRateLimit());
+			// Same egress preflight as a browse: refuse a secret-shaped entry URL
+			// before any browser work. For a `goto` the real navigation target is the
+			// submittedValues string (NOT request.url), so preflight that destination
+			// too — secret-shaped or non-http(s) destinations fail closed here. (goto is
+			// committing, so the executor below also refuses it inline; this guards the
+			// destination before any browser/executor work regardless.)
+			assertSafeWebEgress(request.url, "url");
+			assertSafeBrowserGotoDestination(request.verb, request.submittedValues);
+			if (!options.browserAct) {
+				throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act");
+			}
+			consumeRateLimit("web_browse", request.actorId);
+			// The executor refuses a committing act (or forceConfirm) on the inline
+			// path with a typed `browser_act_requires_prepare`; surface it as-is.
+			const result = await options.browserAct.act(
+				browserActSurfaceRequest(request, request.verb, request.target, request.submittedValues),
+			);
+			await auditFromRequest(request, "web.browse_act", {
+				url: redactSecrets(request.url),
+				verb: request.verb,
+				committing: false,
+				finalUrl: redactSecrets(result.evidence.urlOrigin ?? ""),
+			});
+			return browserActInlineView(result);
+		},
+
+		async browseActPrepare(request: TelclaudeMcpBrowserActPrepareRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("web_browse", request.actorId, webRateLimit());
+			assertSafeWebEgress(request.url, "url");
+			// For a staged `goto`, the navigation destination is submittedValues, not
+			// request.url — preflight it before any browser/executor work too.
+			assertSafeBrowserGotoDestination(request.verb, request.submittedValues);
+			if (!options.browserAct) {
+				throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act_prepare");
+			}
+			const approverActorId = browserWriteApproverFor(browserWriteApproverActorId, request.actorId);
+			consumeRateLimit("web_browse", request.actorId);
+			// Pre-allocate the ledger ref. The live-page pool inside the executor is
+			// keyed by it (the committer resolves the held page by this exact ref
+			// later), and the ledger record is filed under the SAME ref.
+			const actionRef = `effect-${crypto.randomUUID()}`;
+			const surfaceRequest = browserActSurfaceRequest(
+				request,
+				request.verb,
+				request.target,
+				request.submittedValues,
+			);
+			// No runtime-supplied forceConfirm is threaded here: it is RELAY-set +
+			// escalate-only and stripped at the bridge input boundary. A relay-side
+			// escalation would construct the surface request with forceConfirm directly.
+			const staged = await options.browserAct.prepareIntent({
+				...surfaceRequest,
+				actionRef,
+			});
+			const prepared = staged.prepared;
+			// File the ledger record under the SAME pre-allocated ref the executor's
+			// live-page pool is keyed by. If prepare throws, the pool still holds the
+			// page under actionRef; nothing else references it, so the pool's TTL sweep
+			// reaps it — fail-closed, no dangling commit path.
+			const record = options.ledger.prepare({
+				kind: "browser-write",
+				ref: actionRef,
+				actorId: request.actorId,
+				approverActorId,
+				profileId: request.profileId,
+				domain: request.domain,
+				sessionRef: surfaceRequest.sessionRef,
+				host: prepared.host,
+				originScope: prepared.originScope,
+				authorityDomain: prepared.authorityDomain,
+				actionVerb: request.verb,
+				actionTarget: request.target ?? null,
+				evidenceRevision: prepared.evidenceRevision,
+				evidenceNonce: prepared.evidenceNonce,
+				display: prepared.display,
+				commitSignal: prepared.commitSignal,
+				bindingHash: prepared.bindingHash,
+				approvalRequestId: makeApprovalRequestId(),
+				approvalRevision: 1,
+				...(request.turnConversationRef
+					? { turnConversationRef: request.turnConversationRef }
+					: {}),
+			});
+			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
+			await auditFromRequest(request, "web.browse_act_prepare", {
+				actionRef: record.ref,
+				verb: request.verb,
+				// Display-only summary: verb + redacted target + origin. Never the raw
+				// target/values or any token.
+				display: prepared.display,
+			});
+			return {
+				actionRef: record.ref,
+				approvalRequestId: record.approvalRequestId,
+				display: prepared.display,
+			};
 		},
 
 		async imageGenerate(request: TelclaudeMcpImageGenerateRequest) {
@@ -1281,6 +1412,107 @@ function outboundApproverFor(outboundApproverActorId: string | undefined, actorI
 		throw new Error("outbound approval denied: outboundApproverActorId must differ from actorId");
 	}
 	return outboundApproverActorId;
+}
+
+function browserWriteApproverFor(
+	browserWriteApproverActorId: string | undefined,
+	actorId: string,
+): string {
+	if (!browserWriteApproverActorId) {
+		throw new Error("browser write approval denied: browserWriteApproverActorId is not configured");
+	}
+	if (browserWriteApproverActorId === actorId.trim()) {
+		throw new Error(
+			"browser write approval denied: browserWriteApproverActorId must differ from actorId",
+		);
+	}
+	return browserWriteApproverActorId;
+}
+
+/** A `goto` destination that is not a parseable http(s) URL. */
+class BrowserGotoDestinationError extends Error {
+	readonly code = "browser_act_goto_destination_invalid";
+	constructor() {
+		super("browser act goto destination must be an http(s) URL string");
+		this.name = "BrowserGotoDestinationError";
+	}
+}
+
+/**
+ * For a `goto` act the navigation destination is the submittedValues string (the
+ * driver does `page.goto(submittedValues)`), NOT request.url. That destination is
+ * an outbound web egress target in a cookie-bearing session, so preflight it the
+ * same way we preflight request.url: it must be a parseable http(s) URL AND must
+ * pass the secret/private-data egress check. Fails closed before any executor or
+ * browser work. No-op for every non-goto verb.
+ */
+function assertSafeBrowserGotoDestination(verb: string, submittedValues: unknown): void {
+	if (verb !== "goto") return;
+	if (typeof submittedValues !== "string") {
+		throw new BrowserGotoDestinationError();
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(submittedValues);
+	} catch {
+		throw new BrowserGotoDestinationError();
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new BrowserGotoDestinationError();
+	}
+	assertSafeWebEgress(submittedValues, "goto_destination");
+}
+
+/**
+ * Build the server-resolved act-surface request. Authority (actor/profile/mcp
+ * domain) is taken from the relay-stamped request; the sessionRef is derived
+ * server-side (the turn ref, else the endpoint id) — the runtime never names it.
+ * The runtime supplies only verb/target/values + the entry url. submittedValues
+ * arrives as `unknown` from the bridge; the evidence layer normalizes/rejects it.
+ */
+function browserActSurfaceRequest(
+	request: TelclaudeMcpAuthorityStamp & { url: string; timeoutMs?: number },
+	verb: BrowserActSurfaceRequest["verb"],
+	target: string | undefined,
+	submittedValues: unknown,
+): BrowserActSurfaceRequest {
+	return {
+		actor: request.actorId,
+		profileId: request.profileId,
+		mcpDomain: request.domain,
+		sessionRef: request.turnConversationRef ?? request.endpointId,
+		url: request.url,
+		verb,
+		...(target !== undefined ? { target } : {}),
+		...(submittedValues !== undefined
+			? { submittedValues: submittedValues as BrowserActSurfaceRequest["submittedValues"] }
+			: {}),
+		...(request.timeoutMs !== undefined ? { settleTimeoutMs: request.timeoutMs } : {}),
+	};
+}
+
+/**
+ * The safe view of a non-committing act returned to the runtime: the resolved
+ * origin, the opaque HMAC page revision, and the relay-computed commit signal.
+ * The screenshot ref (a relay filepath), the DOM digest, and the raw page text
+ * are NOT returned — the runtime gets confirmation of the page state, not bytes.
+ */
+function browserActInlineView(result: {
+	readonly evidence: {
+		readonly urlOrigin: string | null;
+		readonly revision: string;
+		readonly commitSignal: { readonly forceConfirm: boolean; readonly reasons: readonly string[] };
+	};
+}): Record<string, unknown> {
+	return {
+		committing: false,
+		urlOrigin: result.evidence.urlOrigin,
+		pageRevision: result.evidence.revision,
+		commitSignal: {
+			forceConfirm: result.evidence.commitSignal.forceConfirm,
+			reasons: result.evidence.commitSignal.reasons,
+		},
+	};
 }
 
 function optionalTrimmed(value: string | undefined): string | undefined {

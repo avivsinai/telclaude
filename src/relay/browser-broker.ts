@@ -40,6 +40,48 @@ export interface BrowserProxyOptions {
 	readonly password: string;
 }
 
+/**
+ * Mint the per-context proxy credentials for a relay-issued browser context.
+ *
+ * This is the SINGLE place the broker (and the S3 interactive act driver) wires
+ * the M1 origin-pin proxy token + M2 cookie-bearing flag onto a context's proxy
+ * password. Both the ephemeral read-only browse and the persistent act context
+ * call it, so they mint byte-identical tokens under the same secret/peer binding
+ * and the same origin-scope policy — neither path can weaken or diverge from the
+ * egress envelope. The token rides the proxy password (Camoufox can only present
+ * Basic auth); the username is the fixed sentinel the CONNECT proxy keys on.
+ */
+export function buildBrowserContextProxyOptions(input: {
+	readonly config: Pick<
+		BrowserBrokerConfig,
+		"connectProxyUrl" | "tcBrowserPeerAddress" | "contextTokenSecret" | "tokenTtlMs"
+	>;
+	readonly contextId: string;
+	readonly sessionRef: string;
+	readonly actor: string;
+	/** Present → cookie-bearing context pinned (M1) to the session's login origins. */
+	readonly session?: Pick<BrowseSession, "originScope">;
+	readonly now: Date;
+}): BrowserProxyOptions {
+	const session = input.session;
+	const token = mintBrowserContextToken({
+		secret: input.config.contextTokenSecret,
+		peerAddress: input.config.tcBrowserPeerAddress,
+		contextId: input.contextId,
+		sessionRef: input.sessionRef,
+		actor: input.actor,
+		cookieBearing: session !== undefined,
+		...(session !== undefined ? { originScope: session.originScope } : {}),
+		now: input.now,
+		...(input.config.tokenTtlMs !== undefined ? { ttlMs: input.config.tokenTtlMs } : {}),
+	});
+	return {
+		server: input.config.connectProxyUrl,
+		username: BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
+		password: token,
+	};
+}
+
 export interface BrowserNavigation {
 	readonly finalUrl: string;
 	readonly status: number | null;
@@ -187,26 +229,19 @@ export class BrowserBroker {
 		// CONNECT proxy blocks private/metadata/provider/model targets, and M6
 		// discards the context (and any hydrated cookies) after the browse.
 		const session = request.session;
-		const token = mintBrowserContextToken({
-			secret: this.config.contextTokenSecret,
-			peerAddress: this.config.tcBrowserPeerAddress,
+		const proxy = buildBrowserContextProxyOptions({
+			config: this.config,
 			contextId: `browse-${crypto.randomUUID()}`,
 			sessionRef,
 			actor,
-			cookieBearing: session !== undefined,
-			...(session !== undefined ? { originScope: session.originScope } : {}),
+			...(session !== undefined ? { session: { originScope: session.originScope } } : {}),
 			now: this.now(),
-			...(this.config.tokenTtlMs !== undefined ? { ttlMs: this.config.tokenTtlMs } : {}),
 		});
 
 		const connection = await this.driver.connect(this.config.browserWsEndpoint);
 		try {
 			const context = await connection.newContext({
-				proxy: {
-					server: this.config.connectProxyUrl,
-					username: BROWSER_CONTEXT_PROXY_BASIC_USERNAME,
-					password: token,
-				},
+				proxy,
 				...(session !== undefined ? { storageState: session.storageState } : {}),
 			});
 			try {

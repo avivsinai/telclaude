@@ -38,6 +38,7 @@ import { setHermesPrivateRuntimeMcpAuthorityActivation } from "../hermes/private
 import { createRelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
+import { saveMediaBuffer } from "../media/store.js";
 import {
 	checkProviderHealth,
 	computeProviderHealthExitCode,
@@ -47,6 +48,14 @@ import {
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
 import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
+import { createBrowserActDriverFactory } from "../relay/browser-act-driver.js";
+import {
+	BrowserActExecutor,
+	type BrowserActExecutorPool,
+	createBrowserActScreenshotSink,
+} from "../relay/browser-act-executor.js";
+import { createBrowserActExecutorSurface } from "../relay/browser-act-relay-surface.js";
+import { BrowserActSessionPool } from "../relay/browser-act-session-pool.js";
 import {
 	BrowserBroker,
 	createPlaywrightBrowserDriver,
@@ -172,6 +181,8 @@ export function registerRelayCommand(program: Command): void {
 					process.env.TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID?.trim();
 				const liveMcpOutboundApproverActorId =
 					process.env.TELCLAUDE_HERMES_OUTBOUND_APPROVER_ACTOR_ID?.trim();
+				const liveMcpBrowserWriteApproverActorId =
+					process.env.TELCLAUDE_HERMES_BROWSER_WRITE_APPROVER_ACTOR_ID?.trim();
 				const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
 				const vaultAvailable = await isVaultAvailable(
 					vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
@@ -326,6 +337,45 @@ export function registerRelayCommand(program: Command): void {
 							: "  tc_browse: enabled (broker wired; cookie-less — no session store key)",
 					);
 				}
+				// S3 interactive browser acts (tc_browse_act / _prepare / _execute). The
+				// executor drives the SAME hardened tc-browser endpoint as the read-only
+				// broker, but through a PERSISTENT context that survives the async approval
+				// (createBrowserActDriverFactory). The commitment secret is an HKDF subkey of
+				// the broker's per-context token secret. The surface resolves authority +
+				// session the same way the browse path does (#171/#172). The committer the
+				// ledger drives is the executor's own committer().
+				const liveMcpBrowserWritePool: BrowserActExecutorPool | null = liveMcpBrowserBrokerConfig
+					? new BrowserActSessionPool()
+					: null;
+				const liveMcpBrowserActExecutor =
+					liveMcpBrowserBrokerConfig &&
+					liveMcpBrowserWritePool &&
+					liveMcpBrowserWriteApproverActorId
+						? new BrowserActExecutor({
+								driverFactory: createBrowserActDriverFactory({
+									config: liveMcpBrowserBrokerConfig,
+								}),
+								pool: liveMcpBrowserWritePool,
+								screenshotSink: createBrowserActScreenshotSink(saveMediaBuffer),
+								contextTokenSecret: liveMcpBrowserBrokerConfig.contextTokenSecret,
+								resolveApprover: () => liveMcpBrowserWriteApproverActorId,
+							})
+						: null;
+				const liveMcpBrowserActSurface = liveMcpBrowserActExecutor
+					? createBrowserActExecutorSurface({
+							executor: liveMcpBrowserActExecutor,
+							cookieStore: liveMcpBrowserCookieStore,
+							catastrophicDomains: parseBrowserCatastrophicDomains(),
+						})
+					: undefined;
+				const liveMcpBrowserWriteCommitter = liveMcpBrowserActExecutor?.committer();
+				if (liveMcpBrowserActSurface) {
+					console.log("  tc_browse_act: enabled (interactive write surface + committer wired)");
+				} else if (liveMcpBrowserBrokerConfig && !liveMcpBrowserWriteApproverActorId) {
+					console.log(
+						"  tc_browse_act: disabled (TELCLAUDE_HERMES_BROWSER_WRITE_APPROVER_ACTOR_ID unset)",
+					);
+				}
 				const liveMcpAttachmentQuarantineStore = createAttachmentQuarantineStore();
 				const liveMcpAttachmentQuarantineCleanup = setInterval(() => {
 					const removed = liveMcpAttachmentQuarantineStore.cleanupExpired();
@@ -428,6 +478,9 @@ export function registerRelayCommand(program: Command): void {
 					},
 					outboundDeliveryDispatcher: liveMcpOutboundDeliveryDispatcher,
 					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
+					...(liveMcpBrowserWriteCommitter
+						? { browserWriteCommitter: liveMcpBrowserWriteCommitter }
+						: {}),
 					createRelayClients: ({ ledger }) => {
 						if (liveMcpSideEffectApprovals) {
 							setTelclaudeLiveMcpSideEffectApprovalBinding({
@@ -440,12 +493,16 @@ export function registerRelayCommand(program: Command): void {
 							conversationStore: liveMcpConversationStore,
 							edgeRuntime: liveMcpEdgeRuntime,
 							browser: liveMcpBrowseExecutor,
+							...(liveMcpBrowserActSurface ? { browserAct: liveMcpBrowserActSurface } : {}),
 							resolveOutboundMediaRefs: createStoredAttachmentOutboundMediaResolver({
 								edgeRuntime: liveMcpEdgeRuntime,
 								quarantineStore: liveMcpAttachmentQuarantineStore,
 							}),
 							providerWriteApproverActorId: liveMcpProviderWriteApproverActorId,
 							outboundApproverActorId: liveMcpOutboundApproverActorId,
+							...(liveMcpBrowserWriteApproverActorId
+								? { browserWriteApproverActorId: liveMcpBrowserWriteApproverActorId }
+								: {}),
 							requestSideEffectApproval: liveMcpSideEffectApprovals
 								? (record) =>
 										requestTelclaudeLiveMcpSideEffectApproval(

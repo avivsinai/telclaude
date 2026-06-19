@@ -1,3 +1,9 @@
+import type { BrowserActEvidence } from "../../relay/browser-act-evidence.js";
+import {
+	type BrowserWriteContext,
+	type PreparedBrowserWrite,
+	verifyBrowserWriteExecution,
+} from "../../relay/browser-write-confirm.js";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../relay/provider-proxy.js";
 import { redactSecrets } from "../../security/output-filter.js";
@@ -21,6 +27,7 @@ import type {
 	TelclaudeMcpProviderExecuteWriteRequest,
 } from "./bridge.js";
 import type {
+	TelclaudeMcpBrowserWriteSideEffectRecord,
 	TelclaudeMcpOutboundSideEffectRecord,
 	TelclaudeMcpProviderSideEffectRecord,
 	TelclaudeMcpSideEffectAuthorizeResult,
@@ -29,10 +36,56 @@ import type {
 	TelclaudeMcpSideEffectTerminalFailure,
 } from "./side-effect-ledger.js";
 
+/**
+ * Re-derives evidence and commits a confirmed browser write. Injected like the
+ * provider proxy / outbound dispatcher so the ledger never imports the broker.
+ *
+ * `recaptureEvidence` MUST recapture the live page with the record's stored
+ * `evidenceNonce` and `observedSignals: {}` — that is the only way an unchanged page
+ * re-produces the same revision/url/submitted-value HMACs and re-matches the prepared
+ * `bindingHash`. A fresh random nonce (or a mutated page) yields a different binding
+ * hash and `verifyBrowserWriteExecution` fails closed with `write_confirm_binding_drift`.
+ * `commit` runs the actual state-changing act and returns a small JSON receipt; it is
+ * called only after verification passes.
+ */
+export interface BrowserWriteCommitter {
+	recaptureEvidence(record: TelclaudeMcpBrowserWriteSideEffectRecord): Promise<BrowserActEvidence>;
+	commit(
+		record: TelclaudeMcpBrowserWriteSideEffectRecord,
+	): Promise<{ readonly receipt: Record<string, unknown> }>;
+}
+
+export type TelclaudeMcpBrowserWriteExecuteRequest = {
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly domain: string;
+	readonly actionRef: string;
+};
+
+export type TelclaudeMcpBrowserWriteExecuteResult =
+	| { readonly ok: true; readonly receipt: Record<string, unknown> }
+	| (TelclaudeMcpSideEffectTerminalFailure & { readonly ok: false })
+	| {
+			readonly ok: false;
+			readonly code: string;
+			readonly reason: string;
+			readonly retryable: boolean;
+			readonly record?: TelclaudeMcpSideEffectRecord;
+	  };
+
 export type TelclaudeMcpLedgerExecuteDependencies = Pick<
 	TelclaudeMcpBridgeDependencies,
-	"providerExecuteWrite" | "outboundExecute"
->;
+	"providerExecuteWrite" | "outboundExecute" | "browseActExecute"
+> & {
+	/**
+	 * Execute a confirmed browser write (S3) by ledger ref. This is the concrete
+	 * name the committed ledger/tests use; `browseActExecute` is the bridge-facing
+	 * alias of the SAME function so the dependency surface composes by spread.
+	 */
+	browserWriteExecute(
+		request: TelclaudeMcpBrowserWriteExecuteRequest,
+	): Promise<TelclaudeMcpBrowserWriteExecuteResult>;
+};
 
 export type TelclaudeMcpProviderSidecarApprovalTokenRequest = {
 	readonly record: TelclaudeMcpProviderSideEffectRecord;
@@ -94,6 +147,7 @@ export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
+	readonly browserWriteCommitter?: BrowserWriteCommitter;
 	readonly nowMs?: () => number;
 };
 
@@ -104,7 +158,7 @@ const PROVIDER_PATH = "/v1/fetch";
 export function createTelclaudeMcpLedgerExecuteDependencies(
 	options: CreateTelclaudeMcpLedgerExecuteDependenciesOptions,
 ): TelclaudeMcpLedgerExecuteDependencies {
-	return {
+	const deps: Omit<TelclaudeMcpLedgerExecuteDependencies, "browseActExecute"> = {
 		async providerExecuteWrite(request) {
 			const prepared = await providerLedgerEffectRecord(
 				options.ledger,
@@ -122,25 +176,29 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (!resolved.ok) return resolved;
 			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
+			const approvalId = authorized.approvalId ?? resolved.approvalId;
+			// Single-flight CAS: claim the ref after verify so two distinct valid tokens
+			// cannot both reach the provider sidecar. The loser fails terminally in-flight.
+			const claim = options.ledger.claimExecuting(request.actionRef, approvalId);
+			if (!claim.ok) return claim;
 			if (!options.providerProxy) {
-				const executed = await options.ledger.markExecuted(
-					request.actionRef,
-					authorized.approvalId ?? resolved.approvalId,
-				);
+				const executed = await options.ledger.markExecuted(request.actionRef, approvalId);
 				if (executed.ok) resolved.finalize?.();
 				return executed;
 			}
 			resolved.finalize?.();
 			const executed = await executeProviderSidecar(
 				options.providerProxy,
-				authorized.record as TelclaudeMcpProviderSideEffectRecord,
+				claim.record as TelclaudeMcpProviderSideEffectRecord,
 				options.providerApprovalTokenIssuer,
 			);
-			if (!executed.ok) return executed;
-			return options.ledger.markExecuted(
-				request.actionRef,
-				authorized.approvalId ?? resolved.approvalId,
-			);
+			if (!executed.ok) {
+				// Provider sidecar failures are retryable by design: release the claim back
+				// to `prepared` rather than failing terminally (browser-write differs), and
+				// report the released (prepared) record on the failure.
+				return releaseAndReport(options.ledger, request.actionRef, executed);
+			}
+			return options.ledger.markExecuted(request.actionRef, approvalId);
 		},
 		async outboundExecute(request) {
 			const nowMs = options.nowMs?.() ?? Date.now();
@@ -168,20 +226,192 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (!resolved.ok) return resolved;
 			const authorized = await options.ledger.verify(request.outboundRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
-			if (options.outboundDeliveryDispatcher && checked.record.channel === "whatsapp") {
+			const approvalId = authorized.approvalId ?? resolved.approvalId;
+			// Single-flight CAS: claim the ref after verify so two distinct valid tokens
+			// cannot both reach the outbound delivery dispatcher.
+			const claim = options.ledger.claimExecuting(request.outboundRef, approvalId);
+			if (!claim.ok) return claim;
+			if (
+				options.outboundDeliveryDispatcher &&
+				claim.record.kind === "outbound" &&
+				claim.record.channel === "whatsapp"
+			) {
 				const delivered = await executeOutboundDelivery(
 					options.outboundDeliveryDispatcher,
-					authorized.record as TelclaudeMcpOutboundSideEffectRecord,
+					claim.record as TelclaudeMcpOutboundSideEffectRecord,
 				);
-				if (!delivered.ok) return delivered;
+				if (!delivered.ok) {
+					// Delivery failure is retryable: release the claim to `prepared`.
+					return releaseAndReport(options.ledger, request.outboundRef, delivered);
+				}
 			}
-			const executed = await options.ledger.markExecuted(
-				request.outboundRef,
-				authorized.approvalId ?? resolved.approvalId,
-			);
+			const executed = await options.ledger.markExecuted(request.outboundRef, approvalId);
 			if (executed.ok) resolved.finalize?.();
 			return executed;
 		},
+		async browserWriteExecute(request) {
+			const nowMs = options.nowMs?.() ?? Date.now();
+			const checked = browserWriteLedgerEffectRecord(
+				options.ledger,
+				request.actionRef,
+				request,
+				nowMs,
+			);
+			if (!checked.ok) return checked;
+			if (!options.browserWriteCommitter) {
+				return terminalFailure(
+					"browser_write_committer_missing",
+					"browser-write committer is not configured",
+					checked.record,
+				);
+			}
+			const resolved = await resolveSideEffectApprovalToken(
+				options.sideEffectApprovalTokenResolver,
+				request.actionRef,
+				checked.record,
+			);
+			if (!resolved.ok) return resolved;
+			// Verify the approval token FIRST (so an invalid token cannot DoS a prepared
+			// ref by stealing its single-flight claim), THEN atomically claim the ref.
+			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
+			if (!authorized.ok) return authorized;
+			const approvalId = authorized.approvalId ?? resolved.approvalId;
+
+			// Single-flight CAS: only the winner of `prepared -> executing` may proceed to
+			// the irreversible committer. A concurrent execute bearing a second distinct
+			// valid token (e.g. a second human approval) loses HERE — before recapture or
+			// commit — with a terminal in-flight/invalid-state error. A serial second
+			// execute is already rejected at `verify` (executed/failed are terminal).
+			const claim = options.ledger.claimExecuting(request.actionRef, approvalId);
+			if (!claim.ok) return claim;
+			const record = claim.record as TelclaudeMcpBrowserWriteSideEffectRecord;
+
+			// Recapture the live page immediately-before, with the STORED nonce, then
+			// re-derive the binding over the CURRENT action + fresh evidence. Any drift
+			// (page mutated, action redirected, values changed, wrong nonce) fails closed
+			// here. Because the ref is already claimed and a browser commit is irreversible,
+			// a post-claim failure closes the record TERMINALLY (`failed`) — it is NOT
+			// reverted to `prepared` and the consumed approval is NOT reopened. The operator
+			// must re-prepare.
+			let currentEvidence: BrowserActEvidence;
+			try {
+				currentEvidence = await options.browserWriteCommitter.recaptureEvidence(record);
+			} catch (error) {
+				const reason = redactSecrets(error instanceof Error ? error.message : String(error));
+				options.ledger.markFailed(request.actionRef, `browser_write_recapture_failed: ${reason}`);
+				return terminalFailure(
+					"browser_write_recapture_failed",
+					reason,
+					options.ledger.get(request.actionRef) ?? record,
+				);
+			}
+			const verification = verifyBrowserWriteExecution({
+				prepared: reconstructPreparedBrowserWrite(record),
+				context: browserWriteContext(record),
+				action: { verb: record.actionVerb, target: record.actionTarget ?? undefined },
+				currentEvidence,
+				now: nowMs,
+			});
+			if (!verification.ok) {
+				options.ledger.markFailed(request.actionRef, `browser_write_${verification.reason}`);
+				return terminalFailure(
+					`browser_write_${verification.reason}`,
+					"browser write failed confirmation re-verification",
+					options.ledger.get(request.actionRef) ?? record,
+				);
+			}
+
+			let committed: { readonly receipt: Record<string, unknown> };
+			try {
+				committed = await options.browserWriteCommitter.commit(record);
+			} catch (error) {
+				// Ambiguous commit failure: fail closed, terminal, NO second commit attempt
+				// on this ref. The side effect may or may not have landed.
+				const reason = redactSecrets(error instanceof Error ? error.message : String(error));
+				options.ledger.markFailed(request.actionRef, `browser_write_commit_failed: ${reason}`);
+				return terminalFailure(
+					"browser_write_commit_failed",
+					reason,
+					options.ledger.get(request.actionRef) ?? record,
+				);
+			}
+			const executed = await options.ledger.markExecuted(request.actionRef, approvalId);
+			if (!executed.ok) return executed;
+			resolved.finalize?.();
+			return { ok: true, receipt: committed.receipt };
+		},
+	};
+	return {
+		...deps,
+		// Bridge-facing alias: tc_browse_act_execute resolves to the SAME ledger-driven
+		// browser-write executor (verify → single-flight claim → recapture → re-verify →
+		// commit). The runtime supplies only the actionRef; the stamp's extra authority
+		// fields are accepted structurally and ignored by browserWriteExecute.
+		browseActExecute: (request) => deps.browserWriteExecute(request),
+	};
+}
+
+function browserWriteLedgerEffectRecord(
+	ledger: TelclaudeMcpSideEffectLedger,
+	ref: string,
+	request: TelclaudeMcpBrowserWriteExecuteRequest,
+	nowMs: number,
+):
+	| { readonly ok: true; readonly record: TelclaudeMcpBrowserWriteSideEffectRecord }
+	| TelclaudeMcpSideEffectTerminalFailure {
+	const record = ledger.get(ref);
+	if (!record) {
+		return terminalFailure("effect_not_found", "side effect was not prepared");
+	}
+	if (record.kind !== "browser-write") {
+		return terminalFailure(
+			"effect_kind_mismatch",
+			"side effect kind mismatch: expected browser-write",
+		);
+	}
+	if (
+		record.actorId !== request.actorId ||
+		record.profileId !== request.profileId ||
+		record.domain !== request.domain
+	) {
+		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch", record);
+	}
+	const terminal = terminalFailureBeforeApproval(record, nowMs);
+	if (terminal) return terminal;
+	return { ok: true, record };
+}
+
+function reconstructPreparedBrowserWrite(
+	record: TelclaudeMcpBrowserWriteSideEffectRecord,
+): PreparedBrowserWrite {
+	return {
+		writeRef: record.ref,
+		actor: record.actorId,
+		approver: record.approverActorId,
+		profile: record.profileId,
+		authorityDomain: record.authorityDomain,
+		host: record.host,
+		originScope: record.originScope,
+		evidenceRevision: record.evidenceRevision,
+		evidenceNonce: record.evidenceNonce,
+		bindingHash: record.bindingHash,
+		display: record.display,
+		commitSignal: record.commitSignal,
+		createdAtMs: record.createdAtMs,
+		expiresAtMs: record.expiresAtMs,
+	};
+}
+
+function browserWriteContext(
+	record: TelclaudeMcpBrowserWriteSideEffectRecord,
+): BrowserWriteContext {
+	return {
+		sessionRef: record.sessionRef,
+		actor: record.actorId,
+		profile: record.profileId,
+		authorityDomain: record.authorityDomain,
+		host: record.host,
+		originScope: record.originScope,
 	};
 }
 
@@ -747,4 +977,20 @@ function terminalFailureForRecord(
 		retryable: false,
 		record,
 	};
+}
+
+/**
+ * Provider/outbound only: a sidecar/delivery failure after the single-flight claim is
+ * retryable by design, so revert `executing -> prepared` and report the released
+ * (prepared) record on the failure. Browser-write never uses this — its post-claim
+ * failures are terminal (`markFailed`) because the commit is irreversible.
+ */
+function releaseAndReport<T extends Extract<TelclaudeMcpSideEffectAuthorizeResult, { ok: false }>>(
+	ledger: TelclaudeMcpSideEffectLedger,
+	ref: string,
+	failure: T,
+): T {
+	ledger.releaseExecuting(ref);
+	const released = ledger.get(ref);
+	return released ? { ...failure, record: released } : failure;
 }
