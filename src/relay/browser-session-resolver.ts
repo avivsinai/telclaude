@@ -62,21 +62,47 @@ export function resolveBrowseSession(
 	}
 	if (!host) return null;
 
-	// Catastrophic surfaces never receive a standing session — reuse the same
-	// host/origin matcher the per-context token uses, so the policy is consistent.
-	const catastrophic = buildBrowserOriginScope(options.catastrophicDomains ?? []);
-	if (catastrophic.length > 0 && hostMatchesBrowserOriginScope(host, catastrophic)) {
+	const catastrophicDomains = options.catastrophicDomains ?? [];
+	// (a) The entry host itself is a catastrophic surface — never a standing session.
+	const catastrophicScope = buildBrowserOriginScope(catastrophicDomains);
+	if (catastrophicScope.length > 0 && hostMatchesBrowserOriginScope(host, catastrophicScope)) {
 		return null;
 	}
 
 	for (const meta of store.listSessions()) {
 		if (!hostMatchesBrowserOriginScope(host, meta.originScope)) continue;
+		// (b) A session's egress is pinned registrable-domain-wide, so a session whose
+		// scope can REACH any catastrophic host (e.g. a google.com session vs a
+		// catastrophic myaccount.google.com) would let an in-scope nav/redirect tunnel
+		// live cookies onto that surface — the entry-host check (a) alone misses this.
+		// Refuse such a session entirely → cookie-less (fresh login at use). Prevention
+		// at resolution time is stronger than re-checking finalUrl after cookies flew.
+		if (sessionScopeReachesCatastrophic(meta.originScope, catastrophicDomains)) continue;
 		const record = store.getSession(meta.sessionRef);
 		if (record) {
 			return { storageState: record.storageState, originScope: record.originScope };
 		}
 	}
 	return null;
+}
+
+/**
+ * True if a cookie-bearing context pinned to `sessionScope` could reach any
+ * catastrophic host — either the catastrophic host falls within the session's
+ * (broader, registrable-domain-wide) scope, or a session origin falls within a
+ * catastrophic domain. Either way the session must not be attached.
+ */
+function sessionScopeReachesCatastrophic(
+	sessionScope: readonly string[],
+	catastrophicDomains: readonly string[],
+): boolean {
+	for (const raw of catastrophicDomains) {
+		const domain = raw.trim().toLowerCase();
+		if (!domain) continue;
+		if (hostMatchesBrowserOriginScope(domain, sessionScope)) return true;
+		if (sessionScope.some((origin) => hostMatchesBrowserOriginScope(origin, [domain]))) return true;
+	}
+	return false;
 }
 
 /**

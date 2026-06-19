@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -82,8 +82,33 @@ describe("BrowserCookieStore", () => {
 
 	it("returns null for a session encrypted under a different key (GCM auth fails)", () => {
 		new BrowserCookieStore(filePath, KEY).putSession(record());
-		const wrong = new BrowserCookieStore(filePath, "a-completely-different-key");
+		const wrong = new BrowserCookieStore(filePath, "a-completely-different-key-0123456789");
 		expect(wrong.getSession("sess-google-1")).toBeNull();
+	});
+
+	it("rejects a key shorter than the entropy floor", () => {
+		expect(() => new BrowserCookieStore(filePath, "tooshort")).toThrow(/at least 32/);
+	});
+
+	it("binds each record to its sessionRef via AES-GCM AAD — an on-disk swap fails closed", () => {
+		const store = new BrowserCookieStore(filePath, KEY);
+		store.putSession(record({ sessionRef: "low", domain: "example.org", originScope: [] }));
+		store.putSession(
+			record({
+				sessionRef: "bank",
+				domain: "bank.example",
+				originScope: [],
+				storageState: { cookies: [{ name: "B", value: "bank-cookie", domain: "bank.example" }] },
+			}),
+		);
+		// Swap the two ciphertexts on disk (each now filed under the WRONG sessionRef).
+		const file = JSON.parse(readFileSync(filePath, "utf8"));
+		[file.sessions.low, file.sessions.bank] = [file.sessions.bank, file.sessions.low];
+		writeFileSync(filePath, JSON.stringify(file));
+		// AAD (sessionRef) no longer matches → auth fails → null, never the other session's cookies.
+		const reopened = new BrowserCookieStore(filePath, KEY);
+		expect(reopened.getSession("low")).toBeNull();
+		expect(reopened.getSession("bank")).toBeNull();
 	});
 
 	it("rejects an empty encryption key and a session without a usable origin scope", () => {

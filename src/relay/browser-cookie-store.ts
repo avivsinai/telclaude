@@ -25,6 +25,11 @@ const logger = getChildLogger({ module: "browser-cookie-store" });
 export const BROWSER_COOKIE_STORE_KEY_ENV = "TELCLAUDE_BROWSER_COOKIE_STORE_KEY";
 export const BROWSER_COOKIE_STORE_FILE = "browser-sessions.json";
 
+/** Minimum key length — a 32-char key (e.g. `openssl rand -base64 32`) at full entropy. */
+const BROWSER_COOKIE_STORE_MIN_KEY_LENGTH = 32;
+/** scrypt cost: harden the at-rest KDF above the Node default (N=2^14). Derived once + cached. */
+const BROWSER_COOKIE_STORE_SCRYPT_PARAMS = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+
 /** A captured browser session: the cookies + origin scope for one logged-in domain. */
 export interface BrowserSessionRecord {
 	readonly sessionRef: string;
@@ -66,8 +71,12 @@ export class BrowserCookieStore {
 	private cachedSalt: Buffer | null = null;
 
 	constructor(filePath: string, encryptionKey: string) {
-		if (!encryptionKey.trim()) {
-			throw new Error("browser cookie store requires a non-empty encryption key");
+		// The store holds live login cookies; a weak/typed key makes offline brute
+		// force feasible if the file ever leaks. Require a high-entropy key.
+		if (encryptionKey.trim().length < BROWSER_COOKIE_STORE_MIN_KEY_LENGTH) {
+			throw new Error(
+				`browser cookie store requires an encryption key of at least ${BROWSER_COOKIE_STORE_MIN_KEY_LENGTH} chars (e.g. openssl rand -base64 32)`,
+			);
 		}
 		this.filePath = filePath;
 		this.rawKey = encryptionKey;
@@ -100,7 +109,10 @@ export class BrowserCookieStore {
 		const key = this.getKey(file);
 		const next: CookieStoreFile = {
 			salt: file.salt,
-			sessions: { ...file.sessions, [sessionRef]: this.encrypt(JSON.stringify(stored), key) },
+			sessions: {
+				...file.sessions,
+				[sessionRef]: this.encrypt(JSON.stringify(stored), key, sessionRef),
+			},
 		};
 		this.writeFile(next);
 	}
@@ -108,12 +120,16 @@ export class BrowserCookieStore {
 	/** Decrypt and return a session, or null if absent / undecryptable. */
 	getSession(sessionRef: string): BrowserSessionRecord | null {
 		const file = this.readFile();
-		const entry = file.sessions[sessionRef.trim()];
+		const ref = sessionRef.trim();
+		const entry = file.sessions[ref];
 		if (!entry) return null;
 		try {
-			const parsed = JSON.parse(this.decrypt(entry, this.getKey(file))) as BrowserSessionRecord;
-			return parsed;
+			return JSON.parse(this.decrypt(entry, this.getKey(file), ref)) as BrowserSessionRecord;
 		} catch {
+			logger.warn(
+				{ sessionRef: ref },
+				"browser session record failed to decrypt (wrong key or tampered)",
+			);
 			return null;
 		}
 	}
@@ -123,9 +139,9 @@ export class BrowserCookieStore {
 		const file = this.readFile();
 		const key = this.getKey(file);
 		const out: BrowserSessionMeta[] = [];
-		for (const entry of Object.values(file.sessions)) {
+		for (const [ref, entry] of Object.entries(file.sessions)) {
 			try {
-				const r = JSON.parse(this.decrypt(entry, key)) as BrowserSessionRecord;
+				const r = JSON.parse(this.decrypt(entry, key, ref)) as BrowserSessionRecord;
 				out.push({
 					sessionRef: r.sessionRef,
 					domain: r.domain,
@@ -134,7 +150,8 @@ export class BrowserCookieStore {
 					capturedBy: r.capturedBy,
 				});
 			} catch {
-				// Skip undecryptable rows rather than failing the whole listing.
+				// Skip (fail-closed) undecryptable rows rather than failing the whole listing.
+				logger.warn({ sessionRef: ref }, "skipping undecryptable browser session row");
 			}
 		}
 		return out.sort((a, b) => b.createdAt - a.createdAt);
@@ -153,14 +170,19 @@ export class BrowserCookieStore {
 	private getKey(file: CookieStoreFile): Buffer {
 		const salt = Buffer.from(file.salt, "base64");
 		if (this.derivedKey && this.cachedSalt?.equals(salt)) return this.derivedKey;
-		this.derivedKey = scryptSync(this.rawKey, salt, 32);
+		this.derivedKey = scryptSync(this.rawKey, salt, 32, BROWSER_COOKIE_STORE_SCRYPT_PARAMS);
 		this.cachedSalt = salt;
 		return this.derivedKey;
 	}
 
-	private encrypt(plaintext: string, key: Buffer): EncryptedRecord {
+	// `aad` (the sessionRef the record is filed under) is bound as AES-GCM
+	// additional authenticated data, so the ref→blob mapping is tamper-evident:
+	// swapping or relabelling records on disk fails the auth tag rather than
+	// silently returning another session's cookies under the wrong key.
+	private encrypt(plaintext: string, key: Buffer, aad: string): EncryptedRecord {
 		const iv = randomBytes(12);
 		const cipher = createCipheriv("aes-256-gcm", key, iv);
+		cipher.setAAD(Buffer.from(aad, "utf8"));
 		const data = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
 		return {
 			iv: iv.toString("base64"),
@@ -169,8 +191,9 @@ export class BrowserCookieStore {
 		};
 	}
 
-	private decrypt(entry: EncryptedRecord, key: Buffer): string {
+	private decrypt(entry: EncryptedRecord, key: Buffer, aad: string): string {
 		const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(entry.iv, "base64"));
+		decipher.setAAD(Buffer.from(aad, "utf8"));
 		decipher.setAuthTag(Buffer.from(entry.tag, "base64"));
 		return Buffer.concat([
 			decipher.update(Buffer.from(entry.data, "base64")),

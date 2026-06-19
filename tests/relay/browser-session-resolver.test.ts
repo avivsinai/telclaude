@@ -77,6 +77,20 @@ describe("resolveBrowseSession", () => {
 		).toBeNull();
 	});
 
+	it("refuses a session whose registrable-wide scope can REACH a catastrophic subdomain (entry host is not itself catastrophic)", () => {
+		seedGoogle(); // scope folds to ["google.com", "accounts.google.com", "mail.google.com"]
+		// docs.google.com is in-scope but NOT itself catastrophic; myaccount.google.com is.
+		// The google.com-wide session could let an in-scope redirect ride cookies onto
+		// myaccount.google.com, so the session must be refused -> cookie-less.
+		expect(
+			resolveBrowseSession(store, "https://docs.google.com/", {
+				catastrophicDomains: ["myaccount.google.com"],
+			}),
+		).toBeNull();
+		// Without a catastrophic surface sharing its domain, the same session is fine.
+		expect(resolveBrowseSession(store, "https://docs.google.com/")).not.toBeNull();
+	});
+
 	it("returns null for an unparseable URL", () => {
 		seedGoogle();
 		expect(resolveBrowseSession(store, "not a url")).toBeNull();
