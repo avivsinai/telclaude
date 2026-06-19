@@ -217,6 +217,13 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 
 export type TelclaudeMcpBrowserWriteSideEffectPrepareInput = {
 	readonly kind: "browser-write";
+	/**
+	 * Caller-supplied ref. Browser-write is the only kind that pre-allocates its ref:
+	 * the relay-owned live-page pool is keyed by it BEFORE prepare (the committer later
+	 * resolves the held page by this exact ref), so prepare persists the same value
+	 * rather than minting a fresh one. Provider/outbound omit it and use `makeRef()`.
+	 */
+	readonly ref?: string;
 	readonly actorId: string;
 	readonly approverActorId: string;
 	readonly profileId: string;
@@ -723,7 +730,9 @@ function prepareBrowserWriteRecord(
 ): TelclaudeMcpBrowserWriteSideEffectRecord {
 	const ttlMs = normalizeDuration(input.ttlMs ?? defaultTtlMs, "ttlMs");
 	return deepFreeze({
-		ref: requiredTrimmed(makeRef(), "ref"),
+		// Honor the caller-supplied (pool-bound) ref; fall back to makeRef() only when
+		// the caller did not pre-allocate one (e.g. tests that don't pool a live page).
+		ref: requiredTrimmed(input.ref ?? makeRef(), "ref"),
 		kind: "browser-write" as const,
 		actorId: requiredTrimmed(input.actorId, "actorId"),
 		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),

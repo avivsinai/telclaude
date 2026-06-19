@@ -75,8 +75,13 @@ export type TelclaudeMcpBrowserWriteExecuteResult =
 
 export type TelclaudeMcpLedgerExecuteDependencies = Pick<
 	TelclaudeMcpBridgeDependencies,
-	"providerExecuteWrite" | "outboundExecute"
+	"providerExecuteWrite" | "outboundExecute" | "browseActExecute"
 > & {
+	/**
+	 * Execute a confirmed browser write (S3) by ledger ref. This is the concrete
+	 * name the committed ledger/tests use; `browseActExecute` is the bridge-facing
+	 * alias of the SAME function so the dependency surface composes by spread.
+	 */
 	browserWriteExecute(
 		request: TelclaudeMcpBrowserWriteExecuteRequest,
 	): Promise<TelclaudeMcpBrowserWriteExecuteResult>;
@@ -153,7 +158,7 @@ const PROVIDER_PATH = "/v1/fetch";
 export function createTelclaudeMcpLedgerExecuteDependencies(
 	options: CreateTelclaudeMcpLedgerExecuteDependenciesOptions,
 ): TelclaudeMcpLedgerExecuteDependencies {
-	return {
+	const deps: Omit<TelclaudeMcpLedgerExecuteDependencies, "browseActExecute"> = {
 		async providerExecuteWrite(request) {
 			const prepared = await providerLedgerEffectRecord(
 				options.ledger,
@@ -335,6 +340,14 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			resolved.finalize?.();
 			return { ok: true, receipt: committed.receipt };
 		},
+	};
+	return {
+		...deps,
+		// Bridge-facing alias: tc_browse_act_execute resolves to the SAME ledger-driven
+		// browser-write executor (verify → single-flight claim → recapture → re-verify →
+		// commit). The runtime supplies only the actionRef; the stamp's extra authority
+		// fields are accepted structurally and ignored by browserWriteExecute.
+		browseActExecute: (request) => deps.browserWriteExecute(request),
 	};
 }
 

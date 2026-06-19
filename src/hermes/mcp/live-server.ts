@@ -14,6 +14,7 @@ import {
 	type TelclaudeMcpToolName,
 } from "./bridge.js";
 import type {
+	BrowserWriteCommitter,
 	TelclaudeMcpInboundTurnAuthorityResolver,
 	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
@@ -45,7 +46,7 @@ export const TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE = [
 
 export type TelclaudeLiveMcpRelayClients = Omit<
 	TelclaudeMcpBridgeDependencies,
-	"providerExecuteWrite" | "outboundExecute"
+	"providerExecuteWrite" | "outboundExecute" | "browseActExecute"
 >;
 
 export type TelclaudeLiveMcpConnectionContext = {
@@ -109,6 +110,13 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
+	/**
+	 * Commits an approved browser write (S3) against the live interactive page held
+	 * relay-side. Injected like the provider proxy / outbound dispatcher so the
+	 * ledger never imports the broker. Omitted → tc_browse_act_execute fails closed
+	 * with a typed `browser_write_committer_missing` terminal error.
+	 */
+	readonly browserWriteCommitter?: BrowserWriteCommitter;
 	readonly bindHost: string;
 	readonly networkName: string;
 	readonly nowMs?: () => number;
@@ -156,18 +164,27 @@ const MAX_HTTP_BODY_BYTES = 1024 * 1024;
 export function createTelclaudeLiveMcpRelayHttpServer(
 	options: CreateTelclaudeLiveMcpRelayHttpServerOptions,
 ): TelclaudeLiveMcpRelayHttpServer {
+	const ledgerExecute = createTelclaudeMcpLedgerExecuteDependencies({
+		ledger: options.ledger,
+		providerProxy: options.providerProxy ?? proxyProviderRequest,
+		sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
+		resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
+		resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+		outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
+		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
+		...(options.browserWriteCommitter
+			? { browserWriteCommitter: options.browserWriteCommitter }
+			: {}),
+		nowMs: options.nowMs,
+	});
 	const dependencies: TelclaudeMcpBridgeDependencies = {
 		...options.relayClients,
-		...createTelclaudeMcpLedgerExecuteDependencies({
-			ledger: options.ledger,
-			providerProxy: options.providerProxy ?? proxyProviderRequest,
-			sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
-			resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
-			resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
-			outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
-			providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
-			nowMs: options.nowMs,
-		}),
+		providerExecuteWrite: ledgerExecute.providerExecuteWrite,
+		outboundExecute: ledgerExecute.outboundExecute,
+		// tc_browse_act_execute is served by the ledger's browser-write executor —
+		// verify→single-flight-claim→recapture→re-verify→commit. Mirrors the
+		// provider/outbound execute seam; the runtime supplies only the actionRef.
+		browseActExecute: ledgerExecute.browseActExecute,
 	};
 
 	return {

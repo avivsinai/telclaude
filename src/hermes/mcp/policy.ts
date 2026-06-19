@@ -17,6 +17,9 @@ export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_schedule_list",
 	"tc_schedule_cancel",
 	"tc_browse",
+	"tc_browse_act",
+	"tc_browse_act_prepare",
+	"tc_browse_act_execute",
 ] as const;
 
 export type TelclaudeMcpToolName = (typeof TELCLAUDE_MCP_TOOL_NAMES)[number];
@@ -36,6 +39,13 @@ export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
 	tc_schedule_list: "schedule.read",
 	tc_schedule_cancel: "schedule.write",
 	tc_browse: "browse.use",
+	// Interactive browser acts (fill/type/select/non-committing-click inline, plus
+	// the committing two-phase prepare/execute) require a SEPARATE, stronger scope
+	// than read-only browsing — an authority granted browse.use is not implicitly
+	// allowed to drive interactive writes. Fail-closed: no browse.act, no act.
+	tc_browse_act: "browse.act",
+	tc_browse_act_prepare: "browse.act",
+	tc_browse_act_execute: "browse.act",
 } as const satisfies Partial<Record<TelclaudeMcpToolName, string>>;
 
 export type TelclaudeMcpCapabilityScope =

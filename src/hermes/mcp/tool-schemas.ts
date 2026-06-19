@@ -419,6 +419,101 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 			["url"],
 		),
 	},
+	{
+		name: "tc_browse_act",
+		description:
+			"Perform ONE non-committing interactive action in the relay-owned contained browser " +
+			"(requires the browse.act capability scope). Use for fill/type/selectOption/press, a " +
+			"non-committing click, or a navigate (goto). Name the typed action plus the entry url; the " +
+			"relay server-stamps your authority and resolves the cookie-bearing session — you cannot " +
+			"name your own session or scope. Runs inline with no approval. A committing action (form " +
+			"submit, a click that navigates/posts) is REJECTED here — use tc_browse_act_prepare. " +
+			"Returns relay-owned page evidence; the raw page bytes are never returned.",
+		inputSchema: objectSchema(
+			{
+				url: {
+					type: "string",
+					format: "uri",
+					minLength: 1,
+					maxLength: 2048,
+				},
+				verb: {
+					type: "string",
+					enum: ["click", "fill", "selectOption", "press", "goto", "type"],
+				},
+				target: {
+					type: "string",
+					minLength: 1,
+					maxLength: 2048,
+				},
+				submittedValues: {},
+				timeoutMs: {
+					type: "integer",
+					minimum: 1_000,
+					maximum: 120_000,
+				},
+			},
+			["url", "verb"],
+			false,
+		),
+	},
+	{
+		name: "tc_browse_act_prepare",
+		description:
+			"Stage a COMMITTING interactive action (a form submit, or a click that navigates or posts) " +
+			"in the relay-owned contained browser for human approval, WITHOUT firing it (requires the " +
+			"browse.act capability scope). Name the typed committing action plus the entry url; the " +
+			"relay server-stamps your authority, resolves the session, captures the page the human will " +
+			"approve, and binds it. Returns ONLY an opaque actionRef and a redacted display summary — " +
+			"never the raw target, submitted values, or any approval token. The operator approves out " +
+			"of band; you then call tc_browse_act_execute with the actionRef.",
+		inputSchema: objectSchema(
+			{
+				url: {
+					type: "string",
+					format: "uri",
+					minLength: 1,
+					maxLength: 2048,
+				},
+				verb: {
+					type: "string",
+					enum: ["click", "fill", "selectOption", "press", "goto", "type"],
+				},
+				target: {
+					type: "string",
+					minLength: 1,
+					maxLength: 2048,
+				},
+				submittedValues: {},
+				forceConfirm: {
+					type: "boolean",
+				},
+				timeoutMs: {
+					type: "integer",
+					minimum: 1_000,
+					maximum: 120_000,
+				},
+			},
+			["url", "verb"],
+			false,
+		),
+	},
+	{
+		name: "tc_browse_act_execute",
+		description:
+			"Execute a previously prepared and operator-approved committing browser action by its " +
+			"actionRef (requires the browse.act capability scope). The relay re-verifies the human " +
+			"approval token and the page binding immediately before committing and fires the action " +
+			"exactly once; you never see or supply the approval token. Returns approved/denied plus a " +
+			"safe receipt.",
+		inputSchema: objectSchema(
+			{
+				actionRef: RefSchema,
+			},
+			["actionRef"],
+			false,
+		),
+	},
 ] as const;
 
 export function telclaudeMcpToolDefinitions(): readonly TelclaudeMcpToolDefinition[] {

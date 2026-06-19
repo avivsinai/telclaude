@@ -29,6 +29,9 @@ describe("Telclaude MCP bridge foundation", () => {
 				"tc_schedule_list",
 				"tc_schedule_cancel",
 				"tc_browse",
+				"tc_browse_act",
+				"tc_browse_act_prepare",
+				"tc_browse_act_execute",
 			],
 			resources: [],
 			prompts: [],
@@ -592,6 +595,157 @@ describe("Telclaude MCP bridge foundation", () => {
 		expect(calls).toEqual([]);
 	});
 
+	it("denies every browser-act tool when the authority lacks the browse.act scope", async () => {
+		const calls: unknown[] = [];
+		const capture = async (request: unknown) => {
+			calls.push(request);
+			return { ok: true };
+		};
+		// Even an authority that holds browse.use (read-only browsing) must be denied
+		// the interactive act tools without the SEPARATE browse.act scope.
+		for (const capabilityScopes of [undefined, [] as string[], ["browse.use"]]) {
+			const bridge = createTelclaudeMcpBridge(
+				baseAuthority(capabilityScopes ? { capabilityScopes } : {}),
+				{
+					...baseDependencies(),
+					browseAct: capture,
+					browseActPrepare: capture,
+					browseActExecute: capture,
+				},
+			);
+			await expect(
+				bridge.tc_browse_act({ url: "https://example.com/cart", verb: "fill", target: "#qty" }),
+			).rejects.toThrow("capability scope denied: browse.act");
+			await expect(
+				bridge.tc_browse_act_prepare({
+					url: "https://example.com/cart",
+					verb: "click",
+					target: "#pay",
+				}),
+			).rejects.toThrow("capability scope denied: browse.act");
+			await expect(
+				bridge.tc_browse_act_execute({ actionRef: "effect-1" }),
+			).rejects.toThrow("capability scope denied: browse.act");
+		}
+		expect(calls).toEqual([]);
+	});
+
+	it("dispatches scoped browser-act tools with relay-stamped authority and the typed action only", async () => {
+		const calls: Record<string, unknown[]> = {
+			browseAct: [],
+			browseActPrepare: [],
+			browseActExecute: [],
+		};
+		const bridge = createTelclaudeMcpBridge(baseAuthority({ capabilityScopes: ["browse.act"] }), {
+			...baseDependencies(),
+			browseAct: async (request) => {
+				calls.browseAct.push(request);
+				return { committing: false };
+			},
+			browseActPrepare: async (request) => {
+				calls.browseActPrepare.push(request);
+				return { actionRef: "effect-bw-1" };
+			},
+			browseActExecute: async (request) => {
+				calls.browseActExecute.push(request);
+				return { ok: true };
+			},
+		});
+
+		await expect(
+			bridge.tc_browse_act({
+				url: "https://example.com/cart",
+				verb: "fill",
+				target: "#qty",
+				submittedValues: "2",
+			}),
+		).resolves.toEqual({ committing: false });
+		await expect(
+			bridge.tc_browse_act_prepare({
+				url: "https://example.com/cart",
+				verb: "click",
+				target: "#pay",
+				submittedValues: { confirm: true },
+				forceConfirm: true,
+			}),
+		).resolves.toEqual({ actionRef: "effect-bw-1" });
+		await expect(
+			bridge.tc_browse_act_execute({ actionRef: "effect-bw-1" }),
+		).resolves.toEqual({ ok: true });
+
+		const stamp = {
+			actorId: "operator",
+			profileId: "ops",
+			domain: "private",
+			memorySource: "telegram:ops",
+			writableNamespace: "private:ops",
+			endpointId: "endpoint-private",
+			networkNamespace: "netns-private",
+		};
+		// The runtime names only the typed action + url; authority is server-stamped.
+		expect(calls.browseAct).toEqual([
+			{ ...stamp, url: "https://example.com/cart", verb: "fill", target: "#qty", submittedValues: "2" },
+		]);
+		expect(calls.browseActPrepare).toEqual([
+			{
+				...stamp,
+				url: "https://example.com/cart",
+				verb: "click",
+				target: "#pay",
+				submittedValues: { confirm: true },
+				forceConfirm: true,
+			},
+		]);
+		// Execute is immutable: only the actionRef + stamp, never a token/values.
+		expect(calls.browseActExecute).toEqual([{ ...stamp, actionRef: "effect-bw-1" }]);
+		expect(calls.browseActExecute[0]).not.toHaveProperty("approvalToken");
+	});
+
+	it("rejects client-supplied authority / token / unknown verb on browser-act tools", async () => {
+		const calls: unknown[] = [];
+		const capture = async (request: unknown) => {
+			calls.push(request);
+			return { ok: true };
+		};
+		const bridge = createTelclaudeMcpBridge(baseAuthority({ capabilityScopes: ["browse.act"] }), {
+			...baseDependencies(),
+			browseAct: capture,
+			browseActPrepare: capture,
+			browseActExecute: capture,
+		});
+
+		// Client-supplied authority envelope is rejected before the dependency runs.
+		await expect(
+			bridge.tc_browse_act({
+				url: "https://example.com/cart",
+				verb: "fill",
+				target: "#qty",
+				domain: "public",
+				actorId: "other",
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field");
+		await expect(
+			bridge.tc_browse_act_prepare({
+				url: "https://example.com/cart",
+				verb: "click",
+				target: "#pay",
+				capabilityScopes: ["browse.act", "media.image"],
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field: capabilityScopes");
+		// Execute is strict: an extra approvalToken or any extra field is rejected.
+		await expect(
+			bridge.tc_browse_act_execute({ actionRef: "effect-1", approvalToken: "signed" }),
+		).rejects.toThrow();
+		// Unknown verb / bad url fail schema validation before dispatch.
+		await expect(
+			bridge.tc_browse_act({ url: "https://example.com", verb: "evaluate" }),
+		).rejects.toThrow();
+		await expect(
+			bridge.tc_browse_act({ url: "file:///etc/passwd", verb: "goto" }),
+		).rejects.toThrow();
+		expect(calls).toEqual([]);
+	});
+
 	it("rejects old or caller-shaped outbound prepare authority", async () => {
 		const bridge = createTelclaudeMcpBridge(baseAuthority({ outboundChannels: ["whatsapp"] }), {
 			...baseDependencies(),
@@ -665,6 +819,9 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		webFetch: async () => ({ text: "" }),
 		webSearch: async () => ({ results: [] }),
 		browse: async () => ({ content: "" }),
+		browseAct: async () => ({ committing: false }),
+		browseActPrepare: async () => ({ actionRef: "effect-browser-act" }),
+		browseActExecute: async () => ({ ok: true }),
 		imageGenerate: async () => ({ attachmentRef: "att_img" }),
 		tts: async () => ({ attachmentRef: "att_audio" }),
 		skillRequest: async () => ({ requestId: "skill_req_1" }),

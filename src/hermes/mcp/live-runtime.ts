@@ -8,6 +8,7 @@ import type {
 import { createTelclaudeMcpAuthorityRegistry } from "./authority-registry.js";
 import type { TelclaudeMcpAuthority } from "./bridge.js";
 import type {
+	BrowserWriteCommitter,
 	TelclaudeMcpInboundTurnAuthorityResolver,
 	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
@@ -168,6 +169,8 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
+	/** Commits an approved browser write (S3); omitted → tc_browse_act_execute fails closed. */
+	readonly browserWriteCommitter?: BrowserWriteCommitter;
 	readonly nowMs?: () => number;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
 };
@@ -243,6 +246,9 @@ export async function startTelclaudeLiveMcpRuntime(
 				resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
 				outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
 				providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
+				...(options.browserWriteCommitter
+					? { browserWriteCommitter: options.browserWriteCommitter }
+					: {}),
 				nowMs: options.nowMs,
 			});
 			const nodeServer = createTelclaudeLiveMcpNodeHttpServer(liveServer, {
@@ -415,6 +421,8 @@ export function createFailClosedTelclaudeLiveMcpRelayClients(
 		webFetch: fail,
 		webSearch: fail,
 		browse: fail,
+		browseAct: fail,
+		browseActPrepare: fail,
 		imageGenerate: fail,
 		tts: fail,
 		skillRequest: fail,
