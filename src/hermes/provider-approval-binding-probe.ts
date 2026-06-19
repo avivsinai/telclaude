@@ -223,7 +223,7 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			},
 		);
 
-		const prepared = ledger.prepare(providerPrepareInput());
+		const prepared = ledger.prepare(providerPrepareInput()) as TelclaudeMcpProviderSideEffectRecord;
 		const binding = getTelclaudeMcpSideEffectApprovalBinding(prepared);
 		observations.actionRef = prepared.ref;
 		observations.paramsHash = prepared.paramsHash;

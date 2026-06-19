@@ -123,6 +123,9 @@ export type SideEffectHumanApprovalDependencies = {
 	readonly renderOutboundApproval?: (
 		record: Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }>,
 	) => string;
+	readonly renderBrowserWriteApproval?: (
+		record: Extract<TelclaudeMcpSideEffectRecord, { kind: "browser-write" }>,
+	) => string;
 	readonly autoGrant?: SideEffectHumanApprovalAutoGrantOptions;
 	readonly stepUpVerification?: StepUpVerification;
 	readonly stepUpMaxAgeMs?: number;
@@ -460,8 +463,7 @@ function prepareApprovalBinding(
 		return failure("effect_integrity_mismatch", integrityFailures.join("; "), false);
 	}
 	const humanVisibleRender = renderHumanVisibleApproval(record, dependencies);
-	const storedHumanVisibleRender =
-		record.kind === "provider" ? record.wysiwysRender : record.renderedBody;
+	const storedHumanVisibleRender = storedHumanVisibleRenderFor(record);
 	if (humanVisibleRender !== storedHumanVisibleRender) {
 		return failure(
 			"approval_wysiwyg_mismatch",
@@ -539,7 +541,7 @@ function renderHumanVisibleApproval(
 	record: TelclaudeMcpSideEffectRecord,
 	dependencies: Pick<
 		SideEffectHumanApprovalDependencies,
-		"renderProviderApproval" | "renderOutboundApproval"
+		"renderProviderApproval" | "renderOutboundApproval" | "renderBrowserWriteApproval"
 	>,
 ): string {
 	if (record.kind === "provider") {
@@ -548,10 +550,37 @@ function renderHumanVisibleApproval(
 			"approvalBody",
 		);
 	}
+	if (record.kind === "browser-write") {
+		return requiredTrimmed(
+			dependencies.renderBrowserWriteApproval?.(record) ?? defaultBrowserWriteRender(record),
+			"approvalBody",
+		);
+	}
 	return requiredTrimmed(
 		dependencies.renderOutboundApproval?.(record) ?? record.renderedBody,
 		"approvalBody",
 	);
+}
+
+function storedHumanVisibleRenderFor(record: TelclaudeMcpSideEffectRecord): string {
+	if (record.kind === "provider") return record.wysiwysRender;
+	if (record.kind === "browser-write") return defaultBrowserWriteRender(record);
+	return record.renderedBody;
+}
+
+/**
+ * A redacted, WYSIWYS-stable approval render for a browser write: verb, target, and
+ * origin ONLY — never raw submitted values or the full URL. Derived purely from the
+ * record's stored display fields so the stored/render comparison is stable.
+ */
+function defaultBrowserWriteRender(
+	record: Extract<TelclaudeMcpSideEffectRecord, { kind: "browser-write" }>,
+): string {
+	return [
+		`Confirm browser ${record.display.verb}`,
+		`on ${record.display.urlOrigin ?? "(opaque origin)"}`,
+		record.display.target ? `target: ${record.display.target}` : "target: (none)",
+	].join(" — ");
 }
 
 function formatSideEffectHumanApprovalBody(
@@ -569,8 +598,7 @@ function formatSideEffectHumanApprovalBody(
 		`Domain: ${record.domain}`,
 		`Approval request: ${record.approvalRequestId}`,
 		`Approval revision: ${record.approvalRevision}`,
-		`Params hash: ${record.paramsHash}`,
-		`Body hash: ${record.bodyHash}`,
+		...integrityHashLines(record, binding),
 		`Content hash: ${binding.contentHash}`,
 		`Binding digest: ${bindingDigest}`,
 		"",
@@ -591,6 +619,18 @@ function formatSideEffectHumanApprovalBody(
 			...common,
 		].join("\n");
 	}
+	if (record.kind === "browser-write") {
+		return [
+			"Hermes MCP browser-write side-effect approval required",
+			`Authority domain: ${record.authorityDomain}`,
+			`Host: ${record.host}`,
+			`Verb: ${record.display.verb}`,
+			`Target: ${record.display.target ?? "(none)"}`,
+			`Origin: ${record.display.urlOrigin ?? "(opaque origin)"}`,
+			"",
+			...common,
+		].join("\n");
+	}
 	return [
 		"Hermes MCP outbound side-effect approval required",
 		`Channel: ${record.channel}`,
@@ -599,6 +639,17 @@ function formatSideEffectHumanApprovalBody(
 		"",
 		...common,
 	].join("\n");
+}
+
+function integrityHashLines(
+	record: TelclaudeMcpSideEffectRecord,
+	binding: TelclaudeMcpSideEffectApprovalBinding,
+): string[] {
+	if (record.kind === "browser-write") {
+		return [`Binding hash: ${record.bindingHash}`, `Evidence revision: ${record.evidenceRevision}`];
+	}
+	if (binding.kind === "browser-write") return [];
+	return [`Params hash: ${binding.paramsHash}`, `Body hash: ${binding.bodyHash}`];
 }
 
 function formatOutboundApprovalSummary(

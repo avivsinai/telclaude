@@ -5,11 +5,13 @@ import Database from "better-sqlite3";
 import { z } from "zod";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
 import {
+	TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
 import {
 	getTelclaudeMcpSideEffectApprovalBinding,
+	type TelclaudeMcpBrowserWriteApprovalBinding,
 	type TelclaudeMcpOutboundApprovalBinding,
 	type TelclaudeMcpProviderApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalBinding,
@@ -24,9 +26,11 @@ const JTI_DATABASE_NAME = "hermes_mcp_side_effect_approval_jti.sqlite";
 
 const NonEmptyString = z.string().trim().min(1);
 const HashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const HmacRevisionSchema = z.string().regex(/^hmac-sha256:[a-f0-9]{64}$/);
 const EdgePreparedHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const TurnConversationRefSchema = z.string().regex(/^turn_[0-9a-f]{32}$/);
 const DomainSchema = z.enum(["private", "social", "household", "public", "specialist"]);
+const BrowserAuthorityDomainSchema = z.enum(["private", "public-social", "household", "public"]);
 const ResolvedDestinationSchema = z
 	.object({
 		kind: z.enum(["thread", "actor", "address"]),
@@ -95,7 +99,36 @@ const OutboundBindingSchema = z
 	})
 	.strict();
 
-const BindingSchema = z.discriminatedUnion("kind", [ProviderBindingSchema, OutboundBindingSchema]);
+const BrowserWriteBindingSchema = z
+	.object({
+		domainSeparator: z.literal(TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN),
+		ref: NonEmptyString,
+		kind: z.literal("browser-write"),
+		actorId: NonEmptyString,
+		approverActorId: NonEmptyString,
+		profileId: NonEmptyString,
+		domain: DomainSchema,
+		sessionRef: NonEmptyString,
+		host: NonEmptyString,
+		originScope: z.array(NonEmptyString).readonly(),
+		authorityDomain: BrowserAuthorityDomainSchema,
+		actionVerb: NonEmptyString,
+		actionTarget: NonEmptyString.nullable(),
+		evidenceRevision: HmacRevisionSchema,
+		approvalRequestId: NonEmptyString,
+		approvalRevision: z.number().int().min(1),
+		turnConversationRef: TurnConversationRefSchema.optional(),
+		idempotencyKey: NonEmptyString.optional(),
+		bindingHash: HashSchema,
+		contentHash: HashSchema,
+	})
+	.strict();
+
+const BindingSchema = z.discriminatedUnion("kind", [
+	ProviderBindingSchema,
+	OutboundBindingSchema,
+	BrowserWriteBindingSchema,
+]);
 
 const ClaimsSchema = z
 	.object({
@@ -302,7 +335,10 @@ function decodeClaims(claimsB64: string): ClaimsDecodeResult {
 
 function parseBinding(
 	binding: TelclaudeMcpSideEffectApprovalBinding,
-): TelclaudeMcpProviderApprovalBinding | TelclaudeMcpOutboundApprovalBinding {
+):
+	| TelclaudeMcpProviderApprovalBinding
+	| TelclaudeMcpOutboundApprovalBinding
+	| TelclaudeMcpBrowserWriteApprovalBinding {
 	const result = BindingSchema.safeParse(binding);
 	if (!result.success) {
 		throw new Error("Invalid side-effect approval binding");

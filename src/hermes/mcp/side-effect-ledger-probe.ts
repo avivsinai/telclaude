@@ -32,6 +32,7 @@ import {
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpOutboundSideEffectRecord,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpProviderSideEffectRecord,
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./side-effect-ledger.js";
@@ -334,7 +335,7 @@ async function runProbe(input: {
 			},
 		);
 
-		const provider = ledger.prepare(providerPrepareInput());
+		const provider = ledger.prepare(providerPrepareInput()) as TelclaudeMcpProviderSideEffectRecord;
 		const outbound = ledger.prepare(outboundPrepareInput()) as TelclaudeMcpOutboundSideEffectRecord;
 		const providerBinding = getTelclaudeMcpSideEffectApprovalBinding(provider);
 		const outboundBinding = getTelclaudeMcpSideEffectApprovalBinding(outbound);

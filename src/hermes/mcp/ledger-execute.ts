@@ -1,3 +1,9 @@
+import type { BrowserActEvidence } from "../../relay/browser-act-evidence.js";
+import {
+	type BrowserWriteContext,
+	type PreparedBrowserWrite,
+	verifyBrowserWriteExecution,
+} from "../../relay/browser-write-confirm.js";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../relay/provider-proxy.js";
 import { redactSecrets } from "../../security/output-filter.js";
@@ -21,6 +27,7 @@ import type {
 	TelclaudeMcpProviderExecuteWriteRequest,
 } from "./bridge.js";
 import type {
+	TelclaudeMcpBrowserWriteSideEffectRecord,
 	TelclaudeMcpOutboundSideEffectRecord,
 	TelclaudeMcpProviderSideEffectRecord,
 	TelclaudeMcpSideEffectAuthorizeResult,
@@ -29,10 +36,51 @@ import type {
 	TelclaudeMcpSideEffectTerminalFailure,
 } from "./side-effect-ledger.js";
 
+/**
+ * Re-derives evidence and commits a confirmed browser write. Injected like the
+ * provider proxy / outbound dispatcher so the ledger never imports the broker.
+ *
+ * `recaptureEvidence` MUST recapture the live page with the record's stored
+ * `evidenceNonce` and `observedSignals: {}` — that is the only way an unchanged page
+ * re-produces the same revision/url/submitted-value HMACs and re-matches the prepared
+ * `bindingHash`. A fresh random nonce (or a mutated page) yields a different binding
+ * hash and `verifyBrowserWriteExecution` fails closed with `write_confirm_binding_drift`.
+ * `commit` runs the actual state-changing act and returns a small JSON receipt; it is
+ * called only after verification passes.
+ */
+export interface BrowserWriteCommitter {
+	recaptureEvidence(record: TelclaudeMcpBrowserWriteSideEffectRecord): Promise<BrowserActEvidence>;
+	commit(
+		record: TelclaudeMcpBrowserWriteSideEffectRecord,
+	): Promise<{ readonly receipt: Record<string, unknown> }>;
+}
+
+export type TelclaudeMcpBrowserWriteExecuteRequest = {
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly domain: string;
+	readonly actionRef: string;
+};
+
+export type TelclaudeMcpBrowserWriteExecuteResult =
+	| { readonly ok: true; readonly receipt: Record<string, unknown> }
+	| (TelclaudeMcpSideEffectTerminalFailure & { readonly ok: false })
+	| {
+			readonly ok: false;
+			readonly code: string;
+			readonly reason: string;
+			readonly retryable: boolean;
+			readonly record?: TelclaudeMcpSideEffectRecord;
+	  };
+
 export type TelclaudeMcpLedgerExecuteDependencies = Pick<
 	TelclaudeMcpBridgeDependencies,
 	"providerExecuteWrite" | "outboundExecute"
->;
+> & {
+	browserWriteExecute(
+		request: TelclaudeMcpBrowserWriteExecuteRequest,
+	): Promise<TelclaudeMcpBrowserWriteExecuteResult>;
+};
 
 export type TelclaudeMcpProviderSidecarApprovalTokenRequest = {
 	readonly record: TelclaudeMcpProviderSideEffectRecord;
@@ -94,6 +142,7 @@ export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
+	readonly browserWriteCommitter?: BrowserWriteCommitter;
 	readonly nowMs?: () => number;
 };
 
@@ -182,6 +231,143 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (executed.ok) resolved.finalize?.();
 			return executed;
 		},
+		async browserWriteExecute(request) {
+			const nowMs = options.nowMs?.() ?? Date.now();
+			const checked = browserWriteLedgerEffectRecord(
+				options.ledger,
+				request.actionRef,
+				request,
+				nowMs,
+			);
+			if (!checked.ok) return checked;
+			if (!options.browserWriteCommitter) {
+				return terminalFailure(
+					"browser_write_committer_missing",
+					"browser-write committer is not configured",
+					checked.record,
+				);
+			}
+			const resolved = await resolveSideEffectApprovalToken(
+				options.sideEffectApprovalTokenResolver,
+				request.actionRef,
+				checked.record,
+			);
+			if (!resolved.ok) return resolved;
+			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
+			if (!authorized.ok) return authorized;
+			const record = authorized.record as TelclaudeMcpBrowserWriteSideEffectRecord;
+
+			// Recapture the live page immediately-before, with the STORED nonce, then
+			// re-derive the binding over the CURRENT action + fresh evidence. Any drift
+			// (page mutated, action redirected, values changed, wrong nonce) fails closed
+			// here — before any commit and before the ref is marked executed.
+			let currentEvidence: BrowserActEvidence;
+			try {
+				currentEvidence = await options.browserWriteCommitter.recaptureEvidence(record);
+			} catch (error) {
+				return terminalFailure(
+					"browser_write_recapture_failed",
+					redactSecrets(error instanceof Error ? error.message : String(error)),
+					record,
+				);
+			}
+			const verification = verifyBrowserWriteExecution({
+				prepared: reconstructPreparedBrowserWrite(record),
+				context: browserWriteContext(record),
+				action: { verb: record.actionVerb, target: record.actionTarget ?? undefined },
+				currentEvidence,
+				now: nowMs,
+			});
+			if (!verification.ok) {
+				return terminalFailure(
+					`browser_write_${verification.reason}`,
+					"browser write failed confirmation re-verification",
+					record,
+				);
+			}
+
+			let committed: { readonly receipt: Record<string, unknown> };
+			try {
+				committed = await options.browserWriteCommitter.commit(record);
+			} catch (error) {
+				return terminalFailure(
+					"browser_write_commit_failed",
+					redactSecrets(error instanceof Error ? error.message : String(error)),
+					record,
+				);
+			}
+			const executed = await options.ledger.markExecuted(
+				request.actionRef,
+				authorized.approvalId ?? resolved.approvalId,
+			);
+			if (!executed.ok) return executed;
+			resolved.finalize?.();
+			return { ok: true, receipt: committed.receipt };
+		},
+	};
+}
+
+function browserWriteLedgerEffectRecord(
+	ledger: TelclaudeMcpSideEffectLedger,
+	ref: string,
+	request: TelclaudeMcpBrowserWriteExecuteRequest,
+	nowMs: number,
+):
+	| { readonly ok: true; readonly record: TelclaudeMcpBrowserWriteSideEffectRecord }
+	| TelclaudeMcpSideEffectTerminalFailure {
+	const record = ledger.get(ref);
+	if (!record) {
+		return terminalFailure("effect_not_found", "side effect was not prepared");
+	}
+	if (record.kind !== "browser-write") {
+		return terminalFailure(
+			"effect_kind_mismatch",
+			"side effect kind mismatch: expected browser-write",
+		);
+	}
+	if (
+		record.actorId !== request.actorId ||
+		record.profileId !== request.profileId ||
+		record.domain !== request.domain
+	) {
+		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch", record);
+	}
+	const terminal = terminalFailureBeforeApproval(record, nowMs);
+	if (terminal) return terminal;
+	return { ok: true, record };
+}
+
+function reconstructPreparedBrowserWrite(
+	record: TelclaudeMcpBrowserWriteSideEffectRecord,
+): PreparedBrowserWrite {
+	return {
+		writeRef: record.ref,
+		actor: record.actorId,
+		approver: record.approverActorId,
+		profile: record.profileId,
+		authorityDomain: record.authorityDomain,
+		host: record.host,
+		originScope: record.originScope,
+		evidenceRevision: record.evidenceRevision,
+		evidenceNonce: record.evidenceNonce,
+		bindingHash: record.bindingHash,
+		display: record.display,
+		commitSignal: record.commitSignal,
+		createdAtMs: record.createdAtMs,
+		expiresAtMs: record.expiresAtMs,
+	};
+}
+
+function browserWriteContext(
+	record: TelclaudeMcpBrowserWriteSideEffectRecord,
+): BrowserWriteContext {
+	return {
+		sessionRef: record.sessionRef,
+		actor: record.actorId,
+		profile: record.profileId,
+		authorityDomain: record.authorityDomain,
+		host: record.host,
+		originScope: record.originScope,
 	};
 }
 

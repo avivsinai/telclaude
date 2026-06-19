@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
+import type { BrowserActCommitSignal } from "../../relay/browser-act-evidence.js";
+import type { BrowserAuthorityDomain } from "../../relay/browser-cookie-store.js";
+import type { BrowserWriteDisplay } from "../../relay/browser-write-confirm.js";
 import {
+	TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
@@ -10,6 +14,7 @@ import type {
 } from "../edge-adapter-contract.js";
 
 export {
+	TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
@@ -105,9 +110,48 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly revokeReason?: string;
 };
 
+export type TelclaudeMcpBrowserWriteSideEffectRecord = {
+	readonly ref: string;
+	readonly kind: "browser-write";
+	readonly actorId: string;
+	readonly approverActorId: string;
+	readonly profileId: string;
+	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly sessionRef: string;
+	readonly host: string;
+	readonly originScope: readonly string[];
+	readonly authorityDomain: BrowserAuthorityDomain;
+	readonly actionVerb: string;
+	readonly actionTarget: string | null;
+	readonly evidenceRevision: string;
+	readonly evidenceNonce: string;
+	readonly display: BrowserWriteDisplay;
+	readonly commitSignal: BrowserActCommitSignal;
+	readonly approvalRequestId: string;
+	readonly approvalRevision: number;
+	readonly turnConversationRef?: string;
+	readonly idempotencyKey?: string;
+	/**
+	 * The single pre-derived WYSIWYS binding hash from `prepareBrowserWrite`. Unlike
+	 * provider/outbound this kind does NOT split into params/body — `prepare` stores
+	 * the binding immutably and never recomputes it. Re-derivation happens only at
+	 * execute time, inside `verifyBrowserWriteExecution`, over freshly-captured
+	 * evidence.
+	 */
+	readonly bindingHash: string;
+	readonly status: TelclaudeMcpSideEffectStatus;
+	readonly createdAtMs: number;
+	readonly expiresAtMs: number;
+	readonly executedAtMs?: number;
+	readonly approvalId?: string;
+	readonly revokedAtMs?: number;
+	readonly revokeReason?: string;
+};
+
 export type TelclaudeMcpSideEffectRecord =
 	| TelclaudeMcpProviderSideEffectRecord
-	| TelclaudeMcpOutboundSideEffectRecord;
+	| TelclaudeMcpOutboundSideEffectRecord
+	| TelclaudeMcpBrowserWriteSideEffectRecord;
 
 export type TelclaudeMcpProviderSideEffectPrepareInput = {
 	readonly kind: "provider";
@@ -154,9 +198,34 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly ttlMs?: number;
 };
 
+export type TelclaudeMcpBrowserWriteSideEffectPrepareInput = {
+	readonly kind: "browser-write";
+	readonly actorId: string;
+	readonly approverActorId: string;
+	readonly profileId: string;
+	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly sessionRef: string;
+	readonly host: string;
+	readonly originScope: readonly string[];
+	readonly authorityDomain: BrowserAuthorityDomain;
+	readonly actionVerb: string;
+	readonly actionTarget: string | null;
+	readonly evidenceRevision: string;
+	readonly evidenceNonce: string;
+	readonly display: BrowserWriteDisplay;
+	readonly commitSignal: BrowserActCommitSignal;
+	readonly bindingHash: string;
+	readonly approvalRequestId: string;
+	readonly approvalRevision: number;
+	readonly turnConversationRef?: string;
+	readonly idempotencyKey?: string;
+	readonly ttlMs?: number;
+};
+
 export type TelclaudeMcpSideEffectPrepareInput =
 	| TelclaudeMcpProviderSideEffectPrepareInput
-	| TelclaudeMcpOutboundSideEffectPrepareInput;
+	| TelclaudeMcpOutboundSideEffectPrepareInput
+	| TelclaudeMcpBrowserWriteSideEffectPrepareInput;
 
 export type TelclaudeMcpProviderApprovalBinding = {
 	readonly domainSeparator: typeof TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN;
@@ -206,9 +275,33 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly contentHash: string;
 };
 
+export type TelclaudeMcpBrowserWriteApprovalBinding = {
+	readonly domainSeparator: typeof TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN;
+	readonly ref: string;
+	readonly kind: "browser-write";
+	readonly actorId: string;
+	readonly approverActorId: string;
+	readonly profileId: string;
+	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly sessionRef: string;
+	readonly host: string;
+	readonly originScope: readonly string[];
+	readonly authorityDomain: BrowserAuthorityDomain;
+	readonly actionVerb: string;
+	readonly actionTarget: string | null;
+	readonly evidenceRevision: string;
+	readonly approvalRequestId: string;
+	readonly approvalRevision: number;
+	readonly turnConversationRef?: string;
+	readonly idempotencyKey?: string;
+	readonly bindingHash: string;
+	readonly contentHash: string;
+};
+
 export type TelclaudeMcpSideEffectApprovalBinding =
 	| TelclaudeMcpProviderApprovalBinding
-	| TelclaudeMcpOutboundApprovalBinding;
+	| TelclaudeMcpOutboundApprovalBinding
+	| TelclaudeMcpBrowserWriteApprovalBinding;
 
 export type TelclaudeMcpSideEffectApprovalVerification = {
 	readonly approvalToken: string;
@@ -302,10 +395,7 @@ export function createTelclaudeMcpSideEffectLedger(
 
 	return {
 		prepare(input) {
-			const record =
-				input.kind === "provider"
-					? prepareProviderRecord(input, makeRef, nowMs(), defaultTtlMs)
-					: prepareOutboundRecord(input, makeRef, nowMs(), defaultTtlMs);
+			const record = prepareRecord(input, makeRef, nowMs(), defaultTtlMs);
 			if (records.has(record.ref)) {
 				throw new Error(`duplicate side-effect ref: ${record.ref}`);
 			}
@@ -423,6 +513,13 @@ export function telclaudeMcpSideEffectRecordIntegrityFailures(
 	record: TelclaudeMcpSideEffectRecord,
 ): string[] {
 	const failures: string[] = [];
+	if (record.kind === "browser-write") {
+		// browser-write carries a single pre-derived bindingHash that is only
+		// re-derived at execute time against freshly-captured evidence (the page may
+		// legitimately differ from prepare). There is nothing to recompute from the
+		// stored record here, so the stored-record integrity check is a no-op.
+		return failures;
+	}
 	if (record.kind === "provider") {
 		const paramsHash = hashProviderParams(record);
 		const bodyHash = hashProviderBody(record);
@@ -443,6 +540,64 @@ export function telclaudeMcpSideEffectRecordIntegrityFailures(
 		failures.push("outbound bodyHash does not match current outbound render");
 	}
 	return failures;
+}
+
+function prepareRecord(
+	input: TelclaudeMcpSideEffectPrepareInput,
+	makeRef: () => string,
+	nowMs: number,
+	defaultTtlMs: number,
+): TelclaudeMcpSideEffectRecord {
+	switch (input.kind) {
+		case "provider":
+			return prepareProviderRecord(input, makeRef, nowMs, defaultTtlMs);
+		case "outbound":
+			return prepareOutboundRecord(input, makeRef, nowMs, defaultTtlMs);
+		case "browser-write":
+			return prepareBrowserWriteRecord(input, makeRef, nowMs, defaultTtlMs);
+		default:
+			throw new Error("unknown side-effect prepare kind");
+	}
+}
+
+function prepareBrowserWriteRecord(
+	input: TelclaudeMcpBrowserWriteSideEffectPrepareInput,
+	makeRef: () => string,
+	nowMs: number,
+	defaultTtlMs: number,
+): TelclaudeMcpBrowserWriteSideEffectRecord {
+	const ttlMs = normalizeDuration(input.ttlMs ?? defaultTtlMs, "ttlMs");
+	return deepFreeze({
+		ref: requiredTrimmed(makeRef(), "ref"),
+		kind: "browser-write" as const,
+		actorId: requiredTrimmed(input.actorId, "actorId"),
+		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),
+		profileId: requiredTrimmed(input.profileId, "profileId"),
+		domain: input.domain,
+		sessionRef: requiredTrimmed(input.sessionRef, "sessionRef"),
+		host: requiredTrimmed(input.host, "host").toLowerCase(),
+		originScope: normalizeStringList(input.originScope, "originScope"),
+		authorityDomain: normalizeBrowserAuthorityDomain(input.authorityDomain),
+		actionVerb: requiredTrimmed(input.actionVerb, "actionVerb").toLowerCase(),
+		actionTarget:
+			input.actionTarget === null ? null : requiredTrimmed(input.actionTarget, "actionTarget"),
+		evidenceRevision: requiredTrimmed(input.evidenceRevision, "evidenceRevision"),
+		evidenceNonce: requiredTrimmed(input.evidenceNonce, "evidenceNonce"),
+		display: normalizeBrowserWriteDisplay(input.display),
+		commitSignal: normalizeBrowserCommitSignal(input.commitSignal),
+		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
+		approvalRevision: normalizeRevision(input.approvalRevision),
+		...(input.turnConversationRef
+			? { turnConversationRef: normalizeTurnConversationRef(input.turnConversationRef) }
+			: {}),
+		...(input.idempotencyKey
+			? { idempotencyKey: requiredTrimmed(input.idempotencyKey, "idempotencyKey") }
+			: {}),
+		bindingHash: normalizeBindingHash(input.bindingHash),
+		status: "prepared" as const,
+		createdAtMs: nowMs,
+		expiresAtMs: nowMs + ttlMs,
+	});
 }
 
 function prepareProviderRecord(
@@ -666,9 +821,55 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 	});
 }
 
+function hashBrowserWriteApprovalContent(record: TelclaudeMcpBrowserWriteSideEffectRecord): string {
+	return canonicalDigest({
+		domainSeparator: TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
+		actorId: record.actorId,
+		approverActorId: record.approverActorId,
+		profileId: record.profileId,
+		domain: record.domain,
+		sessionRef: record.sessionRef,
+		host: record.host,
+		originScope: record.originScope,
+		authorityDomain: record.authorityDomain,
+		actionVerb: record.actionVerb,
+		actionTarget: record.actionTarget,
+		evidenceRevision: record.evidenceRevision,
+		approvalRequestId: record.approvalRequestId,
+		approvalRevision: record.approvalRevision,
+		turnConversationRef: record.turnConversationRef ?? null,
+		idempotencyKey: record.idempotencyKey ?? null,
+		bindingHash: record.bindingHash,
+	});
+}
+
 function approvalBinding(
 	record: TelclaudeMcpSideEffectRecord,
 ): TelclaudeMcpSideEffectApprovalBinding {
+	if (record.kind === "browser-write") {
+		return {
+			domainSeparator: TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
+			ref: record.ref,
+			kind: "browser-write",
+			actorId: record.actorId,
+			approverActorId: record.approverActorId,
+			profileId: record.profileId,
+			domain: record.domain,
+			sessionRef: record.sessionRef,
+			host: record.host,
+			originScope: record.originScope,
+			authorityDomain: record.authorityDomain,
+			actionVerb: record.actionVerb,
+			actionTarget: record.actionTarget,
+			evidenceRevision: record.evidenceRevision,
+			approvalRequestId: record.approvalRequestId,
+			approvalRevision: record.approvalRevision,
+			...(record.turnConversationRef ? { turnConversationRef: record.turnConversationRef } : {}),
+			...(record.idempotencyKey ? { idempotencyKey: record.idempotencyKey } : {}),
+			bindingHash: record.bindingHash,
+			contentHash: hashBrowserWriteApprovalContent(record),
+		};
+	}
 	if (record.kind === "provider") {
 		return {
 			domainSeparator: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
@@ -932,6 +1133,58 @@ function normalizeRevision(value: number): number {
 		throw new Error("approvalRevision must be a positive integer");
 	}
 	return value;
+}
+
+const BROWSER_AUTHORITY_DOMAINS: readonly BrowserAuthorityDomain[] = [
+	"private",
+	"public-social",
+	"household",
+	"public",
+];
+
+function normalizeBrowserAuthorityDomain(value: BrowserAuthorityDomain): BrowserAuthorityDomain {
+	if (BROWSER_AUTHORITY_DOMAINS.includes(value)) return value;
+	throw new Error("side-effect authorityDomain is invalid");
+}
+
+function normalizeBindingHash(value: string): string {
+	const trimmed = requiredTrimmed(value, "bindingHash");
+	if (!/^sha256:[a-f0-9]{64}$/.test(trimmed)) {
+		throw new Error("side-effect bindingHash must be a sha256 digest");
+	}
+	return trimmed;
+}
+
+function normalizeBrowserWriteDisplay(value: BrowserWriteDisplay): BrowserWriteDisplay {
+	return cloneJsonValue(
+		{
+			verb: requiredTrimmed(value.verb, "display.verb").toLowerCase(),
+			target: value.target === null ? null : requiredTrimmed(value.target, "display.target"),
+			urlOrigin:
+				value.urlOrigin === null ? null : requiredTrimmed(value.urlOrigin, "display.urlOrigin"),
+		},
+		"display",
+	);
+}
+
+function normalizeBrowserCommitSignal(value: BrowserActCommitSignal): BrowserActCommitSignal {
+	if (value.forceConfirm !== true) {
+		throw new Error("browser-write commitSignal.forceConfirm must be true");
+	}
+	return cloneJsonValue(
+		{
+			forceConfirm: true,
+			reasons: value.reasons.map((reason, index) =>
+				requiredTrimmed(reason, `commitSignal.reasons[${index}]`),
+			),
+			observed: {
+				navigation: Boolean(value.observed.navigation),
+				formSubmit: Boolean(value.observed.formSubmit),
+				mutatingRequest: Boolean(value.observed.mutatingRequest),
+			},
+		},
+		"commitSignal",
+	);
 }
 
 function normalizeDuration(value: number, field: string): number {
