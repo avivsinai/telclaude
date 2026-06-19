@@ -146,15 +146,17 @@ jobs:
             append_host() {
               host="$(printf '%s' "$1" | xargs)"
               [ -n "$host" ] || return 0
-              for current in "${hosts[@]}"; do
-                [ "$current" = "$host" ] && return 0
-              done
+              if [ "${#hosts[@]}" -gt 0 ]; then
+                for current in "${hosts[@]}"; do
+                  [ "$current" = "$host" ] && return 0
+                done
+              fi
               hosts+=("$host")
             }
-            while IFS= read -r host; do append_host "$host"; done < <(printf '%s' "$existing" | tr ',[:space:]' '\n')
-            while IFS= read -r host; do append_host "$host"; done < <(printf '%s' "$required" | tr ',[:space:]' '\n')
+            while IFS= read -r host; do append_host "$host"; done < <(printf '%s\n' "$existing" | tr ',[:space:]' '\n')
+            while IFS= read -r host; do append_host "$host"; done < <(printf '%s\n' "$required" | tr ',[:space:]' '\n')
             local IFS=,
-            printf '%s' "${hosts[*]}"
+            printf '%s' "${hosts[*]-}"
           }
           generate_ed25519_pair() {
             local stem="$1"
