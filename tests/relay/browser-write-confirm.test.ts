@@ -292,6 +292,60 @@ describe("prepareBrowserWrite", () => {
 		expect(serialized).toContain("https://bank.example.com");
 		expect(serialized).not.toContain("/pay?");
 	});
+
+	it("redacts a URL-token action target from the persisted display (binding keeps the raw)", async () => {
+		const evidence = await buildEvidence({});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "https://bank.example.com/pay?token=TARGET-SECRET-TOKEN" },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		// The display target collapses to origin — no token, no path/query.
+		expect(prepared.display.target).toBe("https://bank.example.com");
+		const serialized = JSON.stringify(prepared);
+		expect(serialized).not.toContain("TARGET-SECRET-TOKEN");
+		expect(serialized).not.toContain("/pay?");
+	});
+
+	it("execute recapture with the SAME evidence nonce on an unchanged page passes", async () => {
+		const evidence = await buildEvidence({ evidenceNonce: "prepare-nonce-xyz" });
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: ACTION,
+			evidence,
+			approver: "telegram:default:human",
+		});
+		expect(prepared.evidenceNonce).toBe("prepare-nonce-xyz");
+		// Execute recaptures the SAME settled page under the STORED nonce.
+		const recaptured = await buildEvidence({ evidenceNonce: prepared.evidenceNonce });
+		const check = verifyBrowserWriteExecution({
+			prepared,
+			context: baseContext(),
+			action: ACTION,
+			currentEvidence: recaptured,
+		});
+		expect(check.ok).toBe(true);
+	});
+
+	it("execute recapture with a FRESH random nonce fails binding_drift on an unchanged page", async () => {
+		const evidence = await buildEvidence({ evidenceNonce: "prepare-nonce-xyz" });
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: ACTION,
+			evidence,
+			approver: "telegram:default:human",
+		});
+		const recaptured = await buildEvidence({ evidenceNonce: "a-different-nonce" });
+		const check = verifyBrowserWriteExecution({
+			prepared,
+			context: baseContext(),
+			action: ACTION,
+			currentEvidence: recaptured,
+		});
+		expect(check.ok).toBe(false);
+		expect(check.reason).toBe("write_confirm_binding_drift");
+	});
 });
 
 describe("verifyBrowserWriteExecution", () => {

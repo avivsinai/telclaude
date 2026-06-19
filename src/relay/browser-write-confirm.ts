@@ -26,8 +26,34 @@
  */
 
 import { canonicalHash, sortKeysDeep } from "../crypto/canonical-hash.js";
+import { redactSecrets } from "../security/output-filter.js";
 import type { BrowserActEvidence, BrowserActIntent } from "./browser-act-evidence.js";
 import type { BrowserAuthorityDomain } from "./browser-cookie-store.js";
+
+const MAX_DISPLAY_TARGET_LEN = 120;
+
+/**
+ * Derive a safe display target from the raw (possibly model-supplied) action target.
+ * The raw target is bound verbatim in the HMAC binding (drift integrity), but the
+ * display copy is persisted into the ledger record + surfaced on the approval card,
+ * so it must never carry a secret or a full URL: a URL target collapses to its origin
+ * (path/query — which can hold tokens — are dropped), and a selector/text target is
+ * secret-redacted and length-bounded.
+ */
+function safeDisplayTarget(target: string | null | undefined): string | null {
+	const raw = target?.trim();
+	if (!raw) return null;
+	try {
+		const url = new URL(raw);
+		return `${url.protocol}//${url.host}`;
+	} catch {
+		// not a URL — fall through to redaction
+	}
+	const redacted = redactSecrets(raw);
+	return redacted.length > MAX_DISPLAY_TARGET_LEN
+		? `${redacted.slice(0, MAX_DISPLAY_TARGET_LEN)}…`
+		: redacted;
+}
 
 const BROWSER_WRITE_BINDING_PREFIX = "browser-write-v1";
 
@@ -74,6 +100,12 @@ export interface PreparedBrowserWrite {
 	readonly originScope: readonly string[];
 	/** HMAC page revision the human is approving (drift signal). */
 	readonly evidenceRevision: string;
+	/**
+	 * The capture nonce the prepared evidence was bound under. Execute MUST recapture
+	 * with THIS nonce (the page revision / url / submitted-value HMACs all incorporate
+	 * it), or an otherwise-unchanged page fails `write_confirm_binding_drift`.
+	 */
+	readonly evidenceNonce: string;
 	/** The WYSIWYS binding hash — re-derived and matched at execute time. */
 	readonly bindingHash: string;
 	/** Redacted action summary surfaced to the approver (no raw values/URL). */
@@ -220,10 +252,12 @@ export function prepareBrowserWrite(input: {
 		host,
 		originScope: buildCanonicalOriginScope(context.originScope),
 		evidenceRevision: input.evidence.revision,
+		evidenceNonce: input.evidence.evidenceNonce,
 		bindingHash: deriveBrowserWriteBindingHash(context, input.action, input.evidence),
 		display: {
 			verb: input.action.verb.trim().toLowerCase(),
-			target: input.action.target?.trim() || null,
+			// Redacted/scrubbed — the raw target is bound in the hash, never persisted/displayed.
+			target: safeDisplayTarget(input.action.target),
 			urlOrigin: input.evidence.urlOrigin,
 		},
 		commitSignal: input.evidence.commitSignal,
