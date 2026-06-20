@@ -6,9 +6,11 @@
  * through the served MCP, to act on an interactive session. This executor runs
  * relay-side. It splits acts by their commit signal:
  *
- * - NON-committing acts (fill/type/select/navigate) mutate the page inline and
- *   return relay-owned evidence. They cross no approval boundary, so they do not
- *   touch the side-effect ledger.
+ * - NON-committing acts (fill/type) on cookie-less public pages mutate the page
+ *   inline and return relay-owned evidence. They cross no approval boundary, so they
+ *   do not touch the side-effect ledger. selectOption/click/press/goto — and ANY act
+ *   on a resolved logged-in session — are committing: the surface refuses them inline
+ *   and routes them to prepare.
  * - COMMITTING acts (submit, a click that navigates/posts, …) are two-phase:
  *   `prepareIntent` captures the SETTLED pre-commit page WITHOUT firing, stages a
  *   `prepareBrowserWrite` record for human approval, and HOLDS the live page +

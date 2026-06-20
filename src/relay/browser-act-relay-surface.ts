@@ -55,7 +55,11 @@ export interface BrowserActSurfaceRequest {
 
 /** The narrow surface the live-relay-clients layer calls for browser acts. */
 export interface BrowserActExecutorSurface {
-	/** Run a NON-committing act inline (fill/type/select/press/non-committing click/goto). */
+	/**
+	 * Run a NON-committing act (fill/type) inline on a cookie-less public page. Refuses
+	 * inline acts on a resolved logged-in session, and committing verbs
+	 * (selectOption/click/press/goto) route to prepareIntent.
+	 */
 	act(request: BrowserActSurfaceRequest): Promise<BrowserActInlineResult>;
 	/** Stage a COMMITTING act for approval, keyed by the pre-allocated ledger ref. */
 	prepareIntent(

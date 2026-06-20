@@ -234,16 +234,16 @@ describe("prepareBrowserWrite", () => {
 	});
 
 	it("rejects a write whose evidence did not force confirmation", async () => {
-		// A read-only verb with no commit signals → commitSignal.forceConfirm = false.
+		// A non-committing verb (fill) with no commit signals → commitSignal.forceConfirm = false.
 		const evidence = await buildEvidence({
-			action: { verb: "read", target: "#balance" },
+			action: { verb: "fill", target: "#balance" },
 			signals: {},
 		});
 		expect(evidence.commitSignal.forceConfirm).toBe(false);
 		try {
 			prepareBrowserWrite({
 				context: baseContext(),
-				action: { verb: "read", target: "#balance" },
+				action: { verb: "fill", target: "#balance" },
 				evidence,
 				approver: "telegram:default:human",
 			});
