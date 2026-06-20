@@ -39,6 +39,7 @@ services:
       - OPERATOR_RPC_RELAY_PRIVATE_KEY=${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}
       - NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY=${NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen network-probe-runner}
       - NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY=${NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen network-probe-runner}
+      - TELCLAUDE_HERMES_BROWSER_WRITE_APPROVER_ACTOR_ID=${TELCLAUDE_HERMES_BROWSER_WRITE_APPROVER_ACTOR_ID:-}
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,google-services,tc-hermes-contained,tc-hermes-social}
       - TELCLAUDE_HERMES_SKILL_CATALOG_DIR=/opt/data/telclaude-hermes-skill-catalog
