@@ -350,6 +350,23 @@ describe("BrowserActExecutor non-committing act", () => {
 		// An escalated act must NOT run inline either; the driver never dispatched.
 		expect(driver.dispatched).toHaveLength(0);
 	});
+
+	it("refuses an inline act carrying a resolved login session (defense-in-depth)", async () => {
+		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
+		const { executor, pool } = buildExecutor({ driver });
+		// The relay surface refuses cookie-bearing inline acts upstream; this proves the
+		// executor's own guard so a future caller that bypasses the surface still cannot run
+		// inline with a login attached.
+		const cookieBearing = {
+			...commitRequest("n/a", { verb: "fill", target: "#email", submittedValues: "a@b.com" }),
+			session: { storageState: { cookies: [] }, originScope: ["shop.example.com"] },
+		} as BrowserActRequest;
+		await expect(executor.act(cookieBearing)).rejects.toMatchObject({
+			code: "browser_act_cookie_bearing_requires_prepare",
+		});
+		expect(driver.dispatched).toHaveLength(0);
+		expect(pool.size()).toBe(0);
+	});
 });
 
 describe("BrowserActExecutor prepareIntent", () => {

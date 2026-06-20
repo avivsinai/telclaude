@@ -225,6 +225,17 @@ export class BrowserActExecutor {
 	 */
 	async act(request: BrowserActRequest): Promise<BrowserActInlineResult> {
 		this.assertActIdentity(request);
+		// Defense-in-depth (mirrors the doubled verb gate below): the relay surface already
+		// refuses inline acts on a resolved cookie-bearing session, but guard here too so any
+		// future caller that bypasses the surface cannot run an inline act with a login
+		// attached. The session is resolved one layer up and threaded onto the request for the
+		// driver factory; its presence here means a logged-in context — never run inline.
+		if ((request as { readonly session?: unknown }).session) {
+			throw new BrowserActExecutorError(
+				"browser_act_cookie_bearing_requires_prepare",
+				"an inline act on a cookie-bearing session is not allowed; use prepareIntent + approval",
+			);
+		}
 		const commitSignal = classifyCommitSignal(
 			{
 				verb: request.verb,

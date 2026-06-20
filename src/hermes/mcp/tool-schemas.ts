@@ -422,13 +422,15 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 	{
 		name: "tc_browse_act",
 		description:
-			"Perform ONE non-committing interactive action in the relay-owned contained browser " +
-			"(requires the browse.act capability scope). Use for fill/type/selectOption/press, a " +
-			"non-committing click, or a navigate (goto). Name the typed action plus the entry url; the " +
-			"relay server-stamps your authority and resolves the cookie-bearing session — you cannot " +
-			"name your own session or scope. Runs inline with no approval. A committing action (form " +
-			"submit, a click that navigates/posts) is REJECTED here — use tc_browse_act_prepare. " +
-			"Returns relay-owned page evidence; the raw page bytes are never returned.",
+			"Perform ONE non-committing data-entry action (fill or type) in the relay-owned contained " +
+			"browser, on a COOKIE-LESS public page only (requires the browse.act capability scope). Name " +
+			"the typed action plus the entry url; the relay server-stamps your authority and resolves the " +
+			"session — you cannot name your own session or scope. Runs inline with no approval. ANY " +
+			"committing action (selectOption, click, press, goto, a form submit, or anything that " +
+			"navigates/posts) AND any action on a logged-in (cookie-bearing) session are REJECTED here — " +
+			"use tc_browse_act_prepare for those. If an inline fill/type unexpectedly triggers a " +
+			"mutation, the result is denied. Returns relay-owned page evidence; the raw page bytes are " +
+			"never returned.",
 		inputSchema: objectSchema(
 			{
 				url: {
