@@ -66,6 +66,29 @@ describe("Hermes private runtime provider context", () => {
 		expect(noTier.capabilityScopes).toEqual(["schedule.read", "web.search"]);
 	});
 
+	it("strips browse.act below WRITE_LOCAL but keeps browse.use", () => {
+		const grant = {
+			providerScopes: [],
+			capabilityScopes: ["browse.use", "browse.act", "schedule.write"],
+			outboundChannels: [],
+		} as const;
+		const config = { hermes: { privateRuntime: grant } };
+
+		// READ_ONLY: browse.act (a browser-write scope) is dropped alongside
+		// schedule.write, but browse.use (reading a public page) survives.
+		const readOnly = buildHermesPrivateRuntimeProviderContext(config, grant, "READ_ONLY");
+		expect(readOnly.capabilityScopes).toEqual(["browse.use"]);
+
+		// WRITE_LOCAL and above keep browse.act (and schedule.write).
+		const writeLocal = buildHermesPrivateRuntimeProviderContext(config, grant, "WRITE_LOCAL");
+		expect(writeLocal.capabilityScopes).toEqual(["browse.act", "browse.use", "schedule.write"]);
+
+		// Fail-closed: a missing/undefined tier strips the write-tier scopes, so a
+		// caller that forgets to thread `tier` cannot silently grant browse.act.
+		const noTier = buildHermesPrivateRuntimeProviderContext(config, grant);
+		expect(noTier.capabilityScopes).toEqual(["browse.use"]);
+	});
+
 	it("lets explicit profile scopes override global private-runtime scopes", () => {
 		const context = buildHermesPrivateRuntimeProviderContext(
 			{

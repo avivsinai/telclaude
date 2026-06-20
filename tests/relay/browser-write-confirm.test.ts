@@ -207,6 +207,7 @@ describe("prepareBrowserWrite", () => {
 			verb: "submit",
 			target: "#pay-form",
 			urlOrigin: "https://bank.example.com",
+			submittedValues: null,
 		});
 		expect(prepared.expiresAtMs).toBeGreaterThan(prepared.createdAtMs);
 	});
@@ -268,29 +269,83 @@ describe("prepareBrowserWrite", () => {
 		}
 	});
 
-	it("never carries raw submitted values, the full URL, or the commitment secret", async () => {
+	it("never carries a raw secret value, the full URL, or the commitment secret", async () => {
+		// The display path is only exercised when the staged ACTION carries submittedValues, so
+		// pass them in the action (not just the evidence). A SECRET-shaped value must be scrubbed;
+		// a normal recipient (the operator must SEE who they are paying) survives verbatim.
+		const secretToken = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+		const submittedValues = { apiKey: secretToken, to: "alice@example.com" };
 		const evidence = await buildEvidence({
 			url: "https://bank.example.com/pay?step=2&token=SECRET-URL-PARAM",
-			action: {
-				verb: "submit",
-				target: "#pay-form",
-				submittedValues: { amount: "100", to: "ALICE-RAW-VALUE@example.com" },
-			},
+			action: { verb: "submit", target: "#pay-form", submittedValues },
 		});
 		const prepared = prepareBrowserWrite({
 			context: baseContext(),
-			action: ACTION,
+			action: { verb: "submit", target: "#pay-form", submittedValues },
 			evidence,
 			approver: "telegram:default:human",
 		});
+		// The display renders the keys + the visible value, and scrubs the secret.
+		expect(prepared.display.submittedValues).toEqual([
+			"apiKey: [REDACTED:openai_api_key]",
+			"to: alice@example.com",
+		]);
 		const serialized = JSON.stringify(prepared);
-		expect(serialized).not.toContain("ALICE-RAW-VALUE");
+		expect(serialized).not.toContain(secretToken);
 		expect(serialized).not.toContain("SECRET-URL-PARAM");
 		expect(serialized).not.toContain("step=2");
 		expect(serialized).not.toContain(COMMITMENT_SECRET);
 		// Only the redacted origin survives, never the full path/query.
 		expect(serialized).toContain("https://bank.example.com");
 		expect(serialized).not.toContain("/pay?");
+	});
+
+	it("scrubs a BARE high-entropy token (no key prefix) the pattern redactor cannot match", async () => {
+		// A random token that matches no CORE pattern and has no `=:` prefix slips past
+		// redactSecretsWithConfig; the bare-entropy scrub is the only thing that catches it.
+		// Assembled from sub-threshold fragments so no high-entropy literal appears in
+		// source (secret scanners flag a bare 32-char token); the runtime value is the
+		// 32-char high-entropy string the scrub must catch.
+		const bareToken = "Xq7Lp2Rt9Zk" + "4Wm8Nv3Bf6H" + "c1Yd5Gj0Sa";
+		const submittedValues = { sessionToken: bareToken, note: "renew" };
+		const evidence = await buildEvidence({
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+		});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		expect(prepared.display.submittedValues).toEqual([
+			"note: renew",
+			"sessionToken: [REDACTED:HIGH_ENTROPY]",
+		]);
+		// The raw high-entropy token never reaches the persisted (operator-visible) display.
+		expect(JSON.stringify(prepared)).not.toContain(bareToken);
+	});
+
+	it("caps a huge value's raw length BEFORE redaction (no full-size string materializes)", async () => {
+		// A multi-megabyte value must be bounded early; the persisted display is short.
+		const huge = "A".repeat(5_000_000);
+		const submittedValues = { blob: huge, note: "ok" };
+		const evidence = await buildEvidence({
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+		});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		const blobLine = (prepared.display.submittedValues ?? []).find((line) =>
+			line.startsWith("blob: "),
+		);
+		expect(blobLine).toBeDefined();
+		// Display is bounded to the 80-char value cap (+ key + ellipsis), nowhere near 5MB.
+		expect((blobLine as string).length).toBeLessThan(120);
+		// The full 5MB string is never persisted anywhere in the record.
+		expect(JSON.stringify(prepared).length).toBeLessThan(50_000);
 	});
 
 	it("redacts a URL-token action target from the persisted display (binding keeps the raw)", async () => {
@@ -306,6 +361,75 @@ describe("prepareBrowserWrite", () => {
 		const serialized = JSON.stringify(prepared);
 		expect(serialized).not.toContain("TARGET-SECRET-TOKEN");
 		expect(serialized).not.toContain("/pay?");
+	});
+
+	it("renders a record of submitted values as redacted `key: value` lines for the approver", async () => {
+		const evidence = await buildEvidence({});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: {
+				verb: "submit",
+				target: "#pay-form",
+				submittedValues: { amount: "40.00", note: "rent" },
+			},
+			evidence,
+			approver: "telegram:default:human",
+		});
+		// The approver SEES what they sign: keyed, sorted, inspectable lines.
+		expect(prepared.display.submittedValues).toEqual(["amount: 40.00", "note: rent"]);
+	});
+
+	it("scrubs a secret-like submitted value before it reaches the approval display", async () => {
+		const evidence = await buildEvidence({});
+		const apiKey = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: {
+				verb: "submit",
+				target: "#pay-form",
+				submittedValues: { apiKey, recipient: "alice@example.com" },
+			},
+			evidence,
+			approver: "telegram:default:human",
+		});
+		// The redaction (the actual fix) actually fires: the raw key never reaches display.
+		expect(prepared.display.submittedValues).toEqual([
+			"apiKey: [REDACTED:openai_api_key]",
+			"recipient: alice@example.com",
+		]);
+		expect(JSON.stringify(prepared)).not.toContain(apiKey);
+	});
+
+	it("caps the displayed value count and emits a `…(+N more)` overflow marker", async () => {
+		const evidence = await buildEvidence({});
+		const submittedValues: Record<string, string> = {};
+		// 15 fields → 12 shown + one overflow marker (3 hidden).
+		for (let i = 0; i < 15; i++) {
+			submittedValues[`f${String(i).padStart(2, "0")}`] = `v${i}`;
+		}
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		const lines = prepared.display.submittedValues ?? [];
+		expect(lines).toHaveLength(13); // 12 capped lines + 1 overflow marker
+		expect(lines.slice(0, 12)).toEqual([
+			"f00: v0",
+			"f01: v1",
+			"f02: v2",
+			"f03: v3",
+			"f04: v4",
+			"f05: v5",
+			"f06: v6",
+			"f07: v7",
+			"f08: v8",
+			"f09: v9",
+			"f10: v10",
+			"f11: v11",
+		]);
+		expect(lines.at(-1)).toBe("…(+3 more)");
 	});
 
 	it("execute recapture with the SAME evidence nonce on an unchanged page passes", async () => {

@@ -26,11 +26,36 @@
  */
 
 import { canonicalHash, sortKeysDeep } from "../crypto/canonical-hash.js";
-import { redactSecrets } from "../security/output-filter.js";
-import type { BrowserActEvidence, BrowserActIntent } from "./browser-act-evidence.js";
+import { calculateEntropy, redactSecretsWithConfig } from "../security/output-filter.js";
+import type {
+	BrowserActEvidence,
+	BrowserActIntent,
+	BrowserActJsonValue,
+} from "./browser-act-evidence.js";
 import type { BrowserAuthorityDomain } from "./browser-cookie-store.js";
 
 const MAX_DISPLAY_TARGET_LEN = 120;
+const MAX_DISPLAY_VALUE_LEN = 80;
+const MAX_DISPLAY_VALUE_COUNT = 12;
+/**
+ * Hard cap on the RAW length of any single value BEFORE redaction. A huge/nested value
+ * is sliced to this before any redaction/entropy work runs, so a multi-megabyte field
+ * cannot burn prepare-time CPU/memory building a string only to throw it away at 80 chars.
+ */
+const MAX_DISPLAY_VALUE_RAW_LEN = 256;
+/**
+ * An OPAQUE token run (a single base64/base32/hex-style blob — only [A-Za-z0-9+/=_-]) at/above
+ * this length and entropy is scrubbed wholesale. `redactSecretsWithConfig` only catches CORE
+ * patterns + `=:`-prefixed entropy blobs; a BARE high-entropy token (e.g. an array element or a
+ * value the regexes don't recognize) slips through, so we scrub it directly here — the persisted
+ * display is rendered VERBATIM to the operator (it is not re-redacted downstream), so this is the
+ * last line of defense. The character-class gate (no `@`/`.`/`:`/`/`) keeps STRUCTURED values the
+ * operator must see — emails, URLs, CSS selectors, timestamps — visible, matching the existing
+ * `detectHighEntropyBlobs` threshold so this stays a token scrubber, not a prose redactor.
+ */
+const HIGH_ENTROPY_DISPLAY_MIN_LEN = 24;
+const HIGH_ENTROPY_DISPLAY_THRESHOLD = 4.5;
+const OPAQUE_TOKEN_RE = /^[A-Za-z0-9+/=_-]+$/;
 
 /**
  * Derive a safe display target from the raw (possibly model-supplied) action target.
@@ -49,10 +74,137 @@ function safeDisplayTarget(target: string | null | undefined): string | null {
 	} catch {
 		// not a URL — fall through to redaction
 	}
-	const redacted = redactSecrets(raw);
+	const redacted = redactSecretsWithConfig(raw);
 	return redacted.length > MAX_DISPLAY_TARGET_LEN
 		? `${redacted.slice(0, MAX_DISPLAY_TARGET_LEN)}…`
 		: redacted;
+}
+
+/**
+ * Scrub a BARE high-entropy OPAQUE token (a single base64/base32/hex-style run that looks like a
+ * secret/key) that the pattern-based redactor cannot recognize. `redactSecretsWithConfig` only
+ * fires on CORE patterns and `=:`-prefixed entropy blobs, so a value like an array element or an
+ * unrecognized token form would otherwise reach the operator's approval display verbatim. The
+ * opaque-token gate (no structural chars) deliberately spares emails/URLs/selectors/timestamps so
+ * the operator still SEES the values they must confirm — this is a token scrubber, not a redactor.
+ */
+function scrubBareHighEntropy(value: string): string {
+	if (value.length < HIGH_ENTROPY_DISPLAY_MIN_LEN) return value;
+	if (!OPAQUE_TOKEN_RE.test(value)) return value; // structured/prose value, not a secret blob
+	return calculateEntropy(value) >= HIGH_ENTROPY_DISPLAY_THRESHOLD
+		? "[REDACTED:HIGH_ENTROPY]"
+		: value;
+}
+
+/**
+ * Make one scalar safe for the approval display: bound the RAW length FIRST (so a huge value
+ * cannot burn CPU/memory in redaction), then apply the strong secret redaction (CORE patterns +
+ * configured/entropy), scrub any bare high-entropy token, and finally length-bound the display.
+ */
+function safeDisplayScalar(value: string): string {
+	const bounded =
+		value.length > MAX_DISPLAY_VALUE_RAW_LEN ? value.slice(0, MAX_DISPLAY_VALUE_RAW_LEN) : value;
+	const redacted = scrubBareHighEntropy(redactSecretsWithConfig(bounded));
+	return redacted.length > MAX_DISPLAY_VALUE_LEN
+		? `${redacted.slice(0, MAX_DISPLAY_VALUE_LEN)}…`
+		: redacted;
+}
+
+/**
+ * Derive a redacted, inspectable summary of the submitted values for the approval card.
+ *
+ * The RAW values are bound verbatim into the WYSIWYS hash (drift integrity) and must NEVER
+ * be persisted raw or returned to the runtime — but the human approver still has to SEE what
+ * they are signing. Each value is RAW-length-bounded first, then strong-redacted (CORE patterns +
+ * configured/entropy secrets + bare high-entropy tokens) via `safeDisplayScalar`, keyed for a
+ * record, and the count is capped so a large form cannot bloat the card. A record shows
+ * `key: <redacted>` lines; a scalar/array shows the bare redacted value(s). `null`/empty
+ * collapses to `null` (no values to display).
+ */
+function safeDisplayValues(values: BrowserActJsonValue | null | undefined): string[] | null {
+	if (values === null || values === undefined) return null;
+	if (Array.isArray(values)) {
+		const entries = values
+			.slice(0, MAX_DISPLAY_VALUE_COUNT)
+			.map((entry) => safeDisplayScalar(stringifyDisplayScalar(entry)));
+		const overflow = values.length - entries.length;
+		if (overflow > 0) entries.push(`…(+${overflow} more)`);
+		return entries.length > 0 ? entries : null;
+	}
+	if (typeof values === "object") {
+		const pairs = Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		const entries = pairs
+			.slice(0, MAX_DISPLAY_VALUE_COUNT)
+			.map(
+				([key, value]) =>
+					`${safeDisplayScalar(key)}: ${safeDisplayScalar(stringifyDisplayScalar(value))}`,
+			);
+		const overflow = pairs.length - entries.length;
+		if (overflow > 0) entries.push(`…(+${overflow} more)`);
+		return entries.length > 0 ? entries : null;
+	}
+	return [safeDisplayScalar(stringifyDisplayScalar(values))];
+}
+
+/**
+ * Flatten one JSON value to a single display string (nested objects/arrays collapse to JSON).
+ * A nested value is serialized with an early byte budget so a deeply-nested or huge object cannot
+ * burn prepare-time CPU/memory in `JSON.stringify`; `safeDisplayScalar` redacts + bounds further.
+ */
+function stringifyDisplayScalar(value: BrowserActJsonValue): string {
+	if (value === null) return "null";
+	if (typeof value === "string") return value;
+	if (typeof value === "boolean" || typeof value === "number") return String(value);
+	return boundedJsonStringify(value, MAX_DISPLAY_VALUE_RAW_LEN);
+}
+
+/**
+ * `JSON.stringify` with an output budget: stops appending once `budget` chars are produced, so a
+ * huge/deeply-nested value never materializes a multi-megabyte string. Truncated output is not
+ * valid JSON, but it is display-only (redacted + bounded downstream), never re-parsed.
+ */
+function boundedJsonStringify(value: BrowserActJsonValue, budget: number): string {
+	let out = "";
+	let truncated = false;
+	const emit = (chunk: string): boolean => {
+		if (out.length >= budget) {
+			truncated = true;
+			return false;
+		}
+		out += chunk;
+		return true;
+	};
+	const walk = (node: BrowserActJsonValue): boolean => {
+		if (out.length >= budget) {
+			truncated = true;
+			return false;
+		}
+		if (node === null) return emit("null");
+		// Slice a node string to the budget BEFORE JSON.stringify so a huge nested string never
+		// materializes in full just to be truncated; the whole blob is display-only anyway.
+		if (typeof node === "string")
+			return emit(JSON.stringify(node.length > budget ? node.slice(0, budget) : node));
+		if (typeof node === "boolean" || typeof node === "number") return emit(String(node));
+		if (Array.isArray(node)) {
+			if (!emit("[")) return false;
+			for (let i = 0; i < node.length; i++) {
+				if (i > 0 && !emit(",")) return false;
+				if (!walk(node[i])) return false;
+			}
+			return emit("]");
+		}
+		if (!emit("{")) return false;
+		const entries = Object.entries(node);
+		for (let i = 0; i < entries.length; i++) {
+			const [key, value] = entries[i];
+			if (i > 0 && !emit(",")) return false;
+			if (!emit(`${JSON.stringify(key)}:`)) return false;
+			if (!walk(value)) return false;
+		}
+		return emit("}");
+	};
+	walk(value);
+	return truncated ? out.slice(0, budget) : out;
 }
 
 const BROWSER_WRITE_BINDING_PREFIX = "browser-write-v1";
@@ -88,6 +240,12 @@ export interface BrowserWriteDisplay {
 	readonly target: string | null;
 	/** Origin only (scheme + host), redacted of path/query — `null` for opaque origins. */
 	readonly urlOrigin: string | null;
+	/**
+	 * Secret-redacted, length-bounded, count-capped view of the submitted values the
+	 * approver is signing (`key: value` lines for a record, bare values for a scalar/array).
+	 * The RAW values stay bound in the WYSIWYS hash only — `null` when there are no values.
+	 */
+	readonly submittedValues: string[] | null;
 }
 
 export interface PreparedBrowserWrite {
@@ -202,7 +360,7 @@ function nextWriteRef(): string {
  */
 export function prepareBrowserWrite(input: {
 	readonly context: BrowserWriteContext;
-	readonly action: Pick<BrowserActIntent, "verb" | "target">;
+	readonly action: Pick<BrowserActIntent, "verb" | "target" | "submittedValues">;
 	readonly evidence: BrowserActEvidence;
 	readonly approver: string;
 	readonly ttlMs?: number;
@@ -259,6 +417,9 @@ export function prepareBrowserWrite(input: {
 			// Redacted/scrubbed — the raw target is bound in the hash, never persisted/displayed.
 			target: safeDisplayTarget(input.action.target),
 			urlOrigin: input.evidence.urlOrigin,
+			// Redacted/length-bounded/count-capped view of the values being signed — the RAW
+			// values are bound in the hash + held in value custody, never persisted here.
+			submittedValues: safeDisplayValues(input.action.submittedValues),
 		},
 		commitSignal: input.evidence.commitSignal,
 		createdAtMs: now,
