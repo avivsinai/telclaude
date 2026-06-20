@@ -1329,9 +1329,17 @@ function normalizeBrowserWriteDisplay(value: BrowserWriteDisplay): BrowserWriteD
 			target: value.target === null ? null : requiredTrimmed(value.target, "display.target"),
 			urlOrigin:
 				value.urlOrigin === null ? null : requiredTrimmed(value.urlOrigin, "display.urlOrigin"),
+			// Already-redacted display strings from prepareBrowserWrite — kept as data only.
+			submittedValues: normalizeBrowserWriteSubmittedValues(value.submittedValues),
 		},
 		"display",
 	);
+}
+
+function normalizeBrowserWriteSubmittedValues(value: string[] | null): string[] | null {
+	if (value === null) return null;
+	if (!Array.isArray(value) || value.length === 0) return null;
+	return value.map((entry, index) => requiredString(entry, `display.submittedValues[${index}]`));
 }
 
 function normalizeBrowserCommitSignal(value: BrowserActCommitSignal): BrowserActCommitSignal {

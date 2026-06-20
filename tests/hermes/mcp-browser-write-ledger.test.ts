@@ -112,7 +112,12 @@ function prepareInputFromConfirm(args: {
 		actionTarget: "#pay",
 		evidenceRevision: args.evidence.revision,
 		evidenceNonce: args.evidence.evidenceNonce,
-		display: { verb: "click", target: "#pay", urlOrigin: args.evidence.urlOrigin },
+		display: {
+			verb: "click",
+			target: "#pay",
+			urlOrigin: args.evidence.urlOrigin,
+			submittedValues: null,
+		},
 		commitSignal: args.evidence.commitSignal,
 		bindingHash: args.bindingHash,
 		approvalRequestId: "approval-browser-write-1",

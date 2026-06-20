@@ -18,10 +18,18 @@ import {
 import { createSideEffectHumanApprovalController } from "../../src/hermes/mcp/side-effect-human-approval.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
+	type TelclaudeMcpBrowserWriteSideEffectPrepareInput,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
+import {
+	type BrowserActEvidencePage,
+	type BrowserActJsonValue,
+	type BrowserActScreenshotSink,
+	captureBrowserActEvidence,
+} from "../../src/relay/browser-act-evidence.js";
+import { prepareBrowserWrite } from "../../src/relay/browser-write-confirm.js";
 import { getPendingApprovalsForChat } from "../../src/security/approvals.js";
 import type { StepUpVerificationMetadata } from "../../src/security/totp-session.js";
 import { closeDb, getDb, resetDatabase } from "../../src/storage/db.js";
@@ -134,6 +142,30 @@ describe("Hermes MCP side-effect human approvals", () => {
 		expect(approval?.body).toContain("TTL ms: 300000");
 		expect(approval?.body).toContain("Idempotency key: idem-whatsapp-operator-self");
 		expect(approval?.body).toContain("Human-visible render:\nSend the gate code.");
+	});
+
+	it("renders browser-write approvals with the redacted submitted values the operator is signing", async () => {
+		const apiKey = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+		const record = await prepareBrowserWriteRecord({
+			submittedValues: { apiKey, recipient: "alice@example.com" },
+		});
+		const controller = createController();
+
+		const request = await controller.request({ record, chatId: 111, username: "operator" });
+
+		expect(request).toMatchObject({ ok: true });
+		const [approval] = getPendingApprovalsForChat(111);
+		expect(approval?.body).toContain("Hermes MCP browser-write side-effect approval required");
+		expect(approval?.body).toContain("Authority domain: private");
+		expect(approval?.body).toContain("Host: shop.example.com");
+		expect(approval?.body).toContain("Verb: click");
+		// The redaction actually fires end-to-end: the operator sees the scrubbed value,
+		// never the raw secret, on the card body AND in the WYSIWYS render echo.
+		expect(approval?.body).toContain("Submitted values:");
+		expect(approval?.body).toContain("• apiKey: [REDACTED:openai_api_key]");
+		expect(approval?.body).toContain("• recipient: alice@example.com");
+		expect(approval?.body).toContain("values: apiKey: [REDACTED:openai_api_key]; recipient: alice@example.com");
+		expect(approval?.body).not.toContain(apiKey);
 	});
 
 	it("mints a one-shot server-side token after durable approval and authorizes the exact ledger record", async () => {
@@ -777,6 +809,98 @@ function prepareOutboundRecord(
 	});
 	const record = ledger.prepare(outboundPrepareInput(overrides));
 	if (record.kind !== "outbound") throw new Error("expected outbound record");
+	return record;
+}
+
+const BROWSER_WRITE_COMMITMENT_SECRET = "browser-write-human-approval-secret-32b";
+
+class FakeBrowserPage implements BrowserActEvidencePage {
+	constructor(
+		private readonly currentUrl = "https://shop.example.com/cart/checkout",
+		private readonly dom = "<html><body><button id=pay>Pay $40.00</button></body></html>",
+	) {}
+	url(): string {
+		return this.currentUrl;
+	}
+	async evaluate<T>(_expression: string): Promise<T> {
+		return this.dom as unknown as T;
+	}
+	async screenshot(): Promise<Uint8Array> {
+		return Buffer.from(`shot:${this.dom}`, "utf8");
+	}
+}
+
+class FakeBrowserScreenshotSink implements BrowserActScreenshotSink {
+	async storeScreenshot(input: { readonly hash: string }): Promise<string> {
+		return `screenshot-ref:${input.hash}`;
+	}
+}
+
+/**
+ * Stage a real browser-write record whose `display.submittedValues` are produced by the
+ * REAL `prepareBrowserWrite` redaction (not a hand-built fixture) so the approval render
+ * exercises the actual secret-scrubbing path the operator depends on.
+ */
+async function prepareBrowserWriteRecord(args: {
+	readonly submittedValues: BrowserActJsonValue;
+}): Promise<Extract<TelclaudeMcpSideEffectRecord, { kind: "browser-write" }>> {
+	const action = {
+		verb: "click" as const,
+		target: "#pay",
+		submittedValues: args.submittedValues,
+	};
+	const evidence = await captureBrowserActEvidence(
+		new FakeBrowserPage(),
+		{ ...action, forceConfirm: true },
+		{
+			screenshotSink: new FakeBrowserScreenshotSink(),
+			commitmentSecret: BROWSER_WRITE_COMMITMENT_SECRET,
+			observedSignals: {},
+			evidenceNonce: "human-approval-browser-write-nonce",
+		},
+	);
+	const prepared = prepareBrowserWrite({
+		context: {
+			sessionRef: "browse-session:shop",
+			actor: "telegram:123",
+			profile: "private",
+			authorityDomain: "private",
+			host: "shop.example.com",
+			originScope: ["https://shop.example.com"],
+		},
+		action,
+		evidence,
+		approver: "telegram:operator",
+	});
+	const input: TelclaudeMcpBrowserWriteSideEffectPrepareInput = {
+		kind: "browser-write",
+		actorId: "telegram:123",
+		approverActorId: "telegram:operator",
+		profileId: "private",
+		domain: "private",
+		sessionRef: "browse-session:shop",
+		host: "shop.example.com",
+		originScope: ["https://shop.example.com"],
+		authorityDomain: "private",
+		actionVerb: "click",
+		actionTarget: "#pay",
+		evidenceRevision: evidence.revision,
+		evidenceNonce: evidence.evidenceNonce,
+		display: prepared.display,
+		commitSignal: evidence.commitSignal,
+		bindingHash: prepared.bindingHash,
+		approvalRequestId: "approval-browser-write-1",
+		approvalRevision: 1,
+		idempotencyKey: "idem-browser-write-1",
+	};
+	const ledger = createTelclaudeMcpSideEffectLedger({
+		nowMs: () => 100_000,
+		makeRef: () => `effect-human-browser-${++fixtureRefCounter}`,
+		defaultTtlMs: 300_000,
+		verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+	});
+	const record = ledger.prepare(input);
+	if (record.kind !== "browser-write") throw new Error("expected browser-write record");
 	return record;
 }
 

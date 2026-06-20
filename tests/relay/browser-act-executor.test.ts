@@ -368,7 +368,7 @@ describe("BrowserActExecutor prepareIntent", () => {
 		});
 		const committer = executor.committer();
 		await committer.recaptureEvidence(record);
-		await committer.commit(record);
+		await committer.commit(record, (ev) => verify(record, ev));
 		const gotos = driver.dispatched.filter((d) => d.verb === "goto");
 		expect(gotos).toHaveLength(1);
 		expect(gotos[0]?.submittedValues).toBe(dest);
@@ -410,7 +410,7 @@ describe("BrowserActExecutor committer (W3 recapture + commit)", () => {
 		expect(current.evidenceNonce).toBe(record.evidenceNonce);
 		expect(verify(record, current)).toEqual({ ok: true, reason: "ok" });
 
-		await committer.commit(record);
+		await committer.commit(record, (ev) => verify(record, ev));
 		const submits = driver.dispatched.filter((d) => d.verb === "click");
 		expect(submits).toHaveLength(1);
 		expect(submits[0]?.submittedValues).toEqual(APPROVED_VALUES);
@@ -421,16 +421,19 @@ describe("BrowserActExecutor committer (W3 recapture + commit)", () => {
 
 	it("returns an ORIGIN-ONLY finalUrl in the commit receipt (no path/query/token leak)", async () => {
 		const page = new FakeLivePage(PAGE_URL, PAGE_DOM);
-		const driver = new FakeDriver(page, new FakeContext());
+		// The act lands on a secret-bearing URL as a RESULT of dispatch — so the page is
+		// unchanged through the immediately-before re-verify and only navigates when the
+		// committing act fires.
+		const driver = new FakeDriver(page, new FakeContext(), undefined, () => {
+			page.currentUrl = "https://shop.example.com/account?session=SECRET_TOKEN_abc123&path=/private";
+		});
 		const { executor } = buildExecutor({ driver });
 		const prepared = await executor.prepareIntent(commitRequest("effect-1"));
 		if (!prepared.committing) throw new Error("unreachable");
 		const record = recordFor(prepared.prepared, "effect-1");
 		const committer = executor.committer();
 		await committer.recaptureEvidence(record);
-		// The post-commit landing URL carries a secret-bearing token in the query.
-		page.currentUrl = "https://shop.example.com/account?session=SECRET_TOKEN_abc123&path=/private";
-		const { receipt } = await committer.commit(record);
+		const { receipt } = await committer.commit(record, (ev) => verify(record, ev));
 		// Receipt exposes ONLY the origin — no path, query, or token.
 		expect(receipt.finalUrlOrigin).toBe("https://shop.example.com");
 		expect(receipt).not.toHaveProperty("finalUrl");
@@ -500,12 +503,39 @@ describe("BrowserActExecutor committer (W3 recapture + commit)", () => {
 		const committer = executor.committer();
 		const current = await committer.recaptureEvidence(record);
 		expect(verify(record, current).ok).toBe(true);
-		await committer.commit(record);
+		await committer.commit(record, (ev) => verify(record, ev));
 		// A second commit attempt fails closed: the pool entry is gone.
-		await expect(committer.commit(record)).rejects.toMatchObject({
+		await expect(committer.commit(record, (ev) => verify(record, ev))).rejects.toMatchObject({
 			code: "browser_write_page_lost",
 		});
 		expect(driver.dispatched.filter((d) => d.verb === "click")).toHaveLength(1);
+		expect(pool.size()).toBe(0);
+	});
+
+	it("commit fails closed (no dispatch) when the page drifts AFTER the gate's verify but BEFORE dispatch (TOCTOU)", async () => {
+		const page = new FakeLivePage(PAGE_URL, PAGE_DOM);
+		const driver = new FakeDriver(page, new FakeContext());
+		const { executor, pool } = buildExecutor({ driver });
+		const prepared = await executor.prepareIntent(commitRequest("effect-1"));
+		if (!prepared.committing) throw new Error("unreachable");
+		const record = recordFor(prepared.prepared, "effect-1");
+
+		const committer = executor.committer();
+		// The ledger gate recaptures + verifies on an UNCHANGED page — it passes.
+		const current = await committer.recaptureEvidence(record);
+		expect(verify(record, current).ok).toBe(true);
+
+		// Now the live page mutates in the recapture->dispatch gap. commit recaptures
+		// IMMEDIATELY BEFORE dispatch and re-runs the SAME ledger verify (not a stub),
+		// so the drift is caught and the irreversible act NEVER fires.
+		page.dom = "<html><body>review order CHANGED after the gate</body></html>";
+		// The error code mirrors the ledger's terminal failure: `browser_write_` + the
+		// verify reason (`write_confirm_binding_drift`).
+		await expect(committer.commit(record, (ev) => verify(record, ev))).rejects.toMatchObject({
+			code: "browser_write_write_confirm_binding_drift",
+		});
+		expect(driver.dispatched.some((d) => d.verb === "click")).toBe(false);
+		// One commit per ref: the live page + custody are evicted whatever the outcome.
 		expect(pool.size()).toBe(0);
 	});
 });

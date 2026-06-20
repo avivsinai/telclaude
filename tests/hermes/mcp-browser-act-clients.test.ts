@@ -159,6 +159,7 @@ describe("Telclaude live MCP browser-act clients", () => {
 			verb: "click",
 			target: "#pay-origin",
 			urlOrigin: "https://shop.example.com",
+			submittedValues: null,
 		});
 		expect(JSON.stringify(prepared)).not.toContain("confirm");
 		expect(prepared).not.toHaveProperty("bindingHash");
@@ -315,7 +316,12 @@ function preparedBrowserWrite(
 		evidenceNonce: "nonce-1",
 		bindingHash: FAKE_BINDING_HASH,
 		// The display target is the REDACTED summary (origin only), never the raw "#pay".
-		display: { verb: "click", target: "#pay-origin", urlOrigin: "https://shop.example.com" },
+		display: {
+			verb: "click",
+			target: "#pay-origin",
+			urlOrigin: "https://shop.example.com",
+			submittedValues: null,
+		},
 		commitSignal: COMMIT_SIGNAL,
 		createdAtMs: 1_000_000,
 		expiresAtMs: 1_300_000,

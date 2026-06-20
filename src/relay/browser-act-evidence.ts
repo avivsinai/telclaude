@@ -77,6 +77,24 @@ export interface CaptureBrowserActEvidenceOptions {
 	readonly domExtractor?: (page: BrowserActEvidencePage) => Promise<string>;
 }
 
+/**
+ * Sentinel `screenshotHash`/`screenshotRef` for binding-only evidence — the
+ * binding fields (urlHash/domDigest/revision/submittedValuesHash) NEVER fold in
+ * the screenshot (see the revision comment below), so these sentinels can never
+ * shift the WYSIWYS binding. They mark "no screenshot captured/stored" so a
+ * consumer cannot mistake a binding-only capture for a display-bearing one.
+ */
+const BINDING_ONLY_SCREENSHOT_HASH = "sha256:none";
+const BINDING_ONLY_SCREENSHOT_REF = "binding-only:no-screenshot";
+
+export interface CaptureBrowserActEvidenceBindingOptions {
+	readonly commitmentSecret: string | Uint8Array;
+	readonly observedSignals?: BrowserActObservedSignals;
+	readonly evidenceNonce?: string;
+	readonly externalRevision?: string;
+	readonly domExtractor?: (page: BrowserActEvidencePage) => Promise<string>;
+}
+
 export async function captureBrowserActEvidence(
 	page: BrowserActEvidencePage,
 	action: BrowserActIntent,
@@ -95,63 +113,154 @@ export async function captureBrowserActEvidence(
 	if (capturedUrlAfterScreenshot !== url) {
 		throw new Error("browser act evidence capture observed page URL change during capture");
 	}
-	const urlHash = hmacCanonical("page-url", { evidenceNonce, url }, commitmentSecret);
 	const screenshotRef = await options.screenshotSink.storeScreenshot({
 		bytes: screenshotBytes,
 		contentType: "image/png",
 		hash: screenshotHash,
 	});
-	// The revision is the WYSIWYS binding anchor (deriveBrowserWriteBindingHash). It MUST
-	// be DETERMINISTIC for an unchanged page: the committer recaptures the SAME live page at
-	// execute time (browser-act-executor.ts recaptureEvidence) and the revision must
-	// re-produce identically, or a legitimate approved write fails closed as binding drift.
-	// screenshotHash is EXCLUDED on purpose: a fullPage PNG of a real page is NOT
-	// byte-identical between two captures (render timing, animation, blinking cursor,
-	// sub-pixel anti-aliasing, lazy images), so folding it into the binding makes every
-	// real-page commit fail re-verification (caught by the live B canary; the committer-probe
-	// missed it because it fakes a deterministic screenshot). The screenshot remains in the
-	// evidence below (screenshotHash/screenshotRef) as the human's approval-card display +
-	// audit — it is the VISUAL confirmation, not the crypto anchor. The binding still fails
-	// on any DOM / url / submitted-value change (a real page mutation), which is the WYSIWYS
-	// intent; a purely cosmetic re-render that does not change the DOM is intentionally not
-	// drift.
-	const revision = hmacCanonical(
-		"page-revision",
-		{
-			domDigest,
-			evidenceNonce,
-			urlHash,
-		},
+	const binding = computeBindingFields({
+		canonicalAction,
 		commitmentSecret,
-	);
-	const submittedValuesHash = hmacCanonical(
-		"submitted-values",
-		{
-			evidenceNonce,
-			pageRevision: revision,
-			target: canonicalAction.target,
-			values: canonicalAction.submittedValues,
-			verb: canonicalAction.verb,
-		},
-		commitmentSecret,
-	);
+		domDigest,
+		evidenceNonce,
+		url,
+	});
 
 	return {
 		schemaVersion: BROWSER_ACT_EVIDENCE_SCHEMA_VERSION,
 		evidenceNonce,
-		urlHash,
+		urlHash: binding.urlHash,
 		urlOrigin,
 		domDigest,
 		screenshotHash,
 		screenshotRef,
-		revision,
+		revision: binding.revision,
 		...(options.externalRevision ? { externalRevision: options.externalRevision } : {}),
-		submittedValuesHash,
+		submittedValuesHash: binding.submittedValuesHash,
 		commitSignal: classifyCommitSignal(
 			{ ...action, verb: canonicalAction.verb },
 			options.observedSignals ?? {},
 		),
 	};
+}
+
+/**
+ * Binding-only recapture: computes the WYSIWYS binding fields (urlHash, domDigest,
+ * revision, submittedValuesHash) IDENTICALLY to the full capture but takes NO
+ * screenshot and runs NO external-storage await. The screenshot + its storage are
+ * display/audit only (#179 keeps the screenshot OUT of the revision), so skipping
+ * them does not move the binding: on an unchanged page this returns the SAME
+ * revision/urlHash/submittedValuesHash as `captureBrowserActEvidence`, so
+ * `verifyBrowserWriteExecution` still matches the prepared `bindingHash`.
+ *
+ * Why a separate path: the committer's pre-dispatch re-verify (browser-act-executor.ts
+ * `commit`) must make the binding snapshot the LAST awaitable step before the
+ * irreversible act. The full capture awaits screenshot bytes + screenshot STORAGE
+ * after the DOM snapshot, leaving a page-mutating window between the binding-relevant
+ * snapshot and the act. This path's only page-touching await is the DOM extraction;
+ * `domDigest`/`revision` are taken from it and the URL is re-checked immediately after,
+ * with NO further await before the caller dispatches — closing the recapture->dispatch
+ * TOCTOU. `screenshotHash`/`screenshotRef` carry sentinels (display fields, not part of
+ * the binding).
+ */
+export async function captureBrowserActEvidenceBinding(
+	page: BrowserActEvidencePage,
+	action: BrowserActIntent,
+	options: CaptureBrowserActEvidenceBindingOptions,
+): Promise<BrowserActEvidence> {
+	const commitmentSecret = normalizeCommitmentSecret(options.commitmentSecret);
+	const evidenceNonce = normalizeEvidenceNonce(options.evidenceNonce);
+	const canonicalAction = canonicalizeAction(action);
+	const url = page.url();
+	const urlOrigin = safeUrlOrigin(url);
+	const rawDom = await (options.domExtractor ?? defaultDomExtractor)(page);
+	const domDigest = hashCanonical("dom", normalizeBrowserDom(rawDom));
+	// DOM extraction is the only page-touching await on this path; re-check the URL
+	// immediately after it (parity with the full capture's post-screenshot recheck)
+	// so a navigation during extraction fails closed rather than binding a stale url.
+	const capturedUrlAfterDom = page.url();
+	if (capturedUrlAfterDom !== url) {
+		throw new Error("browser act evidence capture observed page URL change during capture");
+	}
+	const binding = computeBindingFields({
+		canonicalAction,
+		commitmentSecret,
+		domDigest,
+		evidenceNonce,
+		url,
+	});
+
+	return {
+		schemaVersion: BROWSER_ACT_EVIDENCE_SCHEMA_VERSION,
+		evidenceNonce,
+		urlHash: binding.urlHash,
+		urlOrigin,
+		domDigest,
+		screenshotHash: BINDING_ONLY_SCREENSHOT_HASH,
+		screenshotRef: BINDING_ONLY_SCREENSHOT_REF,
+		revision: binding.revision,
+		...(options.externalRevision ? { externalRevision: options.externalRevision } : {}),
+		submittedValuesHash: binding.submittedValuesHash,
+		commitSignal: classifyCommitSignal(
+			{ ...action, verb: canonicalAction.verb },
+			options.observedSignals ?? {},
+		),
+	};
+}
+
+/**
+ * The WYSIWYS binding fields. The full and binding-only captures BOTH derive them
+ * here, so an unchanged page produces byte-identical urlHash/revision/submitted-
+ * value HMACs regardless of whether a screenshot was taken.
+ *
+ * The revision is the WYSIWYS binding anchor (deriveBrowserWriteBindingHash). It MUST
+ * be DETERMINISTIC for an unchanged page: the committer recaptures the SAME live page at
+ * execute time (browser-act-executor.ts recaptureEvidence + the pre-dispatch re-verify)
+ * and the revision must re-produce identically, or a legitimate approved write fails
+ * closed as binding drift. screenshotHash is EXCLUDED on purpose: a fullPage PNG of a
+ * real page is NOT byte-identical between two captures (render timing, animation,
+ * blinking cursor, sub-pixel anti-aliasing, lazy images), so folding it into the binding
+ * makes every real-page commit fail re-verification (caught by the live B canary; the
+ * committer-probe missed it because it fakes a deterministic screenshot). The screenshot
+ * is display/audit only — the VISUAL confirmation, not the crypto anchor — which is also
+ * why the binding-only recapture can skip it entirely without moving the binding. The
+ * binding still fails on any DOM / url / submitted-value change (a real page mutation),
+ * which is the WYSIWYS intent; a purely cosmetic re-render that does not change the DOM
+ * is intentionally not drift.
+ */
+function computeBindingFields(input: {
+	readonly canonicalAction: ReturnType<typeof canonicalizeAction>;
+	readonly commitmentSecret: Uint8Array;
+	readonly domDigest: string;
+	readonly evidenceNonce: string;
+	readonly url: string;
+}): { readonly urlHash: string; readonly revision: string; readonly submittedValuesHash: string } {
+	const urlHash = hmacCanonical(
+		"page-url",
+		{ evidenceNonce: input.evidenceNonce, url: input.url },
+		input.commitmentSecret,
+	);
+	const revision = hmacCanonical(
+		"page-revision",
+		{
+			domDigest: input.domDigest,
+			evidenceNonce: input.evidenceNonce,
+			urlHash,
+		},
+		input.commitmentSecret,
+	);
+	const submittedValuesHash = hmacCanonical(
+		"submitted-values",
+		{
+			evidenceNonce: input.evidenceNonce,
+			pageRevision: revision,
+			target: input.canonicalAction.target,
+			values: input.canonicalAction.submittedValues,
+			verb: input.canonicalAction.verb,
+		},
+		input.commitmentSecret,
+	);
+	return { urlHash, revision, submittedValuesHash };
 }
 
 export function normalizeBrowserDom(markup: string): string {

@@ -24,7 +24,10 @@ import type {
 	BrowserActVerb,
 } from "./browser-act-executor.js";
 import type { BrowseSession } from "./browser-broker.js";
-import { buildBrowserOriginScope } from "./browser-connect-contract.js";
+import {
+	buildBrowserOriginScope,
+	hostMatchesBrowserOriginScope,
+} from "./browser-connect-contract.js";
 import type { BrowserCookieStore } from "./browser-cookie-store.js";
 import { browserAuthorityDomainFromMcp } from "./browser-cookie-store.js";
 import {
@@ -159,13 +162,73 @@ export function createBrowserActExecutorSurface(
 			// The pool is keyed by the pre-allocated ledger ref so the committer can
 			// resolve the held live page later. We thread the SAME ref into the ledger
 			// record (caller-supplied prepare ref).
-			return options.executor.prepareIntent({
+			const staged = await options.executor.prepareIntent({
 				...base,
 				...(forceConfirmVerbs.has(base.verb) ? { forceConfirm: true } : {}),
 				actionRef: request.actionRef,
 			});
+			// FIX #2 — the session/authentication classification (host, originScope,
+			// cookie-bearing-vs-public) was resolved from the PRE-navigation entry url.
+			// The executor then auto-loads the entry url and SETTLES the page before
+			// capturing evidence, so a tokenized/magic-link redirect could have landed
+			// the live page OFF the resolved origin scope — e.g. a cookie-less browse
+			// that becomes authenticated on a different origin after the entry nav.
+			// The write was bound under the stale classification. Re-check the SETTLED
+			// landed origin (captured by the evidence, not runtime-supplied) against the
+			// origin scope the write is bound to: if it escaped, fail closed rather than
+			// commit a write bound to the wrong domain/session. A normal in-origin
+			// redirect stays within the registrable-domain-wide scope and is allowed.
+			assertLandedOriginInScope(staged.prepared.display.urlOrigin, base.originScope);
+			return staged;
 		},
 	};
+}
+
+/**
+ * Fail closed unless the SETTLED landed origin (the page the committing act will
+ * actually run on, captured by the relay's own evidence) is still inside the
+ * origin scope the prepared write was bound under. This catches an entry
+ * navigation that redirected OFF the resolved scope — including a public/
+ * cookie-less browse that became authenticated on a different origin via a
+ * magic-link or tokenized redirect — so a write is never bound to one domain/
+ * session and then committed against another. A normal in-origin redirect lands
+ * within the registrable-domain-wide scope and passes.
+ *
+ * RESIDUAL (accepted, not a gate): this closes OFF-origin redirects only. A
+ * SAME-origin magic link that authenticates mid-navigation (e.g. a cookie-less
+ * browse that becomes logged-in on the SAME registrable domain) lands in scope
+ * and passes the origin check — so we do NOT claim the public-vs-cookie-bearing
+ * classification is closed for same-origin auth. That case is backstopped by the
+ * two-phase human approval: the operator sees the WYSIWYS binding before any
+ * write commits, so a silent in-origin privilege flip can't auto-execute.
+ */
+function assertLandedOriginInScope(
+	landedOrigin: string | null,
+	originScope: readonly string[],
+): void {
+	// An opaque-origin landing (data:/blob:/about:) can't be matched against the
+	// scope — treat it as off-scope and fail closed.
+	if (!landedOrigin) {
+		throw new BrowserActSurfaceError(
+			"browser_act_landed_origin_off_scope",
+			"entry navigation settled on an unverifiable origin; refusing to bind a browser write",
+		);
+	}
+	let landedHost: string;
+	try {
+		landedHost = new URL(landedOrigin).hostname.toLowerCase();
+	} catch {
+		throw new BrowserActSurfaceError(
+			"browser_act_landed_origin_off_scope",
+			"entry navigation settled on an unparseable origin; refusing to bind a browser write",
+		);
+	}
+	if (!hostMatchesBrowserOriginScope(landedHost, originScope)) {
+		throw new BrowserActSurfaceError(
+			"browser_act_landed_origin_off_scope",
+			"entry navigation redirected off the resolved origin scope; the page the write would run on does not match the classification it was bound under",
+		);
+	}
 }
 
 function hostFor(url: string): string {

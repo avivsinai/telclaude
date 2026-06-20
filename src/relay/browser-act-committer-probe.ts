@@ -238,6 +238,37 @@ async function runLedgerGate(
 	now: number,
 ): Promise<{ committed: boolean; reason: string; dispatches: number }> {
 	const committer = fixture.executor.committer();
+	// Reconstruct prepared/context/action ONCE so the step-3 gate and the
+	// immediately-before `reVerify` closure share byte-identical inputs (mirrors how
+	// `browserWriteExecute` hoists them in ledger-execute).
+	const prepared = {
+		writeRef: fixture.record.ref,
+		actor: fixture.record.actorId,
+		approver: fixture.record.approverActorId,
+		profile: fixture.record.profileId,
+		authorityDomain: fixture.record.authorityDomain,
+		host: fixture.record.host,
+		originScope: fixture.record.originScope,
+		evidenceRevision: fixture.record.evidenceRevision,
+		evidenceNonce: fixture.record.evidenceNonce,
+		bindingHash: fixture.record.bindingHash,
+		display: fixture.record.display,
+		commitSignal: fixture.record.commitSignal,
+		createdAtMs: fixture.record.createdAtMs,
+		expiresAtMs: fixture.record.expiresAtMs,
+	};
+	const context = {
+		sessionRef: fixture.record.sessionRef,
+		actor: fixture.record.actorId,
+		profile: fixture.record.profileId,
+		authorityDomain: fixture.record.authorityDomain,
+		host: fixture.record.host,
+		originScope: fixture.record.originScope,
+	};
+	const action = {
+		verb: fixture.record.actionVerb,
+		target: fixture.record.actionTarget ?? undefined,
+	};
 	let currentEvidence: BrowserActEvidence;
 	try {
 		currentEvidence = await committer.recaptureEvidence(fixture.record);
@@ -250,31 +281,9 @@ async function runLedgerGate(
 		};
 	}
 	const verification = verifyBrowserWriteExecution({
-		prepared: {
-			writeRef: fixture.record.ref,
-			actor: fixture.record.actorId,
-			approver: fixture.record.approverActorId,
-			profile: fixture.record.profileId,
-			authorityDomain: fixture.record.authorityDomain,
-			host: fixture.record.host,
-			originScope: fixture.record.originScope,
-			evidenceRevision: fixture.record.evidenceRevision,
-			evidenceNonce: fixture.record.evidenceNonce,
-			bindingHash: fixture.record.bindingHash,
-			display: fixture.record.display,
-			commitSignal: fixture.record.commitSignal,
-			createdAtMs: fixture.record.createdAtMs,
-			expiresAtMs: fixture.record.expiresAtMs,
-		},
-		context: {
-			sessionRef: fixture.record.sessionRef,
-			actor: fixture.record.actorId,
-			profile: fixture.record.profileId,
-			authorityDomain: fixture.record.authorityDomain,
-			host: fixture.record.host,
-			originScope: fixture.record.originScope,
-		},
-		action: { verb: fixture.record.actionVerb, target: fixture.record.actionTarget ?? undefined },
+		prepared,
+		context,
+		action,
 		currentEvidence,
 		now,
 	});
@@ -285,7 +294,9 @@ async function runLedgerGate(
 			dispatches: countCommittingDispatches(fixture),
 		};
 	}
-	await committer.commit(fixture.record);
+	await committer.commit(fixture.record, (ev) =>
+		verifyBrowserWriteExecution({ prepared, context, action, currentEvidence: ev, now }),
+	);
 	return { committed: true, reason: "ok", dispatches: countCommittingDispatches(fixture) };
 }
 
