@@ -101,12 +101,25 @@ export async function captureBrowserActEvidence(
 		contentType: "image/png",
 		hash: screenshotHash,
 	});
+	// The revision is the WYSIWYS binding anchor (deriveBrowserWriteBindingHash). It MUST
+	// be DETERMINISTIC for an unchanged page: the committer recaptures the SAME live page at
+	// execute time (browser-act-executor.ts recaptureEvidence) and the revision must
+	// re-produce identically, or a legitimate approved write fails closed as binding drift.
+	// screenshotHash is EXCLUDED on purpose: a fullPage PNG of a real page is NOT
+	// byte-identical between two captures (render timing, animation, blinking cursor,
+	// sub-pixel anti-aliasing, lazy images), so folding it into the binding makes every
+	// real-page commit fail re-verification (caught by the live B canary; the committer-probe
+	// missed it because it fakes a deterministic screenshot). The screenshot remains in the
+	// evidence below (screenshotHash/screenshotRef) as the human's approval-card display +
+	// audit — it is the VISUAL confirmation, not the crypto anchor. The binding still fails
+	// on any DOM / url / submitted-value change (a real page mutation), which is the WYSIWYS
+	// intent; a purely cosmetic re-render that does not change the DOM is intentionally not
+	// drift.
 	const revision = hmacCanonical(
 		"page-revision",
 		{
 			domDigest,
 			evidenceNonce,
-			screenshotHash,
 			urlHash,
 		},
 		commitmentSecret,
@@ -314,11 +327,12 @@ function safeUrlOrigin(url: string): string | null {
 // allowlist makes a forgotten verb committing by default. The parity test in
 // `tests/relay/browser-act-evidence.test.ts` asserts every `BrowserActVerb`.
 //
-// NOTE: a non-committing classification is necessary but NOT sufficient to run inline.
-// A logged-in (cookie-bearing) act NEVER runs inline regardless of verb — the relay
-// surface refuses it and requires prepare + approval. Inline acts are reserved for
-// cookie-less public pages, where `act()` additionally fails closed if the settle step
-// observes a mutation (navigation/submit/mutating request) the verb did not predict.
+// NOTE: this is purely a SIGNAL classification — `fill`/`type` being "non-committing" drives
+// forceConfirm escalation semantics, NOT an inline-execution permission. Production runs NO
+// browser mutation inline: the relay surface disables the inline act path and force-confirms
+// `fill`/`type` on prepare, so EVERY mutating interaction (fill/type included) stages through
+// prepare -> human approval -> execute. Post-hoc observation cannot be fail-closed (the side
+// effect already fired before any throw), so there is no "observe-then-throw" inline path.
 const NON_COMMITTING_VERBS = new Set<string>(["fill", "type"]);
 
 const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
