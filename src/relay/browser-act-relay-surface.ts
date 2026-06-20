@@ -193,6 +193,14 @@ export function createBrowserActExecutorSurface(
  * magic-link or tokenized redirect — so a write is never bound to one domain/
  * session and then committed against another. A normal in-origin redirect lands
  * within the registrable-domain-wide scope and passes.
+ *
+ * RESIDUAL (accepted, not a gate): this closes OFF-origin redirects only. A
+ * SAME-origin magic link that authenticates mid-navigation (e.g. a cookie-less
+ * browse that becomes logged-in on the SAME registrable domain) lands in scope
+ * and passes the origin check — so we do NOT claim the public-vs-cookie-bearing
+ * classification is closed for same-origin auth. That case is backstopped by the
+ * two-phase human approval: the operator sees the WYSIWYS binding before any
+ * write commits, so a silent in-origin privilege flip can't auto-execute.
  */
 function assertLandedOriginInScope(
 	landedOrigin: string | null,

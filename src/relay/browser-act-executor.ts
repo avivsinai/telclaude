@@ -43,6 +43,7 @@ import {
 	type BrowserActObservedSignals,
 	type BrowserActScreenshotSink,
 	captureBrowserActEvidence,
+	captureBrowserActEvidenceBinding,
 } from "./browser-act-evidence.js";
 import type {
 	BrowserActHeldDriver,
@@ -56,11 +57,7 @@ import {
 	type BrowserSessionAuthority,
 	browserAuthorityDomainFromMcp,
 } from "./browser-cookie-store.js";
-import {
-	deriveBrowserWriteBindingHash,
-	type PreparedBrowserWrite,
-	prepareBrowserWrite,
-} from "./browser-write-confirm.js";
+import { type PreparedBrowserWrite, prepareBrowserWrite } from "./browser-write-confirm.js";
 
 const BROWSER_ACT_EVIDENCE_COMMITMENT_INFO = "telclaude.browser-act-evidence.v1";
 const COMMITMENT_SECRET_BYTES = 32;
@@ -335,12 +332,15 @@ export class BrowserActExecutor {
 	 * The ledger's verify runs on evidence recaptured one or more awaits earlier, so a
 	 * page mutation in the gap between that verify and the dispatch would fire the act
 	 * on a page that no longer matches what the human approved. `commit` therefore
-	 * RE-DERIVES the WYSIWYS binding from the SAME live page immediately before
-	 * dispatch — re-capturing the settled page under the stored nonce + the exact
-	 * approved {verb, target, values} and re-matching `record.bindingHash` — and fails
-	 * closed on any drift. There is no awaitable page-mutating window between this
-	 * re-derive and `dispatchAndSettle` (which arms its observers before dispatching),
-	 * so the binding the act fires under is the one that was just re-verified.
+	 * RE-VERIFIES the SAME live page immediately before dispatch — re-capturing the
+	 * settled page under the stored nonce + the exact approved {verb, target, values}
+	 * and running the LEDGER's canonical `reVerify` closure (the same
+	 * `verifyBrowserWriteExecution` it gated with) — and fails closed on any drift.
+	 * The ledger passes `reVerify` down rather than the executor re-deriving the
+	 * binding itself, so the immediately-before check is byte-identical to the gate.
+	 * There is no awaitable page-mutating window between this re-verify and
+	 * `dispatchAndSettle` (which arms its observers before dispatching), so the binding
+	 * the act fires under is the one that was just re-verified.
 	 */
 	committer(): BrowserWriteCommitter {
 		return {
@@ -360,47 +360,41 @@ export class BrowserActExecutor {
 					record.evidenceNonce,
 				);
 			},
-			commit: async (record) => {
+			commit: async (record, reVerify) => {
 				const entry = this.requirePoolEntry(record);
 				try {
 					const { driver } = entry;
 					// Close the recapture->dispatch TOCTOU: the ledger's verify ran on
-					// evidence captured one or more awaits ago, so re-derive the WYSIWYS
-					// binding from the SAME live page IMMEDIATELY BEFORE the dispatch and
-					// fail closed on any drift. This is the last awaitable step before the
-					// irreversible act; dispatchAndSettle arms its observers before
-					// dispatching, so no page-mutating awaitable window remains after this
-					// check. Recapture under the STORED nonce + the EXACT approved
-					// {verb, target, values} so an unchanged page re-produces the bound
-					// revision/url/submitted-value HMACs.
-					const preDispatchEvidence = await this.captureEvidence(
+					// evidence captured one or more awaits ago, so re-verify the SAME live
+					// page IMMEDIATELY BEFORE the dispatch and fail closed on any drift.
+					// This uses the BINDING-ONLY recapture (no screenshot, no external-storage
+					// await): the WYSIWYS binding only needs domDigest + url + submitted values
+					// (#179 keeps the screenshot OUT of the revision), and a screenshot + its
+					// storage await after the DOM snapshot would re-open a page-mutating window
+					// between the binding-relevant snapshot and the act. Here the DOM snapshot
+					// (with an immediate post-extraction URL recheck) is the LAST awaitable step
+					// before the irreversible act; dispatchAndSettle arms its observers before
+					// dispatching, so no page-mutating awaitable window remains after this check.
+					// Recapture under the STORED nonce + the EXACT approved {verb, target,
+					// values} so an unchanged page re-produces the bound revision/url/
+					// submitted-value HMACs — IDENTICAL to the full capture's binding fields —
+					// then hand the fresh evidence to the LEDGER's `reVerify` (the same canonical
+					// `verifyBrowserWriteExecution` it gated with, so the immediately-before
+					// check is byte-identical to the gate with no hand-rolled reconstruction that
+					// could diverge from the prepared binding).
+					const preDispatchEvidence = await this.captureBindingEvidence(
 						driver.page,
 						{
 							verb: record.actionVerb as BrowserActVerb,
 							...(record.actionTarget ? { target: record.actionTarget } : {}),
 							submittedValues: entry.approvedSubmittedValues,
 						},
-						{},
 						record.evidenceNonce,
 					);
-					const preDispatchBinding = deriveBrowserWriteBindingHash(
-						{
-							sessionRef: record.sessionRef,
-							actor: record.actorId,
-							profile: record.profileId,
-							authorityDomain: record.authorityDomain,
-							host: record.host,
-							originScope: record.originScope,
-						},
-						{
-							verb: record.actionVerb,
-							...(record.actionTarget ? { target: record.actionTarget } : {}),
-						},
-						preDispatchEvidence,
-					);
-					if (preDispatchBinding !== record.bindingHash) {
+					const check = reVerify(preDispatchEvidence);
+					if (!check.ok) {
 						throw new BrowserActExecutorError(
-							"browser_write_binding_drift",
+							`browser_write_${check.reason}`,
 							"the live page drifted between confirmation re-verify and dispatch; re-prepare",
 						);
 					}
@@ -477,6 +471,35 @@ export class BrowserActExecutor {
 			screenshotSink: this.screenshotSink,
 			commitmentSecret: this.commitmentSecret,
 			observedSignals: observed,
+			...(evidenceNonce ? { evidenceNonce } : {}),
+		});
+	}
+
+	/**
+	 * Binding-only recapture used by the pre-dispatch re-verify in `commit`. Computes
+	 * the SAME WYSIWYS binding fields (revision/urlHash/submittedValuesHash) as
+	 * `captureEvidence` on an unchanged page, but takes NO screenshot and runs NO
+	 * external-storage await — so the binding snapshot is the last awaitable step
+	 * before the irreversible act, with no page-mutating window after it. The screenshot
+	 * is display/audit only and is not part of the binding, so skipping it cannot move
+	 * the binding (it carries sentinels in this path).
+	 */
+	private async captureBindingEvidence(
+		page: BrowserActEvidencePage,
+		action: {
+			readonly verb: string;
+			readonly target?: string;
+			readonly submittedValues?: BrowserActJsonValue;
+		},
+		evidenceNonce?: string,
+	): Promise<BrowserActEvidence> {
+		const intent: BrowserActIntent = {
+			verb: action.verb,
+			...(action.target ? { target: action.target } : {}),
+			...(action.submittedValues !== undefined ? { submittedValues: action.submittedValues } : {}),
+		};
+		return captureBrowserActEvidenceBinding(page, intent, {
+			commitmentSecret: this.commitmentSecret,
 			...(evidenceNonce ? { evidenceNonce } : {}),
 		});
 	}

@@ -17,8 +17,13 @@ const COOKIE_KEY = "cookie-store-key-thats-at-least-32-chars-long!";
  * A fake executor that records the resolved `BrowserActRequest` (the surface's
  * output) so the test can assert host / originScope / session resolution without
  * a live browser. It echoes a minimal evidence/prepared result.
+ *
+ * `landedUrlOrigin` drives the SETTLED `prepared.display.urlOrigin` the executor
+ * reports after auto-loading + settling the entry url — the same value the relay's
+ * own evidence captures. The surface then re-checks it against the bound origin
+ * scope (FIX #2). `null` simulates an opaque/unverifiable landing.
  */
-function fakeExecutor() {
+function fakeExecutor(opts: { readonly landedUrlOrigin?: string | null } = {}) {
 	const actRequests: (BrowserActRequest & { readonly session?: BrowseSession })[] = [];
 	const prepareRequests: (BrowserActRequest & {
 		readonly session?: BrowseSession;
@@ -41,7 +46,11 @@ function fakeExecutor() {
 				},
 			): Promise<BrowserActPrepareResult> {
 				prepareRequests.push(request);
-				return { committing: true, record: "browser-write", prepared: minimalPrepared(request) };
+				return {
+					committing: true,
+					record: "browser-write",
+					prepared: minimalPrepared(request, opts.landedUrlOrigin),
+				};
 			},
 		} as unknown as Parameters<typeof createBrowserActExecutorSurface>[0]["executor"],
 	};
@@ -242,6 +251,110 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 	});
 });
 
+describe("browser-act relay surface (FIX #2 — settled landed-origin scope gate)", () => {
+	// A cookie-less prepare pins the origin scope to the entry host only
+	// (`shop.example.com`). The executor then auto-loads + SETTLES the entry url
+	// before capturing evidence, so a tokenized/magic-link redirect could land the
+	// live page OFF that scope. The surface re-checks the settled
+	// `prepared.display.urlOrigin` against the bound scope and fails closed.
+
+	it("fails closed when the settled landed origin redirected off the bound scope", async () => {
+		// Entry url is shop.example.com (scope = [shop.example.com]); the settled
+		// page landed on a different registrable domain (an auth/magic-link redirect).
+		const fake = fakeExecutor({ landedUrlOrigin: "https://accounts.evil.example.org/session" });
+		const surface = createBrowserActExecutorSurface({
+			executor: fake.executor,
+			cookieStore: null,
+			catastrophicDomains: [],
+		});
+
+		await expect(
+			surface.prepareIntent({
+				actor: "operator",
+				profileId: "ops",
+				mcpDomain: "private",
+				sessionRef: "endpoint-private",
+				url: "https://shop.example.com/login",
+				verb: "click",
+				target: "#submit",
+				actionRef: "effect-off-scope",
+			}),
+		).rejects.toMatchObject({ code: "browser_act_landed_origin_off_scope" });
+	});
+
+	it("fails closed when the settled landed origin is opaque/null (unverifiable landing)", async () => {
+		// An opaque landing (data:/blob:/about:) reports a null urlOrigin — it can't
+		// be matched against the scope, so the gate refuses to bind the write.
+		const fake = fakeExecutor({ landedUrlOrigin: null });
+		const surface = createBrowserActExecutorSurface({
+			executor: fake.executor,
+			cookieStore: null,
+			catastrophicDomains: [],
+		});
+
+		await expect(
+			surface.prepareIntent({
+				actor: "operator",
+				profileId: "ops",
+				mcpDomain: "private",
+				sessionRef: "endpoint-private",
+				url: "https://shop.example.com/login",
+				verb: "click",
+				target: "#submit",
+				actionRef: "effect-opaque",
+			}),
+		).rejects.toMatchObject({ code: "browser_act_landed_origin_off_scope" });
+	});
+
+	it("fails closed when the settled landed origin is unparseable", async () => {
+		// A non-URL settled origin string can't be parsed to a host — same fail-closed.
+		const fake = fakeExecutor({ landedUrlOrigin: "not a url" });
+		const surface = createBrowserActExecutorSurface({
+			executor: fake.executor,
+			cookieStore: null,
+			catastrophicDomains: [],
+		});
+
+		await expect(
+			surface.prepareIntent({
+				actor: "operator",
+				profileId: "ops",
+				mcpDomain: "private",
+				sessionRef: "endpoint-private",
+				url: "https://shop.example.com/login",
+				verb: "click",
+				target: "#submit",
+				actionRef: "effect-unparseable",
+			}),
+		).rejects.toMatchObject({ code: "browser_act_landed_origin_off_scope" });
+	});
+
+	it("passes an in-origin redirect within the same registrable domain (subdomain)", async () => {
+		// A normal in-origin redirect (entry shop.example.com → www.shop.example.com)
+		// stays inside the registrable-domain-wide scope and is allowed through.
+		const fake = fakeExecutor({ landedUrlOrigin: "https://www.shop.example.com/cart" });
+		const surface = createBrowserActExecutorSurface({
+			executor: fake.executor,
+			cookieStore: null,
+			catastrophicDomains: [],
+		});
+
+		const staged = await surface.prepareIntent({
+			actor: "operator",
+			profileId: "ops",
+			mcpDomain: "private",
+			sessionRef: "endpoint-private",
+			url: "https://shop.example.com/cart",
+			verb: "click",
+			target: "#pay",
+			actionRef: "effect-in-scope",
+		});
+
+		expect(staged.committing).toBe(true);
+		expect(fake.prepareRequests[0]?.host).toBe("shop.example.com");
+	});
+});
+
 function minimalEvidence() {
 	return {
 		schemaVersion: "telclaude.browser.act-evidence.v1" as const,
@@ -261,7 +374,10 @@ function minimalEvidence() {
 	};
 }
 
-function minimalPrepared(request: { readonly actor: string; readonly profileId: string }) {
+function minimalPrepared(
+	request: { readonly actor: string; readonly profileId: string },
+	landedUrlOrigin: string | null = "https://shop.example.com",
+) {
 	return {
 		writeRef: "bwrite-1",
 		actor: request.actor,
@@ -276,7 +392,7 @@ function minimalPrepared(request: { readonly actor: string; readonly profileId: 
 		display: {
 			verb: "click",
 			target: "#pay-origin",
-			urlOrigin: "https://shop.example.com",
+			urlOrigin: landedUrlOrigin,
 			submittedValues: null,
 		},
 		commitSignal: {

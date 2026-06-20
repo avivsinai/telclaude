@@ -269,29 +269,80 @@ describe("prepareBrowserWrite", () => {
 		}
 	});
 
-	it("never carries raw submitted values, the full URL, or the commitment secret", async () => {
+	it("never carries a raw secret value, the full URL, or the commitment secret", async () => {
+		// The display path is only exercised when the staged ACTION carries submittedValues, so
+		// pass them in the action (not just the evidence). A SECRET-shaped value must be scrubbed;
+		// a normal recipient (the operator must SEE who they are paying) survives verbatim.
+		const secretToken = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+		const submittedValues = { apiKey: secretToken, to: "alice@example.com" };
 		const evidence = await buildEvidence({
 			url: "https://bank.example.com/pay?step=2&token=SECRET-URL-PARAM",
-			action: {
-				verb: "submit",
-				target: "#pay-form",
-				submittedValues: { amount: "100", to: "ALICE-RAW-VALUE@example.com" },
-			},
+			action: { verb: "submit", target: "#pay-form", submittedValues },
 		});
 		const prepared = prepareBrowserWrite({
 			context: baseContext(),
-			action: ACTION,
+			action: { verb: "submit", target: "#pay-form", submittedValues },
 			evidence,
 			approver: "telegram:default:human",
 		});
+		// The display renders the keys + the visible value, and scrubs the secret.
+		expect(prepared.display.submittedValues).toEqual([
+			"apiKey: [REDACTED:openai_api_key]",
+			"to: alice@example.com",
+		]);
 		const serialized = JSON.stringify(prepared);
-		expect(serialized).not.toContain("ALICE-RAW-VALUE");
+		expect(serialized).not.toContain(secretToken);
 		expect(serialized).not.toContain("SECRET-URL-PARAM");
 		expect(serialized).not.toContain("step=2");
 		expect(serialized).not.toContain(COMMITMENT_SECRET);
 		// Only the redacted origin survives, never the full path/query.
 		expect(serialized).toContain("https://bank.example.com");
 		expect(serialized).not.toContain("/pay?");
+	});
+
+	it("scrubs a BARE high-entropy token (no key prefix) the pattern redactor cannot match", async () => {
+		// A random token that matches no CORE pattern and has no `=:` prefix slips past
+		// redactSecretsWithConfig; the bare-entropy scrub is the only thing that catches it.
+		const bareToken = "Xq7Lp2Rt9Zk4Wm8Nv3Bf6Hc1Yd5Gj0Sa";
+		const submittedValues = { sessionToken: bareToken, note: "renew" };
+		const evidence = await buildEvidence({
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+		});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		expect(prepared.display.submittedValues).toEqual([
+			"note: renew",
+			"sessionToken: [REDACTED:HIGH_ENTROPY]",
+		]);
+		// The raw high-entropy token never reaches the persisted (operator-visible) display.
+		expect(JSON.stringify(prepared)).not.toContain(bareToken);
+	});
+
+	it("caps a huge value's raw length BEFORE redaction (no full-size string materializes)", async () => {
+		// A multi-megabyte value must be bounded early; the persisted display is short.
+		const huge = "A".repeat(5_000_000);
+		const submittedValues = { blob: huge, note: "ok" };
+		const evidence = await buildEvidence({
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+		});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		const blobLine = (prepared.display.submittedValues ?? []).find((line) =>
+			line.startsWith("blob: "),
+		);
+		expect(blobLine).toBeDefined();
+		// Display is bounded to the 80-char value cap (+ key + ellipsis), nowhere near 5MB.
+		expect((blobLine as string).length).toBeLessThan(120);
+		// The full 5MB string is never persisted anywhere in the record.
+		expect(JSON.stringify(prepared).length).toBeLessThan(50_000);
 	});
 
 	it("redacts a URL-token action target from the persisted display (binding keeps the raw)", async () => {

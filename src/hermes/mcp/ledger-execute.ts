@@ -1,6 +1,7 @@
 import type { BrowserActEvidence } from "../../relay/browser-act-evidence.js";
 import {
 	type BrowserWriteContext,
+	type BrowserWriteExecutionCheck,
 	type PreparedBrowserWrite,
 	verifyBrowserWriteExecution,
 } from "../../relay/browser-write-confirm.js";
@@ -46,12 +47,17 @@ import type {
  * `bindingHash`. A fresh random nonce (or a mutated page) yields a different binding
  * hash and `verifyBrowserWriteExecution` fails closed with `write_confirm_binding_drift`.
  * `commit` runs the actual state-changing act and returns a small JSON receipt; it is
- * called only after verification passes.
+ * called only after verification passes. To close the recapture->dispatch TOCTOU,
+ * `commit` recaptures the live page one final time immediately before the irreversible
+ * dispatch and re-runs `reVerify` — the SAME `verifyBrowserWriteExecution` closure the
+ * ledger gated with, bound to the prepared record's reconstruction — so the
+ * immediately-before check is byte-identical to the gate and cannot diverge.
  */
 export interface BrowserWriteCommitter {
 	recaptureEvidence(record: TelclaudeMcpBrowserWriteSideEffectRecord): Promise<BrowserActEvidence>;
 	commit(
 		record: TelclaudeMcpBrowserWriteSideEffectRecord,
+		reVerify: (currentEvidence: BrowserActEvidence) => BrowserWriteExecutionCheck,
 	): Promise<{ readonly receipt: Record<string, unknown> }>;
 }
 
@@ -305,10 +311,16 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 					options.ledger.get(request.actionRef) ?? record,
 				);
 			}
+			// Reconstruct the prepared record + context ONCE: the same values feed the
+			// step-3 verify here AND the `reVerify` closure passed into commit, so the
+			// committer's immediately-before re-verify is byte-identical to this gate.
+			const prepared = reconstructPreparedBrowserWrite(record);
+			const context = browserWriteContext(record);
+			const action = { verb: record.actionVerb, target: record.actionTarget ?? undefined };
 			const verification = verifyBrowserWriteExecution({
-				prepared: reconstructPreparedBrowserWrite(record),
-				context: browserWriteContext(record),
-				action: { verb: record.actionVerb, target: record.actionTarget ?? undefined },
+				prepared,
+				context,
+				action,
 				currentEvidence,
 				now: nowMs,
 			});
@@ -323,7 +335,15 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 
 			let committed: { readonly receipt: Record<string, unknown> };
 			try {
-				committed = await options.browserWriteCommitter.commit(record);
+				committed = await options.browserWriteCommitter.commit(record, (ev) =>
+					verifyBrowserWriteExecution({
+						prepared,
+						context,
+						action,
+						currentEvidence: ev,
+						now: nowMs,
+					}),
+				);
 			} catch (error) {
 				// Ambiguous commit failure: fail closed, terminal, NO second commit attempt
 				// on this ref. The side effect may or may not have landed.
