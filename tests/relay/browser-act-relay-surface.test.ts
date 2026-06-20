@@ -273,7 +273,12 @@ function minimalPrepared(request: { readonly actor: string; readonly profileId: 
 		evidenceRevision: "hmac-sha256:r",
 		evidenceNonce: "n",
 		bindingHash: `sha256:${"a".repeat(64)}`,
-		display: { verb: "click", target: "#pay-origin", urlOrigin: "https://shop.example.com" },
+		display: {
+			verb: "click",
+			target: "#pay-origin",
+			urlOrigin: "https://shop.example.com",
+			submittedValues: null,
+		},
 		commitSignal: {
 			forceConfirm: true,
 			reasons: ["action.verb.click"],

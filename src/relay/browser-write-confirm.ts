@@ -27,10 +27,16 @@
 
 import { canonicalHash, sortKeysDeep } from "../crypto/canonical-hash.js";
 import { redactSecrets } from "../security/output-filter.js";
-import type { BrowserActEvidence, BrowserActIntent } from "./browser-act-evidence.js";
+import type {
+	BrowserActEvidence,
+	BrowserActIntent,
+	BrowserActJsonValue,
+} from "./browser-act-evidence.js";
 import type { BrowserAuthorityDomain } from "./browser-cookie-store.js";
 
 const MAX_DISPLAY_TARGET_LEN = 120;
+const MAX_DISPLAY_VALUE_LEN = 80;
+const MAX_DISPLAY_VALUE_COUNT = 12;
 
 /**
  * Derive a safe display target from the raw (possibly model-supplied) action target.
@@ -53,6 +59,57 @@ function safeDisplayTarget(target: string | null | undefined): string | null {
 	return redacted.length > MAX_DISPLAY_TARGET_LEN
 		? `${redacted.slice(0, MAX_DISPLAY_TARGET_LEN)}…`
 		: redacted;
+}
+
+/** Secret-redact + length-bound a single scalar value for the approval display. */
+function safeDisplayScalar(value: string): string {
+	const redacted = redactSecrets(value);
+	return redacted.length > MAX_DISPLAY_VALUE_LEN
+		? `${redacted.slice(0, MAX_DISPLAY_VALUE_LEN)}…`
+		: redacted;
+}
+
+/**
+ * Derive a redacted, inspectable summary of the submitted values for the approval card.
+ *
+ * The RAW values are bound verbatim into the WYSIWYS hash (drift integrity) and must NEVER
+ * be persisted raw or returned to the runtime — but the human approver still has to SEE what
+ * they are signing. We render each value secret-redacted (`redactSecrets`) and length-bounded,
+ * keyed for a record, and cap the count/size so a large form cannot bloat the card. A record
+ * shows `key: <redacted>` lines; a scalar/array shows the bare redacted value(s). `null`/empty
+ * collapses to `null` (no values to display).
+ */
+function safeDisplayValues(values: BrowserActJsonValue | null | undefined): string[] | null {
+	if (values === null || values === undefined) return null;
+	if (Array.isArray(values)) {
+		const entries = values
+			.slice(0, MAX_DISPLAY_VALUE_COUNT)
+			.map((entry) => safeDisplayScalar(stringifyDisplayScalar(entry)));
+		const overflow = values.length - entries.length;
+		if (overflow > 0) entries.push(`…(+${overflow} more)`);
+		return entries.length > 0 ? entries : null;
+	}
+	if (typeof values === "object") {
+		const pairs = Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		const entries = pairs
+			.slice(0, MAX_DISPLAY_VALUE_COUNT)
+			.map(
+				([key, value]) =>
+					`${safeDisplayScalar(key)}: ${safeDisplayScalar(stringifyDisplayScalar(value))}`,
+			);
+		const overflow = pairs.length - entries.length;
+		if (overflow > 0) entries.push(`…(+${overflow} more)`);
+		return entries.length > 0 ? entries : null;
+	}
+	return [safeDisplayScalar(stringifyDisplayScalar(values))];
+}
+
+/** Flatten one JSON value to a single display string (nested objects/arrays collapse to JSON). */
+function stringifyDisplayScalar(value: BrowserActJsonValue): string {
+	if (value === null) return "null";
+	if (typeof value === "string") return value;
+	if (typeof value === "boolean" || typeof value === "number") return String(value);
+	return JSON.stringify(value);
 }
 
 const BROWSER_WRITE_BINDING_PREFIX = "browser-write-v1";
@@ -88,6 +145,12 @@ export interface BrowserWriteDisplay {
 	readonly target: string | null;
 	/** Origin only (scheme + host), redacted of path/query — `null` for opaque origins. */
 	readonly urlOrigin: string | null;
+	/**
+	 * Secret-redacted, length-bounded, count-capped view of the submitted values the
+	 * approver is signing (`key: value` lines for a record, bare values for a scalar/array).
+	 * The RAW values stay bound in the WYSIWYS hash only — `null` when there are no values.
+	 */
+	readonly submittedValues: string[] | null;
 }
 
 export interface PreparedBrowserWrite {
@@ -202,7 +265,7 @@ function nextWriteRef(): string {
  */
 export function prepareBrowserWrite(input: {
 	readonly context: BrowserWriteContext;
-	readonly action: Pick<BrowserActIntent, "verb" | "target">;
+	readonly action: Pick<BrowserActIntent, "verb" | "target" | "submittedValues">;
 	readonly evidence: BrowserActEvidence;
 	readonly approver: string;
 	readonly ttlMs?: number;
@@ -259,6 +322,9 @@ export function prepareBrowserWrite(input: {
 			// Redacted/scrubbed — the raw target is bound in the hash, never persisted/displayed.
 			target: safeDisplayTarget(input.action.target),
 			urlOrigin: input.evidence.urlOrigin,
+			// Redacted/length-bounded/count-capped view of the values being signed — the RAW
+			// values are bound in the hash + held in value custody, never persisted here.
+			submittedValues: safeDisplayValues(input.action.submittedValues),
 		},
 		commitSignal: input.evidence.commitSignal,
 		createdAtMs: now,

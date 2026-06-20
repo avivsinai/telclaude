@@ -569,9 +569,10 @@ function storedHumanVisibleRenderFor(record: TelclaudeMcpSideEffectRecord): stri
 }
 
 /**
- * A redacted, WYSIWYS-stable approval render for a browser write: verb, target, and
- * origin ONLY — never raw submitted values or the full URL. Derived purely from the
- * record's stored display fields so the stored/render comparison is stable.
+ * A redacted, WYSIWYS-stable approval render for a browser write: verb, target, origin,
+ * and the REDACTED submitted values the approver is signing — never raw values or the full
+ * URL. Derived purely from the record's stored display fields (already secret-redacted +
+ * length/count-capped by `prepareBrowserWrite`) so the stored/render comparison is stable.
  */
 function defaultBrowserWriteRender(
 	record: Extract<TelclaudeMcpSideEffectRecord, { kind: "browser-write" }>,
@@ -580,7 +581,27 @@ function defaultBrowserWriteRender(
 		`Confirm browser ${record.display.verb}`,
 		`on ${record.display.urlOrigin ?? "(opaque origin)"}`,
 		record.display.target ? `target: ${record.display.target}` : "target: (none)",
+		`values: ${formatBrowserWriteValues(record.display.submittedValues)}`,
 	].join(" — ");
+}
+
+/**
+ * Render the redacted submitted-value lines into a single inspectable string. The values
+ * are display-only (already secret-redacted + bounded); `null`/empty collapses to a marker
+ * so the operator can tell "no values" apart from a render that dropped them.
+ */
+function formatBrowserWriteValues(values: string[] | null): string {
+	if (values === null || values.length === 0) return "(none)";
+	return values.join("; ");
+}
+
+/**
+ * One redacted value per line for the full approval card body, so the operator can read
+ * exactly what they are signing. Values are display-only (redacted + bounded by prepare).
+ */
+function browserWriteSubmittedValueLines(values: string[] | null): string[] {
+	if (values === null || values.length === 0) return ["Submitted values: (none)"];
+	return ["Submitted values:", ...values.map((value) => `  • ${value}`)];
 }
 
 /**
@@ -644,6 +665,7 @@ function formatSideEffectHumanApprovalBody(
 			`Verb: ${record.display.verb}`,
 			`Target: ${record.display.target ?? "(none)"}`,
 			`Origin: ${record.display.urlOrigin ?? "(opaque origin)"}`,
+			...browserWriteSubmittedValueLines(record.display.submittedValues),
 			"",
 			...common,
 		].join("\n");

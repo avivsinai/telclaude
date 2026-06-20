@@ -207,6 +207,7 @@ describe("prepareBrowserWrite", () => {
 			verb: "submit",
 			target: "#pay-form",
 			urlOrigin: "https://bank.example.com",
+			submittedValues: null,
 		});
 		expect(prepared.expiresAtMs).toBeGreaterThan(prepared.createdAtMs);
 	});
@@ -306,6 +307,75 @@ describe("prepareBrowserWrite", () => {
 		const serialized = JSON.stringify(prepared);
 		expect(serialized).not.toContain("TARGET-SECRET-TOKEN");
 		expect(serialized).not.toContain("/pay?");
+	});
+
+	it("renders a record of submitted values as redacted `key: value` lines for the approver", async () => {
+		const evidence = await buildEvidence({});
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: {
+				verb: "submit",
+				target: "#pay-form",
+				submittedValues: { amount: "40.00", note: "rent" },
+			},
+			evidence,
+			approver: "telegram:default:human",
+		});
+		// The approver SEES what they sign: keyed, sorted, inspectable lines.
+		expect(prepared.display.submittedValues).toEqual(["amount: 40.00", "note: rent"]);
+	});
+
+	it("scrubs a secret-like submitted value before it reaches the approval display", async () => {
+		const evidence = await buildEvidence({});
+		const apiKey = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: {
+				verb: "submit",
+				target: "#pay-form",
+				submittedValues: { apiKey, recipient: "alice@example.com" },
+			},
+			evidence,
+			approver: "telegram:default:human",
+		});
+		// The redaction (the actual fix) actually fires: the raw key never reaches display.
+		expect(prepared.display.submittedValues).toEqual([
+			"apiKey: [REDACTED:openai_api_key]",
+			"recipient: alice@example.com",
+		]);
+		expect(JSON.stringify(prepared)).not.toContain(apiKey);
+	});
+
+	it("caps the displayed value count and emits a `…(+N more)` overflow marker", async () => {
+		const evidence = await buildEvidence({});
+		const submittedValues: Record<string, string> = {};
+		// 15 fields → 12 shown + one overflow marker (3 hidden).
+		for (let i = 0; i < 15; i++) {
+			submittedValues[`f${String(i).padStart(2, "0")}`] = `v${i}`;
+		}
+		const prepared = prepareBrowserWrite({
+			context: baseContext(),
+			action: { verb: "submit", target: "#pay-form", submittedValues },
+			evidence,
+			approver: "telegram:default:human",
+		});
+		const lines = prepared.display.submittedValues ?? [];
+		expect(lines).toHaveLength(13); // 12 capped lines + 1 overflow marker
+		expect(lines.slice(0, 12)).toEqual([
+			"f00: v0",
+			"f01: v1",
+			"f02: v2",
+			"f03: v3",
+			"f04: v4",
+			"f05: v5",
+			"f06: v6",
+			"f07: v7",
+			"f08: v8",
+			"f09: v9",
+			"f10: v10",
+			"f11: v11",
+		]);
+		expect(lines.at(-1)).toBe("…(+3 more)");
 	});
 
 	it("execute recapture with the SAME evidence nonce on an unchanged page passes", async () => {

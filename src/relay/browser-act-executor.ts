@@ -56,7 +56,11 @@ import {
 	type BrowserSessionAuthority,
 	browserAuthorityDomainFromMcp,
 } from "./browser-cookie-store.js";
-import { type PreparedBrowserWrite, prepareBrowserWrite } from "./browser-write-confirm.js";
+import {
+	deriveBrowserWriteBindingHash,
+	type PreparedBrowserWrite,
+	prepareBrowserWrite,
+} from "./browser-write-confirm.js";
 
 const BROWSER_ACT_EVIDENCE_COMMITMENT_INFO = "telclaude.browser-act-evidence.v1";
 const COMMITMENT_SECRET_BYTES = 32;
@@ -286,6 +290,11 @@ export class BrowserActExecutor {
 					action: {
 						verb: request.verb,
 						...(request.target ? { target: request.target } : {}),
+						// Surfaced REDACTED on the approval card only; the raw values are bound in
+						// the WYSIWYS hash + held in value custody, never persisted in the record.
+						...(request.submittedValues !== undefined
+							? { submittedValues: request.submittedValues }
+							: {}),
 					},
 					evidence,
 					approver,
@@ -321,8 +330,17 @@ export class BrowserActExecutor {
 	 * (W3 — live page, stored nonce, exact values). `commit` fires the committing act
 	 * exactly once with the approved values, settles, returns a small receipt, then
 	 * evicts the pool entry. The ledger gates verify/claim before recapture and runs
-	 * `verifyBrowserWriteExecution` between recapture and commit; this committer does
-	 * NOT re-verify.
+	 * `verifyBrowserWriteExecution` between recapture and commit.
+	 *
+	 * The ledger's verify runs on evidence recaptured one or more awaits earlier, so a
+	 * page mutation in the gap between that verify and the dispatch would fire the act
+	 * on a page that no longer matches what the human approved. `commit` therefore
+	 * RE-DERIVES the WYSIWYS binding from the SAME live page immediately before
+	 * dispatch — re-capturing the settled page under the stored nonce + the exact
+	 * approved {verb, target, values} and re-matching `record.bindingHash` — and fails
+	 * closed on any drift. There is no awaitable page-mutating window between this
+	 * re-derive and `dispatchAndSettle` (which arms its observers before dispatching),
+	 * so the binding the act fires under is the one that was just re-verified.
 	 */
 	committer(): BrowserWriteCommitter {
 		return {
@@ -345,10 +363,50 @@ export class BrowserActExecutor {
 			commit: async (record) => {
 				const entry = this.requirePoolEntry(record);
 				try {
+					const { driver } = entry;
+					// Close the recapture->dispatch TOCTOU: the ledger's verify ran on
+					// evidence captured one or more awaits ago, so re-derive the WYSIWYS
+					// binding from the SAME live page IMMEDIATELY BEFORE the dispatch and
+					// fail closed on any drift. This is the last awaitable step before the
+					// irreversible act; dispatchAndSettle arms its observers before
+					// dispatching, so no page-mutating awaitable window remains after this
+					// check. Recapture under the STORED nonce + the EXACT approved
+					// {verb, target, values} so an unchanged page re-produces the bound
+					// revision/url/submitted-value HMACs.
+					const preDispatchEvidence = await this.captureEvidence(
+						driver.page,
+						{
+							verb: record.actionVerb as BrowserActVerb,
+							...(record.actionTarget ? { target: record.actionTarget } : {}),
+							submittedValues: entry.approvedSubmittedValues,
+						},
+						{},
+						record.evidenceNonce,
+					);
+					const preDispatchBinding = deriveBrowserWriteBindingHash(
+						{
+							sessionRef: record.sessionRef,
+							actor: record.actorId,
+							profile: record.profileId,
+							authorityDomain: record.authorityDomain,
+							host: record.host,
+							originScope: record.originScope,
+						},
+						{
+							verb: record.actionVerb,
+							...(record.actionTarget ? { target: record.actionTarget } : {}),
+						},
+						preDispatchEvidence,
+					);
+					if (preDispatchBinding !== record.bindingHash) {
+						throw new BrowserActExecutorError(
+							"browser_write_binding_drift",
+							"the live page drifted between confirmation re-verify and dispatch; re-prepare",
+						);
+					}
 					// Fire the committing act EXACTLY ONCE on the SAME live driver, with
 					// the approved values from custody (never the ledger, never re-derived
 					// from the page DOM).
-					const { driver } = entry;
 					const observed = await driver.dispatchAndSettle(
 						{
 							verb: record.actionVerb as BrowserActVerb,

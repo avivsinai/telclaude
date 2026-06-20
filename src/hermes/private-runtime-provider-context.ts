@@ -11,11 +11,18 @@ export type HermesPrivateRuntimeProviderContext = {
 
 /**
  * Capability scopes that mutate relay state and therefore require a write tier.
- * schedule.read is fine at READ_ONLY (listing your own reminders is harmless);
- * schedule.write (create/cancel) is stripped below WRITE_LOCAL.
+ * schedule.read / browse.use are fine at READ_ONLY (listing your own reminders or
+ * reading a public page is harmless); the side-effecting scopes are stripped below
+ * WRITE_LOCAL:
+ *   - schedule.write (create/cancel a relay-owned reminder)
+ *   - browse.act (drive interactive browser writes via tc_browse_act*) — every
+ *     browse.act write is itself two-phase prepare→human-approve→execute, but the
+ *     *capability to initiate one* is still a write and must match the same tier
+ *     as other writes, so a READ_ONLY authority never receives it.
  */
 const WRITE_TIER_CAPABILITY_SCOPES: ReadonlySet<TelclaudeMcpCapabilityScope> = new Set([
 	"schedule.write",
+	"browse.act",
 ]);
 
 export function buildHermesPrivateRuntimeProviderContext(
