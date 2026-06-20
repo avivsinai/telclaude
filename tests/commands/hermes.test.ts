@@ -7,7 +7,6 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { shutdownTokenClient } from "../../src/relay/rpc-auth-client.js";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
 import {
 	buildCompatibilityLockfileDraft,
@@ -31,6 +30,10 @@ import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live
 import { DEFAULT_MODEL_RELAY_PROFILE_DIR } from "../../src/hermes/model-relay.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import {
+	DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
+	DEFAULT_MODEL_PROVIDER_PROBE_URL,
+} from "../../src/hermes/network-probes.js";
+import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
@@ -43,6 +46,7 @@ import {
 	openAiCodexRelayProofTokenSha256,
 	signOpenAiCodexRelayProof,
 } from "../../src/relay/openai-codex-relay-proof.js";
+import { shutdownTokenClient } from "../../src/relay/rpc-auth-client.js";
 
 const hermesPin = { version: "0.15.1" };
 const CLI_HEADLESS_TEST_RELAY_IP = "10.88.93.10";
@@ -437,6 +441,32 @@ function spyOnDeterministicDnsDenialFetch(): ReturnType<typeof vi.spyOn> {
 			return Promise.reject(
 				new TypeError("fetch failed", { cause: deterministicDnsDenialFetchCause() }),
 			);
+		}
+		return realFetch(input, init);
+	});
+}
+
+function spyOnNetworkProbeFetch(options: {
+	readonly positiveDenyTargets?: readonly string[];
+	readonly inconclusiveTargets?: readonly string[];
+}): ReturnType<typeof vi.spyOn> {
+	const realFetch = globalThis.fetch;
+	const positiveDenyTargets = new Set(options.positiveDenyTargets ?? []);
+	const inconclusiveTargets = new Set(options.inconclusiveTargets ?? []);
+	return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+		const target = fetchTarget(input);
+		if (target === DETERMINISTIC_DNS_DENIAL_URL) {
+			return Promise.reject(
+				new TypeError("fetch failed", { cause: deterministicDnsDenialFetchCause() }),
+			);
+		}
+		if (positiveDenyTargets.has(target)) {
+			const cause = new Error(`connect ENETUNREACH ${target}`) as Error & { code: string };
+			cause.code = "ENETUNREACH";
+			return Promise.reject(new TypeError("fetch failed", { cause }));
+		}
+		if (inconclusiveTargets.has(target)) {
+			return Promise.reject(new TypeError("fetch failed"));
 		}
 		return realFetch(input, init);
 	});
@@ -2264,6 +2294,115 @@ describe("Hermes wrapper foundation", () => {
 					probe.attempts.filter((attempt) => attempt.kind === "firewall_sentinel"),
 				),
 			).toEqual([]);
+		} finally {
+			fetchSpy.mockRestore();
+			await relay.close();
+		}
+	});
+
+	it("lets TELCLAUDE_HERMES_NETWORK_MODEL_URL override the network-probe default", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-model-env-"));
+		const relay = await startProbeServer();
+		const deniedModelUrl = await closedProbeUrl();
+		const fetchSpy = spyOnNetworkProbeFetch({
+			inconclusiveTargets: [DEFAULT_MODEL_PROVIDER_PROBE_URL],
+		});
+		try {
+			ensureOperatorRelayKeys();
+			const result = await runHermesCommandWithEnv(
+				[
+					"hermes",
+					"network-probes",
+					"--allow-run",
+					"--json",
+					"--posture",
+					"contained-internal",
+					"--relay-url",
+					relay.url,
+					"--provider-url",
+					requiredProviderUrlCsv(await closedProbeUrl()),
+					"--dns-url",
+					DETERMINISTIC_DNS_DENIAL_URL,
+					"--vault-socket",
+					path.join(tempDir, "missing-vault.sock"),
+					"--out",
+					path.join(tempDir, "network-probes.json"),
+					"--evidence-dir",
+					path.join(tempDir, "evidence"),
+				],
+				{ TELCLAUDE_HERMES_NETWORK_MODEL_URL: deniedModelUrl },
+			);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				evidence: Array<{
+					id: string;
+					attempts: Array<{ name: string; target: string; observed: string; errorCode?: string }>;
+				}>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-model-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "model-provider"),
+			).toMatchObject({
+				target: deniedModelUrl,
+				observed: "denied",
+				errorCode: "ECONNREFUSED",
+			});
+		} finally {
+			fetchSpy.mockRestore();
+			await relay.close();
+		}
+	});
+
+	it("uses an IP blackhole for contained-internal model-provider probes when no model target is configured", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-model-ip-"));
+		const relay = await startProbeServer();
+		const fetchSpy = spyOnNetworkProbeFetch({
+			positiveDenyTargets: [DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL],
+			inconclusiveTargets: [DEFAULT_MODEL_PROVIDER_PROBE_URL],
+		});
+		try {
+			ensureOperatorRelayKeys();
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--posture",
+				"contained-internal",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				requiredProviderUrlCsv(await closedProbeUrl()),
+				"--dns-url",
+				DETERMINISTIC_DNS_DENIAL_URL,
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				evidence: Array<{
+					id: string;
+					attempts: Array<{ name: string; target: string; observed: string; errorCode?: string }>;
+				}>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-model-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "model-provider"),
+			).toMatchObject({
+				target: DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
+				observed: "denied",
+				errorCode: "ENETUNREACH",
+			});
 		} finally {
 			fetchSpy.mockRestore();
 			await relay.close();
@@ -4537,5 +4676,4 @@ NODE
 			await admin.close();
 		}
 	});
-
 });

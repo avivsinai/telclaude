@@ -80,6 +80,7 @@ import {
 	writeHermesModelRelayEvidence,
 } from "../hermes/model-relay.js";
 import {
+	DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
 	DEFAULT_DNS_EXFIL_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
@@ -1449,6 +1450,19 @@ function parseNetworkProbePosture(value: string | undefined): NetworkProbePostur
 		value?.trim() || process.env.TELCLAUDE_HERMES_NETWORK_PROBE_POSTURE?.trim() || "agent-iptables";
 	if (posture === "agent-iptables" || posture === "contained-internal") return posture;
 	throw new Error(`Invalid network probe posture: ${posture}`);
+}
+
+function resolveNetworkProbeModelProviderUrl(options: {
+	readonly modelUrl?: string;
+	readonly posture: NetworkProbePosture;
+}): string {
+	const explicitUrl = options.modelUrl?.trim();
+	if (explicitUrl) return explicitUrl;
+	const envUrl = process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim();
+	if (envUrl) return envUrl;
+	return options.posture === "contained-internal"
+		? DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL
+		: DEFAULT_MODEL_PROVIDER_PROBE_URL;
 }
 
 function parseModelRelayPosture(value: string | undefined): ModelRelayPosture {
@@ -3692,11 +3706,7 @@ export function registerHermesCommand(program: Command): void {
 			"Vault socket path that must be absent from the Hermes runtime",
 			DEFAULT_VAULT_SOCKET_PATH,
 		)
-		.option(
-			"--model-url <url>",
-			"Direct model-provider URL that must be denied",
-			DEFAULT_MODEL_PROVIDER_PROBE_URL,
-		)
+		.option("--model-url <url>", "Direct model-provider URL that must be denied")
 		.option(
 			"--dns-url <csv>",
 			"DNS/private egress URL(s) that must be denied",
@@ -3732,10 +3742,11 @@ export function registerHermesCommand(program: Command): void {
 					if (options.allowRun === true && options.deferAttestation !== true) {
 						assertOperatorRelaySigningEnv();
 					}
+					const posture = parseNetworkProbePosture(options.posture);
 					report = await runHermesNetworkProbes({
 						allowRun: options.allowRun === true,
 						signEvidence: options.deferAttestation === true ? false : undefined,
-						posture: parseNetworkProbePosture(options.posture),
+						posture,
 						relayUrl:
 							options.relayUrl?.trim() ||
 							process.env.TELCLAUDE_HERMES_NETWORK_RELAY_URL?.trim() ||
@@ -3748,10 +3759,10 @@ export function registerHermesCommand(program: Command): void {
 							process.env.TELCLAUDE_HERMES_NETWORK_VAULT_URL?.trim() ||
 							undefined,
 						vaultSocketPath: options.vaultSocket,
-						modelProviderUrl:
-							options.modelUrl?.trim() ||
-							process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
-							DEFAULT_MODEL_PROVIDER_PROBE_URL,
+						modelProviderUrl: resolveNetworkProbeModelProviderUrl({
+							modelUrl: options.modelUrl,
+							posture,
+						}),
 						dnsExfilUrls: parseCsvOption(
 							options.dnsUrl ||
 								process.env.TELCLAUDE_HERMES_NETWORK_DNS_URL ||
