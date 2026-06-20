@@ -28,11 +28,12 @@ import {
 	buildBrowserOriginScope,
 	hostMatchesBrowserOriginScope,
 } from "./browser-connect-contract.js";
-import type { BrowserCookieStore } from "./browser-cookie-store.js";
-import { browserAuthorityDomainFromMcp } from "./browser-cookie-store.js";
+import type { BrowserAuthorityDomain, BrowserCookieStore } from "./browser-cookie-store.js";
+import { browserAuthorityDomainFromMcp, sessionMatchesAuthority } from "./browser-cookie-store.js";
 import {
 	parseBrowserCatastrophicDomains,
 	resolveBrowseSession,
+	sessionScopeReachesCatastrophic,
 } from "./browser-session-resolver.js";
 
 /**
@@ -64,7 +65,26 @@ export interface BrowserActExecutorSurface {
 	prepareIntent(
 		request: BrowserActSurfaceRequest & { readonly actionRef: string },
 	): Promise<BrowserActPrepareResult>;
+	/** Revalidate the current credential/session binding before an approved execute commits. */
+	validatePreparedSession(
+		binding: BrowserActPreparedSessionBinding,
+	): Promise<BrowserActPreparedSessionValidation>;
 }
+
+export interface BrowserActPreparedSessionBinding {
+	readonly actor: string;
+	readonly profileId: string;
+	readonly authorityDomain: BrowserAuthorityDomain;
+	readonly sessionRef: string;
+	readonly host: string;
+	readonly originScope: readonly string[];
+	readonly browserCredentialRef: string | null;
+	readonly browserCredentialCreatedAt: number | null;
+}
+
+export type BrowserActPreparedSessionValidation =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly code: string; readonly reason: string };
 
 export class BrowserActSurfaceError extends Error {
 	readonly code: string;
@@ -181,7 +201,118 @@ export function createBrowserActExecutorSurface(
 			assertLandedOriginInScope(staged.prepared.display.urlOrigin, base.originScope);
 			return staged;
 		},
+		async validatePreparedSession(binding) {
+			return validateBrowserActPreparedSession(binding, options.cookieStore, catastrophicDomains);
+		},
 	};
+}
+
+function validateBrowserActPreparedSession(
+	binding: BrowserActPreparedSessionBinding,
+	cookieStore: BrowserCookieStore | null,
+	catastrophicDomains: readonly string[],
+): BrowserActPreparedSessionValidation {
+	const host = binding.host.trim().toLowerCase();
+	if (!host || !binding.sessionRef.trim()) {
+		return {
+			ok: false,
+			code: "browser_write_session_binding_invalid",
+			reason: "browser-write session binding is missing host or sessionRef",
+		};
+	}
+	const boundScope = buildBrowserOriginScope(binding.originScope);
+	const authority = {
+		actorId: binding.actor,
+		profileId: binding.profileId,
+		authorityDomain: binding.authorityDomain,
+	};
+	if (binding.browserCredentialRef) {
+		if (!cookieStore) {
+			return {
+				ok: false,
+				code: "browser_write_session_store_unavailable",
+				reason:
+					"browser-write was prepared with a stored browser credential but no credential store is configured",
+			};
+		}
+		const session = cookieStore.getSession(binding.browserCredentialRef);
+		if (!session) {
+			return {
+				ok: false,
+				code: "browser_write_session_credential_revoked",
+				reason: "browser-write credential is no longer present; re-prepare",
+			};
+		}
+		if (binding.browserCredentialCreatedAt === null) {
+			return {
+				ok: false,
+				code: "browser_write_session_binding_invalid",
+				reason: "browser-write credential binding is missing its creation timestamp",
+			};
+		}
+		if (session.createdAt !== binding.browserCredentialCreatedAt) {
+			return {
+				ok: false,
+				code: "browser_write_session_credential_replaced",
+				reason: "browser-write credential was replaced after approval; re-prepare",
+			};
+		}
+		if (!sessionMatchesAuthority(session, authority)) {
+			return {
+				ok: false,
+				code: "browser_write_session_authority_changed",
+				reason: "browser-write credential authority no longer matches the prepared write",
+			};
+		}
+		if (!hostMatchesBrowserOriginScope(host, session.originScope)) {
+			return {
+				ok: false,
+				code: "browser_write_session_host_uncovered",
+				reason: "browser-write credential no longer covers the prepared host",
+			};
+		}
+		if (sessionScopeReachesCatastrophic(session.originScope, catastrophicDomains)) {
+			return {
+				ok: false,
+				code: "browser_write_session_catastrophic",
+				reason: "browser-write credential can now reach a catastrophic domain; re-prepare",
+			};
+		}
+		if (!sameOriginScope(boundScope, buildBrowserOriginScope(session.originScope))) {
+			return {
+				ok: false,
+				code: "browser_write_session_origin_scope_changed",
+				reason: "browser-write credential origin scope changed after approval; re-prepare",
+			};
+		}
+		return { ok: true };
+	}
+
+	const currentSession = cookieStore
+		? resolveBrowseSession(cookieStore, `https://${host}/`, authority, { catastrophicDomains })
+		: null;
+	if (currentSession) {
+		return {
+			ok: false,
+			code: "browser_write_session_credential_changed",
+			reason:
+				"browser-write was prepared cookie-less but a stored credential now applies; re-prepare",
+		};
+	}
+	if (!sameOriginScope(boundScope, buildBrowserOriginScope([host]))) {
+		return {
+			ok: false,
+			code: "browser_write_session_origin_scope_changed",
+			reason: "browser-write cookie-less origin scope changed after approval; re-prepare",
+		};
+	}
+	return { ok: true };
+}
+
+function sameOriginScope(left: readonly string[], right: readonly string[]): boolean {
+	const a = buildBrowserOriginScope(left);
+	const b = buildBrowserOriginScope(right);
+	return a.length === b.length && a.every((entry, index) => entry === b[index]);
 }
 
 /**

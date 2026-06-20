@@ -78,6 +78,8 @@ function baseContext(overrides: Partial<BrowserWriteContext> = {}): BrowserWrite
 		authorityDomain: "private",
 		host: "bank.example.com",
 		originScope: ["bank.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		...overrides,
 	};
 }
@@ -175,14 +177,13 @@ describe("browser write-confirm binding hash", () => {
 		expect(drift).not.toBe(base);
 	});
 
-	it("does NOT change when only the display-only domDigest/screenshotHash differ", async () => {
-		// Page revision is the HMAC anchor; if we hold url+nonce+action+dom fixed,
-		// domDigest/screenshotHash are identical anyway. This asserts the binding
-		// surface is exactly the evidence anchor, not the display metadata: a
-		// second capture with the same inputs yields the same binding.
+	it("does NOT change when only display-only screenshot evidence differs", async () => {
 		const a = await buildEvidence({});
-		const b = await buildEvidence({});
-		expect(a.revision).toBe(b.revision);
+		const b = {
+			...a,
+			screenshotHash: `sha256:${"b".repeat(64)}`,
+			screenshotRef: "att_display_only_replaced",
+		};
 		expect(deriveBrowserWriteBindingHash(baseContext(), ACTION, a)).toBe(
 			deriveBrowserWriteBindingHash(baseContext(), ACTION, b),
 		);
@@ -203,6 +204,8 @@ describe("prepareBrowserWrite", () => {
 		);
 		expect(prepared.commitSignal).toEqual(evidence.commitSignal);
 		expect(prepared.commitSignal.forceConfirm).toBe(true);
+		expect(prepared.evidenceScreenshotHash).toBe(evidence.screenshotHash);
+		expect(prepared.evidenceScreenshotRef).toBe(evidence.screenshotRef);
 		expect(prepared.display).toEqual({
 			verb: "submit",
 			target: "#pay-form",
@@ -210,6 +213,32 @@ describe("prepareBrowserWrite", () => {
 			submittedValues: null,
 		});
 		expect(prepared.expiresAtMs).toBeGreaterThan(prepared.createdAtMs);
+	});
+
+	it("binds the normalized browser credential identity it persists", async () => {
+		const evidence = await buildEvidence({});
+		const prepared = prepareBrowserWrite({
+			context: baseContext({
+				browserCredentialRef: "   ",
+				browserCredentialCreatedAt: 123,
+			}),
+			action: ACTION,
+			evidence,
+			approver: "telegram:default:human",
+		});
+
+		expect(prepared.browserCredentialRef).toBeNull();
+		expect(prepared.browserCredentialCreatedAt).toBeNull();
+		expect(prepared.bindingHash).toBe(
+			deriveBrowserWriteBindingHash(
+				baseContext({
+					browserCredentialRef: prepared.browserCredentialRef,
+					browserCredentialCreatedAt: prepared.browserCredentialCreatedAt,
+				}),
+				ACTION,
+				evidence,
+			),
+		);
 	});
 
 	it("rejects self-approval (actor == approver)", async () => {

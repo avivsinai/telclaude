@@ -83,6 +83,8 @@ function browseContext(overrides: Partial<BrowserWriteContext> = {}): BrowserWri
 		authorityDomain: "private",
 		host: "shop.example.com",
 		originScope: ["https://shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		...overrides,
 	};
 }
@@ -100,11 +102,15 @@ function prepareInputFromConfirm(args: {
 		sessionRef: "browse-session:shop",
 		host: "shop.example.com",
 		originScope: ["https://shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		authorityDomain: "private",
 		actionVerb: "click",
 		actionTarget: "#pay",
 		evidenceRevision: args.evidence.revision,
 		evidenceNonce: args.evidence.evidenceNonce,
+		evidenceScreenshotHash: args.evidence.screenshotHash,
+		evidenceScreenshotRef: args.evidence.screenshotRef,
 		display: {
 			verb: "click",
 			target: "#pay",
@@ -244,6 +250,7 @@ describe("Telclaude MCP browser-write single-flight execution claim (CAS)", () =
 		return createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: args.ledger,
 			browserWriteCommitter: args.committer,
+			browserWriteSessionValidator: () => ({ ok: true }),
 			nowMs: () => nowMs,
 			sideEffectApprovalTokenResolver: ({ actionRef }) => {
 				const approvalToken = args.tokenFor.get(actionRef);
@@ -265,6 +272,7 @@ describe("Telclaude MCP browser-write single-flight execution claim (CAS)", () =
 			actorId: record.actorId,
 			profileId: record.profileId,
 			domain: record.domain,
+			endpointId: record.sessionRef,
 			actionRef: record.ref,
 		};
 	}

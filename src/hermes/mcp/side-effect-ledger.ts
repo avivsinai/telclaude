@@ -133,11 +133,15 @@ export type TelclaudeMcpBrowserWriteSideEffectRecord = {
 	readonly sessionRef: string;
 	readonly host: string;
 	readonly originScope: readonly string[];
+	readonly browserCredentialRef: string | null;
+	readonly browserCredentialCreatedAt: number | null;
 	readonly authorityDomain: BrowserAuthorityDomain;
 	readonly actionVerb: string;
 	readonly actionTarget: string | null;
 	readonly evidenceRevision: string;
 	readonly evidenceNonce: string;
+	readonly evidenceScreenshotHash: string;
+	readonly evidenceScreenshotRef: string;
 	readonly display: BrowserWriteDisplay;
 	readonly commitSignal: BrowserActCommitSignal;
 	readonly approvalRequestId: string;
@@ -231,11 +235,15 @@ export type TelclaudeMcpBrowserWriteSideEffectPrepareInput = {
 	readonly sessionRef: string;
 	readonly host: string;
 	readonly originScope: readonly string[];
+	readonly browserCredentialRef: string | null;
+	readonly browserCredentialCreatedAt: number | null;
 	readonly authorityDomain: BrowserAuthorityDomain;
 	readonly actionVerb: string;
 	readonly actionTarget: string | null;
 	readonly evidenceRevision: string;
 	readonly evidenceNonce: string;
+	readonly evidenceScreenshotHash: string;
+	readonly evidenceScreenshotRef: string;
 	readonly display: BrowserWriteDisplay;
 	readonly commitSignal: BrowserActCommitSignal;
 	readonly bindingHash: string;
@@ -310,10 +318,14 @@ export type TelclaudeMcpBrowserWriteApprovalBinding = {
 	readonly sessionRef: string;
 	readonly host: string;
 	readonly originScope: readonly string[];
+	readonly browserCredentialRef: string | null;
+	readonly browserCredentialCreatedAt: number | null;
 	readonly authorityDomain: BrowserAuthorityDomain;
 	readonly actionVerb: string;
 	readonly actionTarget: string | null;
 	readonly evidenceRevision: string;
+	readonly evidenceScreenshotHash: string;
+	readonly evidenceScreenshotRef: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly turnConversationRef?: string;
@@ -741,12 +753,25 @@ function prepareBrowserWriteRecord(
 		sessionRef: requiredTrimmed(input.sessionRef, "sessionRef"),
 		host: requiredTrimmed(input.host, "host").toLowerCase(),
 		originScope: normalizeStringList(input.originScope, "originScope"),
+		browserCredentialRef:
+			input.browserCredentialRef === null
+				? null
+				: requiredTrimmed(input.browserCredentialRef, "browserCredentialRef"),
+		browserCredentialCreatedAt:
+			input.browserCredentialRef === null
+				? null
+				: normalizeTimestamp(input.browserCredentialCreatedAt, "browserCredentialCreatedAt"),
 		authorityDomain: normalizeBrowserAuthorityDomain(input.authorityDomain),
 		actionVerb: requiredTrimmed(input.actionVerb, "actionVerb").toLowerCase(),
 		actionTarget:
 			input.actionTarget === null ? null : requiredTrimmed(input.actionTarget, "actionTarget"),
 		evidenceRevision: requiredTrimmed(input.evidenceRevision, "evidenceRevision"),
 		evidenceNonce: requiredTrimmed(input.evidenceNonce, "evidenceNonce"),
+		evidenceScreenshotHash: normalizeSha256Hash(
+			input.evidenceScreenshotHash,
+			"evidenceScreenshotHash",
+		),
+		evidenceScreenshotRef: requiredTrimmed(input.evidenceScreenshotRef, "evidenceScreenshotRef"),
 		display: normalizeBrowserWriteDisplay(input.display),
 		commitSignal: normalizeBrowserCommitSignal(input.commitSignal),
 		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
@@ -995,10 +1020,14 @@ function hashBrowserWriteApprovalContent(record: TelclaudeMcpBrowserWriteSideEff
 		sessionRef: record.sessionRef,
 		host: record.host,
 		originScope: record.originScope,
+		browserCredentialRef: record.browserCredentialRef,
+		browserCredentialCreatedAt: record.browserCredentialCreatedAt,
 		authorityDomain: record.authorityDomain,
 		actionVerb: record.actionVerb,
 		actionTarget: record.actionTarget,
 		evidenceRevision: record.evidenceRevision,
+		evidenceScreenshotHash: record.evidenceScreenshotHash,
+		evidenceScreenshotRef: record.evidenceScreenshotRef,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		turnConversationRef: record.turnConversationRef ?? null,
@@ -1022,10 +1051,14 @@ function approvalBinding(
 			sessionRef: record.sessionRef,
 			host: record.host,
 			originScope: record.originScope,
+			browserCredentialRef: record.browserCredentialRef,
+			browserCredentialCreatedAt: record.browserCredentialCreatedAt,
 			authorityDomain: record.authorityDomain,
 			actionVerb: record.actionVerb,
 			actionTarget: record.actionTarget,
 			evidenceRevision: record.evidenceRevision,
+			evidenceScreenshotHash: record.evidenceScreenshotHash,
+			evidenceScreenshotRef: record.evidenceScreenshotRef,
 			approvalRequestId: record.approvalRequestId,
 			approvalRevision: record.approvalRevision,
 			...(record.turnConversationRef ? { turnConversationRef: record.turnConversationRef } : {}),
@@ -1320,6 +1353,21 @@ function normalizeBindingHash(value: string): string {
 		throw new Error("side-effect bindingHash must be a sha256 digest");
 	}
 	return trimmed;
+}
+
+function normalizeSha256Hash(value: string, field: string): string {
+	const trimmed = requiredTrimmed(value, field);
+	if (!/^sha256:[a-f0-9]{64}$/.test(trimmed)) {
+		throw new Error(`side-effect ${field} must be a sha256 digest`);
+	}
+	return trimmed;
+}
+
+function normalizeTimestamp(value: number | null, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		throw new Error(`side-effect ${field} must be a non-negative integer timestamp`);
+	}
+	return value;
 }
 
 function normalizeBrowserWriteDisplay(value: BrowserWriteDisplay): BrowserWriteDisplay {

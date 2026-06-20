@@ -165,6 +165,8 @@ describe("Telclaude live MCP browser-act clients", () => {
 		expect(prepared).not.toHaveProperty("bindingHash");
 		expect(prepared).not.toHaveProperty("approvalToken");
 		expect(prepared).not.toHaveProperty("evidenceNonce");
+		expect(prepared).not.toHaveProperty("evidenceScreenshotHash");
+		expect(prepared).not.toHaveProperty("evidenceScreenshotRef");
 
 		// The executor's prepareIntent was keyed by the SAME ref the ledger filed under.
 		expect(surface.prepareCalls).toEqual([
@@ -186,6 +188,8 @@ describe("Telclaude live MCP browser-act clients", () => {
 			actionVerb: "click",
 			actionTarget: "#pay",
 			bindingHash: FAKE_BINDING_HASH,
+			evidenceScreenshotHash: `sha256:${"b".repeat(64)}`,
+			evidenceScreenshotRef: "/relay/media/approval-screenshot.png",
 		});
 		// The approved submitted values never enter the ledger record (hashes only).
 		expect(JSON.stringify(record)).not.toContain("confirm");
@@ -279,6 +283,9 @@ function recordingSurface(): BrowserActExecutorSurface & {
 				prepared: preparedBrowserWrite(request),
 			};
 		},
+		async validatePreparedSession() {
+			return { ok: true };
+		},
 	};
 }
 
@@ -289,8 +296,8 @@ function fakeEvidence() {
 		urlHash: "hmac-sha256:url",
 		urlOrigin: "https://shop.example.com",
 		domDigest: "sha256:dom",
-		screenshotHash: "sha256:shot",
-		screenshotRef: "/relay/media/secret-screenshot.png",
+		screenshotHash: `sha256:${"b".repeat(64)}`,
+		screenshotRef: "/relay/media/approval-screenshot.png",
 		revision: "hmac-sha256:fake-revision",
 		submittedValuesHash: "hmac-sha256:values",
 		commitSignal: {
@@ -312,9 +319,13 @@ function preparedBrowserWrite(
 		authorityDomain: "private",
 		host: "shop.example.com",
 		originScope: ["shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		evidenceRevision: "hmac-sha256:fake-revision",
 		evidenceNonce: "nonce-1",
 		bindingHash: FAKE_BINDING_HASH,
+		evidenceScreenshotHash: `sha256:${"b".repeat(64)}`,
+		evidenceScreenshotRef: "/relay/media/approval-screenshot.png",
 		// The display target is the REDACTED summary (origin only), never the raw "#pay".
 		display: {
 			verb: "click",

@@ -159,12 +159,16 @@ describe("Hermes MCP side-effect human approvals", () => {
 		expect(approval?.body).toContain("Authority domain: private");
 		expect(approval?.body).toContain("Host: shop.example.com");
 		expect(approval?.body).toContain("Verb: click");
+		expect(approval?.body).toContain(`Screenshot hash: ${record.evidenceScreenshotHash}`);
+		expect(approval?.body).toContain(`Screenshot ref: ${record.evidenceScreenshotRef}`);
 		// The redaction actually fires end-to-end: the operator sees the scrubbed value,
 		// never the raw secret, on the card body AND in the WYSIWYS render echo.
 		expect(approval?.body).toContain("Submitted values:");
 		expect(approval?.body).toContain("• apiKey: [REDACTED:openai_api_key]");
 		expect(approval?.body).toContain("• recipient: alice@example.com");
-		expect(approval?.body).toContain("values: apiKey: [REDACTED:openai_api_key]; recipient: alice@example.com");
+		expect(approval?.body).toContain(
+			"values: apiKey: [REDACTED:openai_api_key]; recipient: alice@example.com",
+		);
 		expect(approval?.body).not.toContain(apiKey);
 	});
 
@@ -867,6 +871,8 @@ async function prepareBrowserWriteRecord(args: {
 			authorityDomain: "private",
 			host: "shop.example.com",
 			originScope: ["https://shop.example.com"],
+			browserCredentialRef: null,
+			browserCredentialCreatedAt: null,
 		},
 		action,
 		evidence,
@@ -881,11 +887,15 @@ async function prepareBrowserWriteRecord(args: {
 		sessionRef: "browse-session:shop",
 		host: "shop.example.com",
 		originScope: ["https://shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		authorityDomain: "private",
 		actionVerb: "click",
 		actionTarget: "#pay",
 		evidenceRevision: evidence.revision,
 		evidenceNonce: evidence.evidenceNonce,
+		evidenceScreenshotHash: evidence.screenshotHash,
+		evidenceScreenshotRef: evidence.screenshotRef,
 		display: prepared.display,
 		commitSignal: evidence.commitSignal,
 		bindingHash: prepared.bindingHash,

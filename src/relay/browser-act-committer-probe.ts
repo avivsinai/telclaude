@@ -165,9 +165,13 @@ function ledgerRecordFor(
 		readonly authorityDomain: TelclaudeMcpBrowserWriteSideEffectRecord["authorityDomain"];
 		readonly host: string;
 		readonly originScope: readonly string[];
+		readonly browserCredentialRef: string | null;
+		readonly browserCredentialCreatedAt: number | null;
 		readonly evidenceRevision: string;
 		readonly evidenceNonce: string;
 		readonly bindingHash: string;
+		readonly evidenceScreenshotHash: string;
+		readonly evidenceScreenshotRef: string;
 		readonly display: TelclaudeMcpBrowserWriteSideEffectRecord["display"];
 		readonly commitSignal: TelclaudeMcpBrowserWriteSideEffectRecord["commitSignal"];
 		readonly createdAtMs: number;
@@ -185,11 +189,15 @@ function ledgerRecordFor(
 		sessionRef: "probe-session",
 		host: prepared.host,
 		originScope: prepared.originScope,
+		browserCredentialRef: prepared.browserCredentialRef,
+		browserCredentialCreatedAt: prepared.browserCredentialCreatedAt,
 		authorityDomain: prepared.authorityDomain,
 		actionVerb: "click",
 		actionTarget: "#checkout-form",
 		evidenceRevision: prepared.evidenceRevision,
 		evidenceNonce: prepared.evidenceNonce,
+		evidenceScreenshotHash: prepared.evidenceScreenshotHash,
+		evidenceScreenshotRef: prepared.evidenceScreenshotRef,
 		display: prepared.display,
 		commitSignal: prepared.commitSignal,
 		approvalRequestId: "probe-approval",
@@ -249,9 +257,13 @@ async function runLedgerGate(
 		authorityDomain: fixture.record.authorityDomain,
 		host: fixture.record.host,
 		originScope: fixture.record.originScope,
+		browserCredentialRef: fixture.record.browserCredentialRef,
+		browserCredentialCreatedAt: fixture.record.browserCredentialCreatedAt,
 		evidenceRevision: fixture.record.evidenceRevision,
 		evidenceNonce: fixture.record.evidenceNonce,
 		bindingHash: fixture.record.bindingHash,
+		evidenceScreenshotHash: fixture.record.evidenceScreenshotHash,
+		evidenceScreenshotRef: fixture.record.evidenceScreenshotRef,
 		display: fixture.record.display,
 		commitSignal: fixture.record.commitSignal,
 		createdAtMs: fixture.record.createdAtMs,
@@ -264,6 +276,8 @@ async function runLedgerGate(
 		authorityDomain: fixture.record.authorityDomain,
 		host: fixture.record.host,
 		originScope: fixture.record.originScope,
+		browserCredentialRef: fixture.record.browserCredentialRef,
+		browserCredentialCreatedAt: fixture.record.browserCredentialCreatedAt,
 	};
 	const action = {
 		verb: fixture.record.actionVerb,

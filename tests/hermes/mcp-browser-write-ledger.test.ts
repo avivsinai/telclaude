@@ -9,6 +9,7 @@ import {
 } from "../../src/hermes/mcp/approval-token.js";
 import {
 	type BrowserWriteCommitter,
+	type BrowserWriteSessionValidator,
 	createTelclaudeMcpLedgerExecuteDependencies,
 } from "../../src/hermes/mcp/ledger-execute.js";
 import {
@@ -88,6 +89,8 @@ function browseContext(overrides: Partial<BrowserWriteContext> = {}): BrowserWri
 		authorityDomain: "private",
 		host: "shop.example.com",
 		originScope: ["https://shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		...overrides,
 	};
 }
@@ -107,11 +110,15 @@ function prepareInputFromConfirm(args: {
 		sessionRef: "browse-session:shop",
 		host: "shop.example.com",
 		originScope: ["https://shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		authorityDomain: "private",
 		actionVerb: "click",
 		actionTarget: "#pay",
 		evidenceRevision: args.evidence.revision,
 		evidenceNonce: args.evidence.evidenceNonce,
+		evidenceScreenshotHash: args.evidence.screenshotHash,
+		evidenceScreenshotRef: args.evidence.screenshotRef,
 		display: {
 			verb: "click",
 			target: "#pay",
@@ -267,10 +274,12 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 		readonly ledger: TelclaudeMcpSideEffectLedger;
 		readonly committer: BrowserWriteCommitter;
 		readonly tokenFor: Map<string, string>;
+		readonly sessionValidator?: BrowserWriteSessionValidator;
 	}) {
 		return createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: args.ledger,
 			browserWriteCommitter: args.committer,
+			browserWriteSessionValidator: args.sessionValidator ?? (() => ({ ok: true })),
 			nowMs: () => nowMs,
 			sideEffectApprovalTokenResolver: ({ actionRef }) => {
 				const approvalToken = args.tokenFor.get(actionRef);
@@ -292,6 +301,7 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 			actorId: record.actorId,
 			profileId: record.profileId,
 			domain: record.domain,
+			endpointId: record.sessionRef,
 			actionRef: record.ref,
 		};
 	}
@@ -299,7 +309,7 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 	it("prepare → approve → execute happy path commits exactly once with a real token + fresh evidence", async () => {
 		const page = new FakePage();
 		const ledger = createLedger();
-		const { record } = await stagePreparedWrite(ledger, page);
+		const { record, evidence } = await stagePreparedWrite(ledger, page);
 		const committer = makeCommitter(page);
 		const token = await mintToken(record, "jti-bw-happy");
 		const execute = deps({
@@ -313,6 +323,12 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 		expect(result).toEqual({
 			ok: true,
 			receipt: { committed: true, ref: record.ref, verb: "click" },
+		});
+		expect(getTelclaudeMcpSideEffectApprovalBinding(record)).toMatchObject({
+			browserCredentialRef: null,
+			browserCredentialCreatedAt: null,
+			evidenceScreenshotHash: evidence.screenshotHash,
+			evidenceScreenshotRef: evidence.screenshotRef,
 		});
 		expect(committer.commits).toEqual([record.ref]);
 		expect(ledger.get(record.ref)?.status).toBe("executed");
@@ -349,6 +365,75 @@ describe("Telclaude MCP browser-write side-effect ledger", () => {
 		if (!result.ok) {
 			expect(result.code).toBe("side_effect_distinct_human_approver_required");
 		}
+		expect(committer.commits).toEqual([]);
+		expect(ledger.get(record.ref)?.status).toBe("prepared");
+	});
+
+	it("fails execute before approval-token lookup when the active session ref changed", async () => {
+		const page = new FakePage();
+		const ledger = createLedger();
+		const { record } = await stagePreparedWrite(ledger, page);
+		const committer = makeCommitter(page);
+		let tokenLookups = 0;
+		const execute = createTelclaudeMcpLedgerExecuteDependencies({
+			ledger,
+			browserWriteCommitter: committer,
+			browserWriteSessionValidator: () => ({ ok: true }),
+			nowMs: () => nowMs,
+			sideEffectApprovalTokenResolver: () => {
+				tokenLookups += 1;
+				return {
+					ok: false,
+					code: "side_effect_approval_token_unavailable",
+					reason: "should not be reached",
+					retryable: true,
+				};
+			},
+		});
+
+		const result = await execute.browserWriteExecute({
+			...executeRequest(record),
+			endpointId: "different-active-session",
+		});
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe("browser_write_session_mismatch");
+		expect(tokenLookups).toBe(0);
+		expect(committer.commits).toEqual([]);
+		expect(ledger.get(record.ref)?.status).toBe("prepared");
+	});
+
+	it("fails execute before approval-token lookup when current browser credential validation rejects", async () => {
+		const page = new FakePage();
+		const ledger = createLedger();
+		const { record } = await stagePreparedWrite(ledger, page);
+		const committer = makeCommitter(page);
+		let tokenLookups = 0;
+		const execute = createTelclaudeMcpLedgerExecuteDependencies({
+			ledger,
+			browserWriteCommitter: committer,
+			browserWriteSessionValidator: () => ({
+				ok: false,
+				code: "browser_write_session_credential_revoked",
+				reason: "credential missing",
+			}),
+			nowMs: () => nowMs,
+			sideEffectApprovalTokenResolver: () => {
+				tokenLookups += 1;
+				return {
+					ok: false,
+					code: "side_effect_approval_token_unavailable",
+					reason: "should not be reached",
+					retryable: true,
+				};
+			},
+		});
+
+		const result = await execute.browserWriteExecute(executeRequest(record));
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe("browser_write_session_credential_revoked");
+		expect(tokenLookups).toBe(0);
 		expect(committer.commits).toEqual([]);
 		expect(ledger.get(record.ref)?.status).toBe("prepared");
 	});

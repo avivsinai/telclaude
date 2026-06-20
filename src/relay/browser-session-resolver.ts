@@ -89,7 +89,12 @@ export function resolveBrowseSession(
 		if (sessionScopeReachesCatastrophic(meta.originScope, catastrophicDomains)) continue;
 		const record = store.getSession(meta.credentialRef);
 		if (record) {
-			return { storageState: record.storageState, originScope: record.originScope };
+			return {
+				credentialRef: record.credentialRef,
+				credentialCreatedAt: record.createdAt,
+				storageState: record.storageState,
+				originScope: record.originScope,
+			};
 		}
 	}
 	return null;
@@ -101,7 +106,7 @@ export function resolveBrowseSession(
  * (broader, registrable-domain-wide) scope, or a session origin falls within a
  * catastrophic domain. Either way the session must not be attached.
  */
-function sessionScopeReachesCatastrophic(
+export function sessionScopeReachesCatastrophic(
 	sessionScope: readonly string[],
 	catastrophicDomains: readonly string[],
 ): boolean {

@@ -15,6 +15,7 @@ import {
 } from "./bridge.js";
 import type {
 	BrowserWriteCommitter,
+	BrowserWriteSessionValidator,
 	TelclaudeMcpInboundTurnAuthorityResolver,
 	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
@@ -117,6 +118,8 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	 * with a typed `browser_write_committer_missing` terminal error.
 	 */
 	readonly browserWriteCommitter?: BrowserWriteCommitter;
+	/** Execute-time current session/credential revalidation before approval is consumed. */
+	readonly browserWriteSessionValidator?: BrowserWriteSessionValidator;
 	readonly bindHost: string;
 	readonly networkName: string;
 	readonly nowMs?: () => number;
@@ -174,6 +177,9 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 		...(options.browserWriteCommitter
 			? { browserWriteCommitter: options.browserWriteCommitter }
+			: {}),
+		...(options.browserWriteSessionValidator
+			? { browserWriteSessionValidator: options.browserWriteSessionValidator }
 			: {}),
 		nowMs: options.nowMs,
 	});
