@@ -238,6 +238,7 @@ function fakePlaywright(): {
 	calls: FakeCalls;
 	emitRequest: (method: string, fromMain?: boolean) => void;
 	emitNavigation: (fromMain?: boolean) => void;
+	onFill: (handler: () => void) => void;
 	releaseLoadState: () => void;
 } {
 	const calls: FakeCalls = {
@@ -252,6 +253,7 @@ function fakePlaywright(): {
 	};
 	const requestHandlers = new Set<(r: PlaywrightActRequest) => void>();
 	const navHandlers = new Set<(f: PlaywrightActFrame) => void>();
+	let fillHandler: (() => void) | undefined;
 	// settle's waitForLoadState blocks on this gate so a test can register/emit
 	// signals deterministically before the window closes.
 	let releaseLoadState!: () => void;
@@ -266,7 +268,9 @@ function fakePlaywright(): {
 		url: () => currentUrl,
 		evaluate: async <T>() => "<html></html>" as T,
 		screenshot: async () => Buffer.from("png"),
-		fill: async () => {},
+		fill: async () => {
+			fillHandler?.();
+		},
 		type: async () => {},
 		click: async () => {},
 		selectOption: async () => undefined,
@@ -298,6 +302,9 @@ function fakePlaywright(): {
 		},
 		on: (event, handler) => {
 			if (event === "framenavigated") navHandlers.add(handler);
+		},
+		off: (event, handler) => {
+			if (event === "framenavigated") navHandlers.delete(handler);
 		},
 		close: async () => {
 			calls.contextClosed += 1;
@@ -332,6 +339,9 @@ function fakePlaywright(): {
 		},
 		emitNavigation: (fromMain = true) => {
 			for (const h of navHandlers) h(fromMain ? MAIN_FRAME : {});
+		},
+		onFill: (handler) => {
+			fillHandler = handler;
 		},
 		releaseLoadState,
 	};
@@ -500,38 +510,45 @@ describe("createBrowserActDriverFactory — M1/M2 wiring + persistence", () => {
 		await driver.page.close();
 	});
 
-	it("settle collects main-frame navigation + mutating-request signals in the window", async () => {
+	it("dispatchAndSettle arms listeners before fill so synchronous autosave requests are observed", async () => {
 		const fake = fakePlaywright();
 		const factory = createBrowserActDriverFactory({ config: CONFIG, connector: fake.connector });
 		const driver = await factory(ACT_REQUEST);
+		fake.onFill(() => {
+			fake.emitRequest("POST", true);
+			fake.emitRequest("GET", true);
+			fake.emitNavigation(true);
+		});
 
-		// settle registers its framenavigated/request listeners synchronously, then
-		// blocks on waitForLoadState (gated). Emit signals while the window is open,
-		// then release the gate so settle resolves with what it observed.
-		const settlePromise = driver.settle({ timeoutMs: 1_000 });
-		fake.emitNavigation(true);
-		fake.emitRequest("POST", true);
-		fake.emitRequest("GET", true);
+		const observedPromise = driver.dispatchAndSettle(
+			{ verb: "fill", target: "#email", submittedValues: "a@b.com" },
+			{ timeoutMs: 1_000 },
+		);
 		fake.releaseLoadState();
 
-		const signals = await settlePromise;
+		const signals = await observedPromise;
 		expect(signals.navigation).toBe(true);
-		expect(signals.formSubmit).toBe(true); // main-frame POST
+		expect(signals.formSubmit).toBe(true);
 		expect(signals.mutatingRequest).toBe(true);
 		expect(signals.mutatingRequestMethods).toContain("POST");
 	});
 
-	it("settle ignores a sub-frame navigation (only the main frame counts)", async () => {
+	it("dispatchAndSettle ignores a sub-frame navigation (only the main frame counts)", async () => {
 		const fake = fakePlaywright();
 		const factory = createBrowserActDriverFactory({ config: CONFIG, connector: fake.connector });
 		const driver = await factory(ACT_REQUEST);
+		fake.onFill(() => {
+			fake.emitNavigation(false); // sub-frame nav
+			fake.emitRequest("GET", true);
+		});
 
-		const settlePromise = driver.settle({ timeoutMs: 1_000 });
-		fake.emitNavigation(false); // sub-frame nav
-		fake.emitRequest("GET", true);
+		const observedPromise = driver.dispatchAndSettle(
+			{ verb: "fill", target: "#email", submittedValues: "a@b.com" },
+			{ timeoutMs: 1_000 },
+		);
 		fake.releaseLoadState();
 
-		const signals = await settlePromise;
+		const signals = await observedPromise;
 		expect(signals.navigation).toBeUndefined();
 		expect(signals.formSubmit).toBeUndefined();
 		expect(signals.mutatingRequest).toBeUndefined();

@@ -93,6 +93,7 @@ export type PlaywrightActFrame = object;
 export interface PlaywrightActContext {
 	newPage(): Promise<PlaywrightActPage>;
 	on(event: "framenavigated", handler: (frame: PlaywrightActFrame) => void): void;
+	off(event: "framenavigated", handler: (frame: PlaywrightActFrame) => void): void;
 	close(): Promise<void>;
 }
 
@@ -313,6 +314,8 @@ export interface BrowserActDriverFactoryOptions {
  *
  * The returned `BrowserActDriver` adapts the live page to the evidence view and
  * the act verbs, and collects settle signals from page-level Playwright events.
+ * Commit paths use `dispatchAndSettle`, which arms the observers before
+ * Playwright dispatch so synchronous page side effects cannot escape the window.
  */
 export function createBrowserActDriverFactory(
 	options: BrowserActDriverFactoryOptions,
@@ -390,8 +393,8 @@ export type BrowserActDriverRequest = BrowserActRequest & {
 /**
  * The live Playwright-backed act driver. Holds the browser+context+page open
  * across the async approval; the pool closes them on eviction. `page` adapts the
- * Playwright Page to the evidence view; `dispatch` runs the approved verb;
- * `settle` waits for the load state and reports the signals seen in the window.
+ * Playwright Page to the evidence view; `dispatchAndSettle` arms observers,
+ * runs the approved verb, and reports the signals seen in the action window.
  */
 class PlaywrightBrowserActDriver implements BrowserActDriver {
 	readonly page: BrowserActLivePage;
@@ -420,41 +423,56 @@ class PlaywrightBrowserActDriver implements BrowserActDriver {
 		};
 	}
 
-	async dispatch(input: {
-		readonly verb: BrowserActVerb;
-		readonly target?: string;
-		readonly submittedValues?: BrowserActJsonValue;
-	}): Promise<void> {
-		await dispatchActVerb(this.pwPage, input, { timeoutMs: this.navigationTimeoutMs });
+	async dispatchAndSettle(
+		input: {
+			readonly verb: BrowserActVerb;
+			readonly target?: string;
+			readonly submittedValues?: BrowserActJsonValue;
+		},
+		opts: { readonly timeoutMs: number },
+	): Promise<BrowserActObservedSignals> {
+		return observeSettleWindow(this.pwContext, this.pwPage, {
+			timeoutMs: opts.timeoutMs,
+			dispatch: () =>
+				dispatchActVerb(this.pwPage, input, {
+					timeoutMs: this.navigationTimeoutMs,
+				}),
+		});
 	}
+}
 
-	async settle(opts: { readonly timeoutMs: number }): Promise<BrowserActObservedSignals> {
-		const timeout = clampTimeout(opts.timeoutMs);
-		const mainFrame = this.pwPage.mainFrame();
-		let navigation = false;
-		let formSubmit = false;
-		const requestMethods: string[] = [];
+async function observeSettleWindow(
+	context: PlaywrightActContext,
+	page: PlaywrightActPage,
+	options: { readonly timeoutMs: number; readonly dispatch: () => Promise<void> },
+): Promise<BrowserActObservedSignals> {
+	const timeout = clampTimeout(options.timeoutMs);
+	const mainFrame = page.mainFrame();
+	let navigation = false;
+	let formSubmit = false;
+	const requestMethods: string[] = [];
 
-		const onNavigated = (frame: PlaywrightActFrame): void => {
-			if (frame === mainFrame) navigation = true;
-		};
-		const onRequest = (request: PlaywrightActRequest): void => {
-			const method = request.method().trim().toUpperCase();
-			requestMethods.push(method);
-			// A main-frame POST is the strongest available form-submit tell from the
-			// page layer (Playwright has no first-class form-submit event).
-			if (method === "POST" && request.frame() === mainFrame) formSubmit = true;
-		};
+	const onNavigated = (frame: PlaywrightActFrame): void => {
+		if (frame === mainFrame) navigation = true;
+	};
+	const onRequest = (request: PlaywrightActRequest): void => {
+		const method = request.method().trim().toUpperCase();
+		requestMethods.push(method);
+		// A main-frame POST is the strongest available form-submit tell from the
+		// page layer (Playwright has no first-class form-submit event).
+		if (method === "POST" && request.frame() === mainFrame) formSubmit = true;
+	};
 
-		this.pwContext.on("framenavigated", onNavigated);
-		this.pwPage.on("request", onRequest);
-		try {
-			await waitForSettle(this.pwPage, timeout);
-		} finally {
-			this.pwPage.off("request", onRequest);
-		}
-		return classifyObservedSettleSignals({ navigation, formSubmit, requestMethods });
+	context.on("framenavigated", onNavigated);
+	page.on("request", onRequest);
+	try {
+		await options.dispatch();
+		await waitForSettle(page, timeout);
+	} finally {
+		page.off("request", onRequest);
+		context.off("framenavigated", onNavigated);
 	}
+	return classifyObservedSettleSignals({ navigation, formSubmit, requestMethods });
 }
 
 /** Adapt a Playwright Page to the read-only `BrowserActLivePage` evidence view. */

@@ -60,7 +60,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("derives the host from the url and pins origin to it for a cookie-less act", async () => {
+	it("refuses inline acts before reaching the executor, even on a cookie-less public page", async () => {
 		const fake = fakeExecutor();
 		const surface = createBrowserActExecutorSurface({
 			executor: fake.executor,
@@ -68,25 +68,19 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 			catastrophicDomains: [],
 		});
 
-		await surface.act({
-			actor: "operator",
-			profileId: "ops",
-			mcpDomain: "private",
-			sessionRef: "endpoint-private",
-			url: "https://shop.example.com/cart?step=1",
-			verb: "fill",
-			target: "#qty",
-			submittedValues: "2",
-		});
-
-		expect(fake.actRequests).toHaveLength(1);
-		const resolved = fake.actRequests[0];
-		expect(resolved?.host).toBe("shop.example.com");
-		expect(resolved?.originScope).toEqual(["shop.example.com"]);
-		expect(resolved?.session).toBeUndefined();
-		// The SERVER-RESOLVED entry url is threaded into the executor request (Option A)
-		// so the driver auto-loads the live page to it before capture/dispatch.
-		expect(resolved?.url).toBe("https://shop.example.com/cart?step=1");
+		await expect(
+			surface.act({
+				actor: "operator",
+				profileId: "ops",
+				mcpDomain: "private",
+				sessionRef: "endpoint-private",
+				url: "https://shop.example.com/cart?step=1",
+				verb: "fill",
+				target: "#qty",
+				submittedValues: "2",
+			}),
+		).rejects.toMatchObject({ code: "browser_act_inline_disabled" });
+		expect(fake.actRequests).toHaveLength(0);
 	});
 
 	it("attaches a stored login + its origin scope for a matching authority (via prepareIntent — cookie-bearing acts must prepare)", async () => {
@@ -126,7 +120,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 		expect(resolved?.originScope).toEqual(["shop.example.com"]);
 	});
 
-	it("refuses an inline act on a resolved logged-in session — even a non-committing verb (HIGH#1)", async () => {
+	it("refuses an inline act on a resolved logged-in session with the same hard gate", async () => {
 		store.putSession({
 			credentialRef: "cred-shop",
 			actorId: "operator",
@@ -145,9 +139,6 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 			catastrophicDomains: [],
 		});
 
-		// `fill` is a non-committing verb, but on a logged-in page an auto-submit-on-change
-		// field would be an unapproved authenticated write. The surface refuses ALL inline
-		// acts on a resolved session and never reaches the executor.
 		await expect(
 			surface.act({
 				actor: "operator",
@@ -159,7 +150,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 				target: "#notify-email",
 				submittedValues: "new@example.com",
 			}),
-		).rejects.toMatchObject({ code: "browser_act_cookie_bearing_requires_prepare" });
+		).rejects.toMatchObject({ code: "browser_act_inline_disabled" });
 		expect(fake.actRequests).toHaveLength(0);
 	});
 
@@ -183,7 +174,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 		});
 
 		// MCP 'social' → browser 'public-social' authority: the private login must NOT attach.
-		await surface.act({
+		await surface.prepareIntent({
 			actor: "operator",
 			profileId: "ops",
 			mcpDomain: "social",
@@ -191,10 +182,11 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 			url: "https://shop.example.com/account",
 			verb: "click",
 			target: "#open",
+			actionRef: "effect-social",
 		});
 
-		expect(fake.actRequests[0]?.session).toBeUndefined();
-		expect(fake.actRequests[0]?.originScope).toEqual(["shop.example.com"]);
+		expect(fake.prepareRequests[0]?.session).toBeUndefined();
+		expect(fake.prepareRequests[0]?.originScope).toEqual(["shop.example.com"]);
 	});
 
 	it("threads the pre-allocated actionRef into prepareIntent for the committing path", async () => {
@@ -220,6 +212,33 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 		expect(fake.prepareRequests[0]?.actionRef).toBe("effect-abc");
 		expect(fake.prepareRequests[0]?.forceConfirm).toBe(true);
 		expect(fake.prepareRequests[0]?.host).toBe("shop.example.com");
+	});
+
+	it("relay-escalates fill/type prepare requests so data entry stages for approval", async () => {
+		const fake = fakeExecutor();
+		const surface = createBrowserActExecutorSurface({
+			executor: fake.executor,
+			cookieStore: null,
+			catastrophicDomains: [],
+		});
+
+		await surface.prepareIntent({
+			actor: "operator",
+			profileId: "ops",
+			mcpDomain: "private",
+			sessionRef: "endpoint-private",
+			url: "https://shop.example.com/cart",
+			verb: "fill",
+			target: "#qty",
+			submittedValues: "2",
+			actionRef: "effect-fill",
+		});
+
+		const resolved = fake.prepareRequests[0];
+		expect(resolved?.forceConfirm).toBe(true);
+		expect(resolved?.host).toBe("shop.example.com");
+		expect(resolved?.originScope).toEqual(["shop.example.com"]);
+		expect(resolved?.session).toBeUndefined();
 	});
 });
 

@@ -120,6 +120,14 @@ class FakeDriver implements BrowserActDriver {
 	}): Promise<void> {
 		this.dispatched.push(input);
 	}
+	async dispatchAndSettle(input: {
+		readonly verb: BrowserActVerb;
+		readonly target?: string;
+		readonly submittedValues?: BrowserActJsonValue;
+	}): Promise<BrowserActObservedSignals> {
+		await this.dispatch(input);
+		return this.settle();
+	}
 	async settle(): Promise<BrowserActObservedSignals> {
 		return { navigation: true, formSubmit: true };
 	}
