@@ -139,6 +139,12 @@ const HermesCapabilityScopeSchema = z.enum([
 	"schedule.read",
 	"schedule.write",
 	"browse.use",
+	// Interactive browser writes (tc_browse_act*). A RECOGNIZED but opt-in scope: it is
+	// intentionally absent from the private-runtime defaults below, so an operator must
+	// grant it explicitly. policy.ts maps tc_browse_act* -> browse.act and fails closed
+	// ("no browse.act, no act"), so without this enum entry the scope could not be granted
+	// at all and the interactive-write tools would be permanently unreachable.
+	"browse.act",
 ]);
 const HermesOutboundChannelSchema = z.enum(["whatsapp", "email", "agentmail", "social"]);
 
