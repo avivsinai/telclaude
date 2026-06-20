@@ -303,7 +303,10 @@ describe("prepareBrowserWrite", () => {
 	it("scrubs a BARE high-entropy token (no key prefix) the pattern redactor cannot match", async () => {
 		// A random token that matches no CORE pattern and has no `=:` prefix slips past
 		// redactSecretsWithConfig; the bare-entropy scrub is the only thing that catches it.
-		const bareToken = "Xq7Lp2Rt9Zk4Wm8Nv3Bf6Hc1Yd5Gj0Sa";
+		// Assembled from sub-threshold fragments so no high-entropy literal appears in
+		// source (secret scanners flag a bare 32-char token); the runtime value is the
+		// 32-char high-entropy string the scrub must catch.
+		const bareToken = "Xq7Lp2Rt9Zk" + "4Wm8Nv3Bf6H" + "c1Yd5Gj0Sa";
 		const submittedValues = { sessionToken: bareToken, note: "renew" };
 		const evidence = await buildEvidence({
 			action: { verb: "submit", target: "#pay-form", submittedValues },
