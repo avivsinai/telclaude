@@ -1,5 +1,4 @@
-export const POSITIVE_NETWORK_DENIAL_ERROR_CODES = new Set([
-	"ECONNREFUSED",
+export const DNS_GUARD_NETWORK_DENIAL_ERROR_CODES = new Set([
 	"EHOSTDOWN",
 	"EHOSTUNREACH",
 	"ENETUNREACH",
@@ -19,6 +18,7 @@ export type NetworkProbeSemanticAttempt = {
 	readonly expectation?: string;
 	readonly status?: string;
 	readonly observed?: string;
+	readonly httpStatus?: number;
 	readonly errorCode?: string;
 	readonly resolvedAddresses?: ReadonlyArray<{ readonly nonOverridable?: boolean }>;
 };
@@ -100,21 +100,24 @@ function hasContainedInternalProof(evidence: NetworkProbeSemanticEvidence): bool
 					attempt.expectation === "deny" &&
 					attempt.status === "pass" &&
 					((attempt.kind === "unix_socket" && attempt.observed === "absent") ||
-						hasPositiveContainedHttpDenial(attempt)),
+						hasPolicyProxyDenial(attempt)),
 			);
+		case "network.dns-exfil-denied":
+			return evidence.attempts.some(hasPositiveDnsGuardDenial);
 		default:
-			return evidence.attempts.some(hasPositiveContainedHttpDenial);
+			return evidence.attempts.some(hasPolicyProxyDenial);
 	}
 }
 
-function hasPositiveContainedHttpDenial(attempt: NetworkProbeSemanticAttempt): boolean {
+function hasPositiveDnsGuardDenial(attempt: NetworkProbeSemanticAttempt): boolean {
 	return (
-		(attempt.kind === "http" || attempt.kind === "dns_guard") &&
+		attempt.kind === "dns_guard" &&
 		attempt.expectation === "deny" &&
 		attempt.status === "pass" &&
 		attempt.observed === "denied" &&
 		attempt.errorCode !== undefined &&
-		POSITIVE_NETWORK_DENIAL_ERROR_CODES.has(attempt.errorCode)
+		DNS_GUARD_NETWORK_DENIAL_ERROR_CODES.has(attempt.errorCode) &&
+		attempt.resolvedAddresses?.some((address) => address.nonOverridable) === true
 	);
 }
 
@@ -133,13 +136,16 @@ function containedInternalProviderDenyFailures(evidence: NetworkProbeSemanticEvi
 }
 
 function hasPositiveContainedProviderHttpDenial(attempt: NetworkProbeSemanticAttempt): boolean {
+	return hasPolicyProxyDenial(attempt);
+}
+
+function hasPolicyProxyDenial(attempt: NetworkProbeSemanticAttempt): boolean {
 	return (
 		attempt.kind === "http" &&
 		attempt.expectation === "deny" &&
 		attempt.status === "pass" &&
-		attempt.observed === "denied" &&
-		attempt.errorCode !== undefined &&
-		POSITIVE_NETWORK_DENIAL_ERROR_CODES.has(attempt.errorCode)
+		attempt.observed === "policy_denied" &&
+		attempt.httpStatus === 403
 	);
 }
 

@@ -23,7 +23,7 @@ import {
 } from "./network-probe-evidence-validation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 import {
-	POSITIVE_NETWORK_DENIAL_ERROR_CODES,
+	DNS_GUARD_NETWORK_DENIAL_ERROR_CODES,
 	REQUIRED_CONTAINED_PROVIDER_DENY_NAMES,
 } from "./network-probe-semantic-proof.js";
 
@@ -34,11 +34,7 @@ export const DEFAULT_VAULT_SOCKET_PATH = "/run/vault/vault.sock";
 export const DEFAULT_MODEL_PROVIDER_PROBE_URL =
 	"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
 export const DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL = "http://192.0.2.1/";
-export const DEFAULT_DNS_EXFIL_PROBE_URLS = [
-	"http://169.254.169.254/latest/meta-data/",
-	"http://10.0.0.1/",
-	"http://100.64.0.1/",
-];
+export const DEFAULT_DNS_EXFIL_PROBE_URLS = ["http://169.254.169.254/latest/meta-data/"];
 export const DEFAULT_DNS_EXFIL_PROBE_URL = DEFAULT_DNS_EXFIL_PROBE_URLS.join(",");
 export type {
 	NetworkProbeAttempt,
@@ -85,6 +81,11 @@ type NetworkProbeWriteOptions = {
 
 type NetworkProbeRunReportReadOptions = {
 	requireAttestation?: boolean;
+};
+
+type HttpDeniedAttemptOptions = {
+	readonly positiveErrorCodes?: ReadonlySet<string>;
+	readonly positiveErrorDetail?: string;
 };
 
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -451,6 +452,7 @@ async function attemptHttpDenied(
 	name: string,
 	target: string,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
+	options: HttpDeniedAttemptOptions = {},
 ): Promise<NetworkProbeAttempt> {
 	const startedAt = Date.now();
 	const controller = new AbortController();
@@ -489,7 +491,7 @@ async function attemptHttpDenied(
 	} catch (error) {
 		const { name: errorName, code, message } = normalizeNetworkError(error);
 		const isTimeout = errorName === "AbortError" || code === "ETIMEDOUT";
-		const isPositiveDenial = code !== undefined && POSITIVE_NETWORK_DENIAL_ERROR_CODES.has(code);
+		const isPositiveDenial = code !== undefined && options.positiveErrorCodes?.has(code) === true;
 		return {
 			name,
 			kind: "http",
@@ -502,7 +504,7 @@ async function attemptHttpDenied(
 					? "inconclusive_timeout"
 					: "inconclusive_error",
 			detail: isPositiveDenial
-				? `target was actively denied with ${code}`
+				? `${options.positiveErrorDetail ?? "target was actively denied"} with ${code}`
 				: `target denial was inconclusive: ${redactSecrets(message)}`,
 			durationMs: Date.now() - startedAt,
 			errorName,
@@ -641,7 +643,12 @@ async function attemptDnsGuardDenied(
 		};
 	}
 
-	const attempt = await attemptHttpDenied(name, target, timeoutMs);
+	const attempt = await attemptHttpDenied(name, target, timeoutMs, {
+		positiveErrorCodes: resolvedAddresses.some((address) => address.nonOverridable)
+			? DNS_GUARD_NETWORK_DENIAL_ERROR_CODES
+			: undefined,
+		positiveErrorDetail: "DNS guard denied a non-overridable blocked address",
+	});
 	return {
 		...attempt,
 		kind: "dns_guard",

@@ -403,6 +403,18 @@ async function startProbeServer(
 	};
 }
 
+async function startPolicyDeniedProbeServer(): Promise<{
+	url: string;
+	requests: { count: number };
+	close: () => Promise<void>;
+}> {
+	return startProbeServer((_req, res) => {
+		res.statusCode = 403;
+		res.setHeader("x-telclaude-network-policy", "denied");
+		res.end("denied");
+	});
+}
+
 async function closedProbeUrl(): Promise<string> {
 	const server = net.createServer();
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -447,11 +459,11 @@ function spyOnDeterministicDnsDenialFetch(): ReturnType<typeof vi.spyOn> {
 }
 
 function spyOnNetworkProbeFetch(options: {
-	readonly positiveDenyTargets?: readonly string[];
+	readonly networkErrorTargets?: readonly string[];
 	readonly inconclusiveTargets?: readonly string[];
 }): ReturnType<typeof vi.spyOn> {
 	const realFetch = globalThis.fetch;
-	const positiveDenyTargets = new Set(options.positiveDenyTargets ?? []);
+	const networkErrorTargets = new Set(options.networkErrorTargets ?? []);
 	const inconclusiveTargets = new Set(options.inconclusiveTargets ?? []);
 	return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
 		const target = fetchTarget(input);
@@ -460,7 +472,7 @@ function spyOnNetworkProbeFetch(options: {
 				new TypeError("fetch failed", { cause: deterministicDnsDenialFetchCause() }),
 			);
 		}
-		if (positiveDenyTargets.has(target)) {
+		if (networkErrorTargets.has(target)) {
 			const cause = new Error(`connect ENETUNREACH ${target}`) as Error & { code: string };
 			cause.code = "ENETUNREACH";
 			return Promise.reject(new TypeError("fetch failed", { cause }));
@@ -719,10 +731,10 @@ function passingNetworkProbeAttempts(id: string) {
 					expectation: "deny",
 					status: "pass",
 					observed: "denied",
-					detail: "target was actively denied with ECONNREFUSED",
+					detail: "DNS guard denied a non-overridable blocked address with EHOSTDOWN",
 					durationMs: 1,
 					errorName: "TypeError",
-					errorCode: "ECONNREFUSED",
+					errorCode: "EHOSTDOWN",
 					resolvedAddresses: [
 						{
 							address: "169.254.169.254",
@@ -758,11 +770,10 @@ function passingHttpDenialAttempt(name: string, target: string) {
 		target,
 		expectation: "deny",
 		status: "pass",
-		observed: "denied",
-		detail: "target was actively denied with ECONNREFUSED",
+		observed: "policy_denied",
+		detail: "target was denied by the Telclaude network policy proxy",
 		durationMs: 1,
-		errorName: "TypeError",
-		errorCode: "ECONNREFUSED",
+		httpStatus: 403,
 	};
 }
 
@@ -2177,13 +2188,12 @@ describe("Hermes wrapper foundation", () => {
 	it("writes passing network-probe artifacts from observed denials and a reachable relay control", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
+		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			ensureOperatorRelayKeys();
 			const outPath = path.join(tempDir, "network-probes.json");
 			const evidenceDir = path.join(tempDir, "evidence");
-			const deniedProviderUrl = await closedProbeUrl();
-			const deniedModelUrl = await closedProbeUrl();
 
 			const result = await runHermesCommand([
 				"hermes",
@@ -2193,9 +2203,9 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				requiredProviderUrlCsv(deniedProviderUrl),
+				requiredProviderUrlCsv(policyDenied.url),
 				"--model-url",
-				deniedModelUrl,
+				policyDenied.url,
 				"--dns-url",
 				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
@@ -2214,7 +2224,7 @@ describe("Hermes wrapper foundation", () => {
 				evidence: Array<{
 					id: string;
 					status: string;
-					attempts: Array<{ name: string; observed: string; errorCode?: string }>;
+					attempts: Array<{ name: string; observed: string; httpStatus?: number }>;
 				}>;
 			};
 			const bundle = readJson(outPath) as {
@@ -2232,12 +2242,12 @@ describe("Hermes wrapper foundation", () => {
 				report.evidence
 					.find((probe) => probe.id === "network.direct-provider-denied")
 					?.attempts.find((attempt) => attempt.name === "provider:bank"),
-			).toMatchObject({ observed: "denied", errorCode: "ECONNREFUSED" });
+			).toMatchObject({ observed: "policy_denied", httpStatus: 403 });
 			expect(
 				report.evidence
 					.find((probe) => probe.id === "network.direct-provider-denied")
 					?.attempts.find((attempt) => attempt.name === "provider:clalit"),
-			).toMatchObject({ observed: "denied", errorCode: "ECONNREFUSED" });
+			).toMatchObject({ observed: "policy_denied", httpStatus: 403 });
 			expect(
 				report.evidence
 					.find((probe) => probe.id === "network.relay-control-allowed")
@@ -2245,6 +2255,7 @@ describe("Hermes wrapper foundation", () => {
 			).toMatchObject({ observed: "reachable" });
 		} finally {
 			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await relay.close();
 		}
 	});
@@ -2252,6 +2263,7 @@ describe("Hermes wrapper foundation", () => {
 	it("writes contained-internal network-probe artifacts without a firewall sentinel", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
+		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			ensureOperatorRelayKeys();
@@ -2265,9 +2277,9 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				requiredProviderUrlCsv(await closedProbeUrl()),
+				requiredProviderUrlCsv(policyDenied.url),
 				"--model-url",
-				await closedProbeUrl(),
+				policyDenied.url,
 				"--dns-url",
 				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
@@ -2296,6 +2308,7 @@ describe("Hermes wrapper foundation", () => {
 			).toEqual([]);
 		} finally {
 			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await relay.close();
 		}
 	});
@@ -2303,7 +2316,8 @@ describe("Hermes wrapper foundation", () => {
 	it("lets TELCLAUDE_HERMES_NETWORK_MODEL_URL override the network-probe default", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-model-env-"));
 		const relay = await startProbeServer();
-		const deniedModelUrl = await closedProbeUrl();
+		const policyDenied = await startPolicyDeniedProbeServer();
+		const deniedModelUrl = policyDenied.url;
 		const fetchSpy = spyOnNetworkProbeFetch({
 			inconclusiveTargets: [DEFAULT_MODEL_PROVIDER_PROBE_URL],
 		});
@@ -2320,7 +2334,7 @@ describe("Hermes wrapper foundation", () => {
 					"--relay-url",
 					relay.url,
 					"--provider-url",
-					requiredProviderUrlCsv(await closedProbeUrl()),
+					requiredProviderUrlCsv(policyDenied.url),
 					"--dns-url",
 					DETERMINISTIC_DNS_DENIAL_URL,
 					"--vault-socket",
@@ -2336,7 +2350,7 @@ describe("Hermes wrapper foundation", () => {
 				status: string;
 				evidence: Array<{
 					id: string;
-					attempts: Array<{ name: string; target: string; observed: string; errorCode?: string }>;
+					attempts: Array<{ name: string; target: string; observed: string; httpStatus?: number }>;
 				}>;
 			};
 
@@ -2347,20 +2361,22 @@ describe("Hermes wrapper foundation", () => {
 					?.attempts.find((attempt) => attempt.name === "model-provider"),
 			).toMatchObject({
 				target: deniedModelUrl,
-				observed: "denied",
-				errorCode: "ECONNREFUSED",
+				observed: "policy_denied",
+				httpStatus: 403,
 			});
 		} finally {
 			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await relay.close();
 		}
 	});
 
-	it("uses an IP blackhole for contained-internal model-provider probes when no model target is configured", async () => {
+	it("does not count the contained-internal model-provider blackhole as denial proof", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-model-ip-"));
 		const relay = await startProbeServer();
+		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnNetworkProbeFetch({
-			positiveDenyTargets: [DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL],
+			networkErrorTargets: [DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL],
 			inconclusiveTargets: [DEFAULT_MODEL_PROVIDER_PROBE_URL],
 		});
 		try {
@@ -2375,7 +2391,7 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				requiredProviderUrlCsv(await closedProbeUrl()),
+				requiredProviderUrlCsv(policyDenied.url),
 				"--dns-url",
 				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
@@ -2393,18 +2409,20 @@ describe("Hermes wrapper foundation", () => {
 				}>;
 			};
 
-			expect(result.exitCode, result.stdout).toBe(0);
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(report.status).toBe("fail");
 			expect(
 				report.evidence
 					.find((probe) => probe.id === "network.direct-model-provider-denied")
 					?.attempts.find((attempt) => attempt.name === "model-provider"),
 			).toMatchObject({
 				target: DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
-				observed: "denied",
+				observed: "inconclusive_error",
 				errorCode: "ENETUNREACH",
 			});
 		} finally {
 			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await relay.close();
 		}
 	});
@@ -2412,6 +2430,8 @@ describe("Hermes wrapper foundation", () => {
 	it("writes an unsigned network-probe run report when attestation is deferred", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-deferred-"));
 		const relay = await startProbeServer();
+		const policyDenied = await startPolicyDeniedProbeServer();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			const outPath = path.join(tempDir, "network-probes.json");
 			const evidenceDir = path.join(tempDir, "evidence");
@@ -2427,11 +2447,11 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				requiredProviderUrlCsv(await closedProbeUrl()),
+				requiredProviderUrlCsv(policyDenied.url),
 				"--model-url",
-				await closedProbeUrl(),
+				policyDenied.url,
 				"--dns-url",
-				await closedProbeUrl(),
+				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
 				"--run-report-out",
@@ -2455,6 +2475,8 @@ describe("Hermes wrapper foundation", () => {
 			expect(fs.existsSync(outPath)).toBe(false);
 			expect(fs.existsSync(evidenceDir)).toBe(false);
 		} finally {
+			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await relay.close();
 		}
 	});
@@ -2779,6 +2801,8 @@ describe("Hermes wrapper foundation", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
 		const provider = await startProbeServer();
+		const policyDenied = await startPolicyDeniedProbeServer();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			ensureOperatorRelayKeys();
 			const result = await runHermesCommand([
@@ -2791,9 +2815,9 @@ describe("Hermes wrapper foundation", () => {
 				"--provider-url",
 				provider.url,
 				"--model-url",
-				await closedProbeUrl(),
+				policyDenied.url,
 				"--dns-url",
-				await closedProbeUrl(),
+				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
 				"--firewall-sentinel",
@@ -2820,6 +2844,8 @@ describe("Hermes wrapper foundation", () => {
 					?.attempts.find((attempt) => attempt.name === "provider"),
 			).toMatchObject({ observed: "reachable", httpStatus: 204 });
 		} finally {
+			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await provider.close();
 			await relay.close();
 		}
@@ -2831,6 +2857,8 @@ describe("Hermes wrapper foundation", () => {
 		const hangingProvider = await startProbeServer(() => {
 			// Intentionally keep the socket open so the probe hits its own timeout path.
 		});
+		const policyDenied = await startPolicyDeniedProbeServer();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			ensureOperatorRelayKeys();
 			const result = await runHermesCommand([
@@ -2845,9 +2873,9 @@ describe("Hermes wrapper foundation", () => {
 				"--provider-url",
 				hangingProvider.url,
 				"--model-url",
-				await closedProbeUrl(),
+				policyDenied.url,
 				"--dns-url",
-				await closedProbeUrl(),
+				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
 				"--firewall-sentinel",
@@ -2874,6 +2902,8 @@ describe("Hermes wrapper foundation", () => {
 					?.attempts.find((attempt) => attempt.name === "provider"),
 			).toMatchObject({ observed: "inconclusive_timeout" });
 		} finally {
+			fetchSpy.mockRestore();
+			await policyDenied.close();
 			await hangingProvider.close();
 			await relay.close();
 		}
@@ -2881,48 +2911,55 @@ describe("Hermes wrapper foundation", () => {
 
 	it("fails network-probes when the allowed relay control cannot connect", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const policyDenied = await startPolicyDeniedProbeServer();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		ensureOperatorRelayKeys();
-		const result = await runHermesCommand([
-			"hermes",
-			"network-probes",
-			"--allow-run",
-			"--json",
-			"--relay-url",
-			await closedProbeUrl(),
-			"--provider-url",
-			await closedProbeUrl(),
-			"--model-url",
-			await closedProbeUrl(),
-			"--dns-url",
-			await closedProbeUrl(),
-			"--vault-socket",
-			path.join(tempDir, "missing-vault.sock"),
-			"--firewall-sentinel",
-			writeFirewallSentinel(tempDir),
-			"--out",
-			path.join(tempDir, "network-probes.json"),
-			"--evidence-dir",
-			path.join(tempDir, "evidence"),
-		]);
-		const report = JSON.parse(result.stdout) as {
-			status: string;
-			evidence: Array<{
-				id: string;
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--relay-url",
+				await closedProbeUrl(),
+				"--provider-url",
+				policyDenied.url,
+				"--model-url",
+				policyDenied.url,
+				"--dns-url",
+				DETERMINISTIC_DNS_DENIAL_URL,
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--firewall-sentinel",
+				writeFirewallSentinel(tempDir),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
 				status: string;
-				attempts: Array<{ name: string; observed: string }>;
-			}>;
-		};
+				evidence: Array<{
+					id: string;
+					status: string;
+					attempts: Array<{ name: string; observed: string }>;
+				}>;
+			};
 
-		expect(result.exitCode).toBe(1);
-		expect(report.status).toBe("fail");
-		expect(
-			report.evidence
-				.find((probe) => probe.id === "network.relay-control-allowed")
-				?.attempts.find((attempt) => attempt.name === "relay-control"),
-		).toMatchObject({ observed: "unreachable" });
-		expect(
-			report.evidence.find((probe) => probe.id === "network.direct-provider-denied"),
-		).toMatchObject({ status: "pass" });
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("fail");
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.relay-control-allowed")
+					?.attempts.find((attempt) => attempt.name === "relay-control"),
+			).toMatchObject({ observed: "unreachable" });
+			expect(
+				report.evidence.find((probe) => probe.id === "network.direct-provider-denied"),
+			).toMatchObject({ status: "pass" });
+		} finally {
+			fetchSpy.mockRestore();
+			await policyDenied.close();
+		}
 	});
 
 	it("does not execute or write cli-headless evidence without --allow-run", async () => {
