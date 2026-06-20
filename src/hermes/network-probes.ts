@@ -33,6 +33,7 @@ export const DEFAULT_FIREWALL_SENTINEL_PATH = "/run/telclaude/firewall-active";
 export const DEFAULT_VAULT_SOCKET_PATH = "/run/vault/vault.sock";
 export const DEFAULT_MODEL_PROVIDER_PROBE_URL =
 	"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
+export const DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL = "http://192.0.2.1/";
 export const DEFAULT_DNS_EXFIL_PROBE_URLS = [
 	"http://169.254.169.254/latest/meta-data/",
 	"http://10.0.0.1/",
