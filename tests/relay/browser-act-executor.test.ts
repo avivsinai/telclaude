@@ -84,6 +84,14 @@ class FakeDriver implements BrowserActDriver {
 		this.dispatched.push(input);
 		this.onDispatch?.(input.verb);
 	}
+	async dispatchAndSettle(input: {
+		readonly verb: BrowserActVerb;
+		readonly target?: string;
+		readonly submittedValues?: BrowserActJsonValue;
+	}): Promise<BrowserActObservedSignals> {
+		await this.dispatch(input);
+		return this.settle();
+	}
 	async settle(): Promise<BrowserActObservedSignals> {
 		this.settleCalls += 1;
 		return this.observed;
@@ -227,42 +235,6 @@ describe("deriveBrowserActCommitmentSecret", () => {
 });
 
 describe("BrowserActExecutor entry-page navigation (Option A)", () => {
-	it("inline fill captures the navigated ENTRY page (not blank) — factory navigates before capture", async () => {
-		// Model the real driver factory contract: the page is created blank, then the
-		// factory navigates it to request.url BEFORE the executor captures/dispatches.
-		// If the entry nav were skipped, evidence would bind the about:blank revision.
-		const blankUrl = "about:blank";
-		const page = new FakeLivePage(blankUrl, PAGE_DOM);
-		const driver = new FakeDriver(page, new FakeContext(), {});
-		const pool = new BrowserActSessionPool<BrowserActDriver>({ sweepIntervalMs: 0 });
-		const navigatingFactory = (request: BrowserActRequest): BrowserActDriver => {
-			// The factory lands the live page on the server-resolved entry url.
-			page.currentUrl = request.url;
-			return driver;
-		};
-		const executor = new BrowserActExecutor({
-			driverFactory: navigatingFactory,
-			pool,
-			screenshotSink: new FakeSink(),
-			contextTokenSecret: CONTEXT_TOKEN_SECRET,
-			resolveApprover: () => "telegram:default:human",
-		});
-
-		const result = await executor.act(
-			commitRequest("n/a", { verb: "fill", target: "#email", submittedValues: "a@b.com" }),
-		);
-		expect(result.committing).toBe(false);
-		if (result.committing) throw new Error("unreachable");
-		// Evidence reflects the ENTRY page origin/url, never about:blank.
-		expect(result.evidence.urlOrigin).toBe("https://shop.example.com");
-		expect(page.currentUrl).toBe(ENTRY_URL);
-		expect(page.currentUrl).not.toBe(blankUrl);
-		// The inline fill ran against the navigated entry page.
-		expect(driver.dispatched).toEqual([
-			{ verb: "fill", target: "#email", submittedValues: "a@b.com" },
-		]);
-	});
-
 	it("prepareIntent captures the navigated ENTRY page for the WYSIWYS binding (not blank)", async () => {
 		const page = new FakeLivePage("about:blank", PAGE_DOM);
 		const driver = new FakeDriver(page, new FakeContext());
@@ -291,27 +263,31 @@ describe("BrowserActExecutor entry-page navigation (Option A)", () => {
 	});
 });
 
-describe("BrowserActExecutor non-committing act", () => {
-	it("runs a fill inline, returns evidence, and keeps no pool custody", async () => {
+describe("BrowserActExecutor inline act", () => {
+	it("refuses inline fill without dispatching or opening custody", async () => {
 		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
 		const { executor, pool } = buildExecutor({ driver });
-		const result = await executor.act(
-			commitRequest("n/a", { verb: "fill", target: "#email", submittedValues: "a@b.com" }),
-		);
-		expect(result.committing).toBe(false);
-		if (result.committing) throw new Error("unreachable");
-		expect(result.evidence.commitSignal.forceConfirm).toBe(false);
-		expect(driver.dispatched).toHaveLength(1);
-		expect(driver.dispatched[0]?.verb).toBe("fill");
-		expect(driver.page.closes).toBe(1);
-		expect(driver.context.closes).toBe(1);
+
+		await expect(
+			executor.act(
+				commitRequest("n/a", {
+					verb: "fill",
+					target: "#email",
+					submittedValues: "a@b.com",
+				}),
+			),
+		).rejects.toMatchObject({ code: "browser_act_inline_disabled" });
+		expect(driver.dispatched).toHaveLength(0);
+		expect(driver.settleCalls).toBe(0);
+		expect(driver.page.closes).toBe(0);
+		expect(driver.context.closes).toBe(0);
 		expect(pool.size()).toBe(0);
 	});
 
-	it("refuses a committing verb on the inline path (must prepareIntent)", async () => {
+	it("refuses committing verbs on the inline path before dispatch", async () => {
 		const { executor } = buildExecutor({});
 		await expect(executor.act(commitRequest("n/a"))).rejects.toMatchObject({
-			code: "browser_act_requires_prepare",
+			code: "browser_act_inline_disabled",
 		});
 	});
 
@@ -326,43 +302,22 @@ describe("BrowserActExecutor non-committing act", () => {
 					submittedValues: "https://shop.example.com/account/delete",
 				}),
 			),
-		).rejects.toMatchObject({ code: "browser_act_requires_prepare" });
-		// The navigation never fired: classify refuses BEFORE any driver dispatch.
+		).rejects.toMatchObject({ code: "browser_act_inline_disabled" });
 		expect(driver.dispatched).toHaveLength(0);
 		expect(driver.dispatched.some((d) => d.verb === "goto")).toBe(false);
 		expect(driver.settleCalls).toBe(0);
 		expect(pool.size()).toBe(0);
 	});
 
-	it("stages an escalated non-committing fill (forceConfirm:true) instead of refusing", async () => {
-		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
-		const { executor } = buildExecutor({ driver });
-		await expect(
-			executor.act(
-				commitRequest("n/a", {
-					verb: "fill",
-					target: "#email",
-					submittedValues: "a@b.com",
-					forceConfirm: true,
-				}),
-			),
-		).rejects.toMatchObject({ code: "browser_act_requires_prepare" });
-		// An escalated act must NOT run inline either; the driver never dispatched.
-		expect(driver.dispatched).toHaveLength(0);
-	});
-
-	it("refuses an inline act carrying a resolved login session (defense-in-depth)", async () => {
+	it("refuses an inline act carrying a resolved login session with the same hard gate", async () => {
 		const driver = new FakeDriver(new FakeLivePage(PAGE_URL, PAGE_DOM), new FakeContext(), {});
 		const { executor, pool } = buildExecutor({ driver });
-		// The relay surface refuses cookie-bearing inline acts upstream; this proves the
-		// executor's own guard so a future caller that bypasses the surface still cannot run
-		// inline with a login attached.
 		const cookieBearing = {
 			...commitRequest("n/a", { verb: "fill", target: "#email", submittedValues: "a@b.com" }),
 			session: { storageState: { cookies: [] }, originScope: ["shop.example.com"] },
 		} as BrowserActRequest;
 		await expect(executor.act(cookieBearing)).rejects.toMatchObject({
-			code: "browser_act_cookie_bearing_requires_prepare",
+			code: "browser_act_inline_disabled",
 		});
 		expect(driver.dispatched).toHaveLength(0);
 		expect(pool.size()).toBe(0);

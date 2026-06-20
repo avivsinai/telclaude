@@ -139,11 +139,10 @@ export type TelclaudeMcpBrowserActVerb =
 	| "type";
 
 /**
- * A non-committing interactive act (fill/type/select/press/non-committing
- * click/navigate). The runtime names only the typed action + the entry url; the
- * relay server-stamps authority and resolves the session/host/origin scope just
- * like tc_browse. Runs inline with NO ledger and NO approval. A committing act
- * (or forceConfirm) is rejected here and must go through prepare/execute.
+ * Legacy inline browser-act request shape. The runtime names only the typed
+ * action + the entry url; the relay server-stamps authority and resolves the
+ * session/host/origin scope just like tc_browse. Production now refuses inline
+ * mutation and requires prepare/approval/execute for every interaction.
  */
 export type TelclaudeMcpBrowserActRequest = TelclaudeMcpAuthorityStamp & {
 	url: string;
@@ -154,9 +153,9 @@ export type TelclaudeMcpBrowserActRequest = TelclaudeMcpAuthorityStamp & {
 };
 
 /**
- * Stage a COMMITTING interactive act (submit / a click that navigates or posts)
- * for human approval WITHOUT firing it. Same server-stamped authority + relay
- * session resolution as the inline act. Returns only an opaque actionRef + a
+ * Stage an interactive browser act for human approval WITHOUT firing it. Same
+ * server-stamped authority + relay session resolution as the legacy inline act.
+ * Returns only an opaque actionRef + a
  * redacted display summary — never the raw target/values or any token.
  */
 export type TelclaudeMcpBrowserActPrepareRequest = TelclaudeMcpAuthorityStamp & {

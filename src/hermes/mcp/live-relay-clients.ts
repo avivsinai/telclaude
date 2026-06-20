@@ -693,18 +693,12 @@ export function createTelclaudeLiveMcpRelayClients(
 				throw new TelclaudeLiveMcpToolNotConfiguredError("tc_browse_act");
 			}
 			consumeRateLimit("web_browse", request.actorId);
-			// The executor refuses a committing act (or forceConfirm) on the inline
-			// path with a typed `browser_act_requires_prepare`; surface it as-is.
-			const result = await options.browserAct.act(
+			// Inline browser mutation is intentionally disabled at the relay surface;
+			// the typed fail-closed error tells the runtime to prepare + approve.
+			await options.browserAct.act(
 				browserActSurfaceRequest(request, request.verb, request.target, request.submittedValues),
 			);
-			await auditFromRequest(request, "web.browse_act", {
-				url: redactSecrets(request.url),
-				verb: request.verb,
-				committing: false,
-				finalUrl: redactSecrets(result.evidence.urlOrigin ?? ""),
-			});
-			return browserActInlineView(result);
+			throw new BrowserActInlineDisabledError();
 		},
 
 		async browseActPrepare(request: TelclaudeMcpBrowserActPrepareRequest) {
@@ -1438,6 +1432,14 @@ class BrowserGotoDestinationError extends Error {
 	}
 }
 
+class BrowserActInlineDisabledError extends Error {
+	readonly code = "browser_act_inline_disabled";
+	constructor() {
+		super("inline browser acts are disabled; use prepare + approval + execute");
+		this.name = "BrowserActInlineDisabledError";
+	}
+}
+
 /**
  * For a `goto` act the navigation destination is the submittedValues string (the
  * driver does `page.goto(submittedValues)`), NOT request.url. That destination is
@@ -1488,30 +1490,6 @@ function browserActSurfaceRequest(
 			? { submittedValues: submittedValues as BrowserActSurfaceRequest["submittedValues"] }
 			: {}),
 		...(request.timeoutMs !== undefined ? { settleTimeoutMs: request.timeoutMs } : {}),
-	};
-}
-
-/**
- * The safe view of a non-committing act returned to the runtime: the resolved
- * origin, the opaque HMAC page revision, and the relay-computed commit signal.
- * The screenshot ref (a relay filepath), the DOM digest, and the raw page text
- * are NOT returned — the runtime gets confirmation of the page state, not bytes.
- */
-function browserActInlineView(result: {
-	readonly evidence: {
-		readonly urlOrigin: string | null;
-		readonly revision: string;
-		readonly commitSignal: { readonly forceConfirm: boolean; readonly reasons: readonly string[] };
-	};
-}): Record<string, unknown> {
-	return {
-		committing: false,
-		urlOrigin: result.evidence.urlOrigin,
-		pageRevision: result.evidence.revision,
-		commitSignal: {
-			forceConfirm: result.evidence.commitSignal.forceConfirm,
-			reasons: result.evidence.commitSignal.reasons,
-		},
 	};
 }
 

@@ -4,15 +4,12 @@
  *
  * The contained (untrusted) runtime never drives a browser. It asks the relay,
  * through the served MCP, to act on an interactive session. This executor runs
- * relay-side. It splits acts by their commit signal:
+ * relay-side. All mutating acts go through the two-phase write-confirm path:
  *
- * - NON-committing acts (fill/type) on cookie-less public pages mutate the page
- *   inline and return relay-owned evidence. They cross no approval boundary, so they
- *   do not touch the side-effect ledger. selectOption/click/press/goto — and ANY act
- *   on a resolved logged-in session — are committing: the surface refuses them inline
- *   and routes them to prepare.
- * - COMMITTING acts (submit, a click that navigates/posts, …) are two-phase:
- *   `prepareIntent` captures the SETTLED pre-commit page WITHOUT firing, stages a
+ * - `act()` is fail-closed. Inline browser mutation is disabled because even
+ *   fill/type can synchronously disclose values or trigger page JavaScript before
+ *   a post-act classifier can undo the side effect.
+ * - `prepareIntent` captures the SETTLED pre-commit page WITHOUT firing, stages a
  *   `prepareBrowserWrite` record for human approval, and HOLDS the live page +
  *   the approved submitted values in the relay-only session pool keyed by the
  *   ledger ref. The committing act itself fires only later, via the
@@ -46,7 +43,6 @@ import {
 	type BrowserActObservedSignals,
 	type BrowserActScreenshotSink,
 	captureBrowserActEvidence,
-	classifyCommitSignal,
 } from "./browser-act-evidence.js";
 import type {
 	BrowserActHeldDriver,
@@ -83,17 +79,20 @@ export interface BrowserActDriver extends BrowserActHeldDriver {
 	readonly page: BrowserActLivePage;
 	/** The live context, closed by the pool on eviction (M6). */
 	readonly context: BrowserActLiveContext;
-	/** Dispatch a Playwright verb against the live page. */
-	dispatch(input: {
-		readonly verb: BrowserActVerb;
-		readonly target?: string;
-		readonly submittedValues?: BrowserActJsonValue;
-	}): Promise<void>;
 	/**
-	 * Wait for the page to settle after a dispatched act (navigation/network
-	 * idle). Returns the observed signals seen during the action window.
+	 * Register mutation/navigation observers, dispatch the Playwright verb while
+	 * they are armed, then wait for the page to settle. Executor commit paths use
+	 * this atomic seam so synchronous fill/type autosaves cannot fire before the
+	 * observation window opens.
 	 */
-	settle(options: { readonly timeoutMs: number }): Promise<BrowserActObservedSignals>;
+	dispatchAndSettle(
+		input: {
+			readonly verb: BrowserActVerb;
+			readonly target?: string;
+			readonly submittedValues?: BrowserActJsonValue;
+		},
+		options: { readonly timeoutMs: number },
+	): Promise<BrowserActObservedSignals>;
 }
 
 /** The pool the executor uses holds the full act driver per pending committing act. */
@@ -214,86 +213,17 @@ export class BrowserActExecutor {
 	}
 
 	/**
-	 * Execute a NON-committing act (fill/type) inline on a COOKIE-LESS public page and
-	 * return its relay-owned evidence. The relay surface refuses inline acts on a
-	 * resolved logged-in session, and committing verbs (selectOption/click/press/goto)
-	 * are refused pre-dispatch and routed to prepareIntent — so this path only ever runs
-	 * a data-entry verb on a public page with no credentials. Runs under the per-session
-	 * serial lock so it never races a pending committing act on the same page. After
-	 * settling, the observed signals are re-classified and the act FAILS CLOSED if a
-	 * mutation actually fired (a "non-committing" verb that nonetheless navigated or
-	 * submitted). The live page is closed afterward — a non-committing act keeps no pool
-	 * custody.
+	 * Inline browser mutation is disabled. Even a nominally non-committing fill/type
+	 * can synchronously disclose values or trigger page JavaScript before a post-act
+	 * classifier can undo the side effect. All interactions must go through
+	 * prepareIntent + human approval + execute.
 	 */
 	async act(request: BrowserActRequest): Promise<BrowserActInlineResult> {
 		this.assertActIdentity(request);
-		// Defense-in-depth (mirrors the doubled verb gate below): the relay surface already
-		// refuses inline acts on a resolved cookie-bearing session, but guard here too so any
-		// future caller that bypasses the surface cannot run an inline act with a login
-		// attached. The session is resolved one layer up and threaded onto the request for the
-		// driver factory; its presence here means a logged-in context — never run inline.
-		if ((request as { readonly session?: unknown }).session) {
-			throw new BrowserActExecutorError(
-				"browser_act_cookie_bearing_requires_prepare",
-				"an inline act on a cookie-bearing session is not allowed; use prepareIntent + approval",
-			);
-		}
-		const commitSignal = classifyCommitSignal(
-			{
-				verb: request.verb,
-				...(request.target ? { target: request.target } : {}),
-				// forceConfirm is RELAY-set + escalate-only. Threading it here lets a
-				// relay-escalated non-committing verb refuse the inline path (and route to
-				// prepare); dropping it would silently downgrade an escalation.
-				...(request.forceConfirm !== undefined ? { forceConfirm: request.forceConfirm } : {}),
-			},
-			{},
+		throw new BrowserActExecutorError(
+			"browser_act_inline_disabled",
+			"inline browser acts are disabled; use prepareIntent + human approval",
 		);
-		if (commitSignal.forceConfirm) {
-			throw new BrowserActExecutorError(
-				"browser_act_requires_prepare",
-				"committing act (or forceConfirm) must go through prepareIntent, not inline act",
-			);
-		}
-		return this.pool.withSessionLock(request.sessionRef, async () => {
-			const driver = await this.driverFactory(request);
-			try {
-				await driver.dispatch({
-					verb: request.verb,
-					...(request.target ? { target: request.target } : {}),
-					...(request.submittedValues !== undefined
-						? { submittedValues: request.submittedValues }
-						: {}),
-				});
-				const observed = await driver.settle({
-					timeoutMs: request.settleTimeoutMs ?? DEFAULT_SETTLE_MS,
-				});
-				// Defense-in-depth: a verb classified non-committing can still trigger a
-				// page-driven navigation/submit/mutating request (onchange/oninput auto-save,
-				// single-field search-and-redirect). Re-run the classifier WITH the now-observed
-				// signals; if the inline act actually mutated, fail closed. The surface already
-				// blocks cookie-bearing inline acts, so this guards cookie-less public pages — an
-				// unexpected mutation there is refused, never returned as a clean result.
-				const postSettle = classifyCommitSignal(
-					{
-						verb: request.verb,
-						...(request.target ? { target: request.target } : {}),
-					},
-					observed,
-				);
-				if (postSettle.forceConfirm) {
-					throw new BrowserActExecutorError(
-						"browser_act_inline_mutation_observed",
-						"a non-committing inline act produced an observed mutation (navigation/submit/mutating request); failing closed",
-					);
-				}
-				const evidence = await this.captureEvidence(driver.page, request, observed);
-				return { committing: false, evidence };
-			} finally {
-				await safeClose(() => driver.page.close());
-				await safeClose(() => driver.context.close());
-			}
-		});
 	}
 
 	/**
@@ -340,7 +270,7 @@ export class BrowserActExecutor {
 				if (!evidence.commitSignal.forceConfirm) {
 					throw new BrowserActExecutorError(
 						"browser_act_not_committing",
-						"prepareIntent requires a committing act (or forceConfirm); use inline act otherwise",
+						"prepareIntent requires a committing act or relay-set forceConfirm",
 					);
 				}
 				const approver = (await this.resolveApprover(request)).trim();
@@ -419,12 +349,14 @@ export class BrowserActExecutor {
 					// the approved values from custody (never the ledger, never re-derived
 					// from the page DOM).
 					const { driver } = entry;
-					await driver.dispatch({
-						verb: record.actionVerb as BrowserActVerb,
-						...(record.actionTarget ? { target: record.actionTarget } : {}),
-						submittedValues: entry.approvedSubmittedValues,
-					});
-					const observed = await driver.settle({ timeoutMs: DEFAULT_SETTLE_MS });
+					const observed = await driver.dispatchAndSettle(
+						{
+							verb: record.actionVerb as BrowserActVerb,
+							...(record.actionTarget ? { target: record.actionTarget } : {}),
+							submittedValues: entry.approvedSubmittedValues,
+						},
+						{ timeoutMs: DEFAULT_SETTLE_MS },
+					);
 					// Redact to ORIGIN ONLY (scheme + host): the post-commit landing URL can
 					// carry a token/session in its path or query, and this receipt is returned
 					// to the contained runtime via tc_browse_act_execute. Origin-only confirms

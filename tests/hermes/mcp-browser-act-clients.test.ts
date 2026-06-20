@@ -48,27 +48,17 @@ describe("Telclaude live MCP browser-act clients", () => {
 		restoreEnv("TELCLAUDE_CONFIG", ORIGINAL_CONFIG);
 	});
 
-	it("runs a non-committing act inline and returns only the safe page view", async () => {
+	it("refuses inline browser acts before returning any page view", async () => {
 		const surface = recordingSurface();
 		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
 		const clients = makeClients({ surface, auditEntries });
 
-		const result = (await clients.browseAct(
-			actRequest({ verb: "fill", target: "#qty", submittedValues: "2" }),
-		)) as Record<string, unknown>;
+		await expect(
+			clients.browseAct(actRequest({ verb: "fill", target: "#qty", submittedValues: "2" })),
+		).rejects.toMatchObject({ code: "browser_act_inline_disabled" });
 
-		// Safe view only: no screenshot ref, no DOM digest, no raw target/values.
-		expect(result).toEqual({
-			committing: false,
-			urlOrigin: "https://shop.example.com",
-			pageRevision: "hmac-sha256:fake-revision",
-			commitSignal: { forceConfirm: false, reasons: [] },
-		});
-		expect(JSON.stringify(result)).not.toContain("screenshot");
-		expect(JSON.stringify(result)).not.toContain("#qty");
-
-		// The surface was driven with the relay-stamped authority + a server-derived
-		// sessionRef (the endpoint id) — the runtime named none of it.
+		// The client still stamps authority before reaching the surface, but no audit success
+		// entry or page view is produced.
 		expect(surface.actCalls).toEqual([
 			expect.objectContaining({
 				actor: "operator",
@@ -81,13 +71,7 @@ describe("Telclaude live MCP browser-act clients", () => {
 				submittedValues: "2",
 			}),
 		]);
-		expect(auditEntries).toEqual([
-			expect.objectContaining({
-				actorId: "operator",
-				kind: "web.browse_act",
-				payload: expect.objectContaining({ verb: "fill", committing: false }),
-			}),
-		]);
+		expect(auditEntries).toEqual([]);
 	});
 
 	it("fails closed when no browser-act surface is configured", async () => {

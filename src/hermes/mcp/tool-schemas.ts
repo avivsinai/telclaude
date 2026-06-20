@@ -422,15 +422,11 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 	{
 		name: "tc_browse_act",
 		description:
-			"Perform ONE non-committing data-entry action (fill or type) in the relay-owned contained " +
-			"browser, on a COOKIE-LESS public page only (requires the browse.act capability scope). Name " +
-			"the typed action plus the entry url; the relay server-stamps your authority and resolves the " +
-			"session — you cannot name your own session or scope. Runs inline with no approval. ANY " +
-			"committing action (selectOption, click, press, goto, a form submit, or anything that " +
-			"navigates/posts) AND any action on a logged-in (cookie-bearing) session are REJECTED here — " +
-			"use tc_browse_act_prepare for those. If an inline fill/type unexpectedly triggers a " +
-			"mutation, the result is denied. Returns relay-owned page evidence; the raw page bytes are " +
-			"never returned.",
+			"Deprecated fail-closed browser interaction endpoint (requires the browse.act capability " +
+			"scope). Inline browser mutation is disabled because even fill/type can synchronously " +
+			"disclose values or trigger page side effects before post-act classification can undo " +
+			"them. Use tc_browse_act_prepare followed by human approval and tc_browse_act_execute for " +
+			"all browser interactions.",
 		inputSchema: objectSchema(
 			{
 				url: {
@@ -462,10 +458,10 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 	{
 		name: "tc_browse_act_prepare",
 		description:
-			"Stage a COMMITTING interactive action (a form submit, or a click that navigates or posts) " +
+			"Stage an interactive browser action (fill, type, selectOption, press, click, or goto) " +
 			"in the relay-owned contained browser for human approval, WITHOUT firing it (requires the " +
-			"browse.act capability scope). Name the typed committing action plus the entry url; the " +
-			"relay server-stamps your authority, resolves the session, captures the page the human will " +
+			"browse.act capability scope). Name the typed action plus the entry url; the relay " +
+			"server-stamps your authority, resolves the session, captures the page the human will " +
 			"approve, and binds it. Returns ONLY an opaque actionRef and a redacted display summary — " +
 			"never the raw target, submitted values, or any approval token. The operator approves out " +
 			"of band; you then call tc_browse_act_execute with the actionRef.",
