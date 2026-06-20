@@ -39,8 +39,9 @@ export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
 	tc_schedule_list: "schedule.read",
 	tc_schedule_cancel: "schedule.write",
 	tc_browse: "browse.use",
-	// Interactive browser acts (fill/type/select/non-committing-click inline, plus
-	// the committing two-phase prepare/execute) require a SEPARATE, stronger scope
+	// Interactive browser acts (fill/type inline on cookie-less pages, plus the
+	// committing two-phase prepare/execute for everything else) require a SEPARATE,
+	// stronger scope
 	// than read-only browsing — an authority granted browse.use is not implicitly
 	// allowed to drive interactive writes. Fail-closed: no browse.act, no act.
 	tc_browse_act: "browse.act",

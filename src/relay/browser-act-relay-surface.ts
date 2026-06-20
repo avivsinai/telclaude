@@ -55,7 +55,11 @@ export interface BrowserActSurfaceRequest {
 
 /** The narrow surface the live-relay-clients layer calls for browser acts. */
 export interface BrowserActExecutorSurface {
-	/** Run a NON-committing act inline (fill/type/select/press/non-committing click/goto). */
+	/**
+	 * Run a NON-committing act (fill/type) inline on a cookie-less public page. Refuses
+	 * inline acts on a resolved logged-in session, and committing verbs
+	 * (selectOption/click/press/goto) route to prepareIntent.
+	 */
 	act(request: BrowserActSurfaceRequest): Promise<BrowserActInlineResult>;
 	/** Stage a COMMITTING act for approval, keyed by the pre-allocated ledger ref. */
 	prepareIntent(
@@ -148,6 +152,20 @@ export function createBrowserActExecutorSurface(
 	return {
 		async act(request) {
 			const { base } = resolved(request);
+			// HARDENING: an act on a RESOLVED logged-in (cookie-bearing) session must
+			// never run inline. The inline path classifies the commit signal from the verb
+			// BEFORE dispatch and only observes mutation AFTER it has fired, so a verb that
+			// looks non-committing (fill/type) but auto-submits on a logged-in page — many
+			// account settings save on change/blur — would perform an authenticated state
+			// change with no human approval and no WYSIWYS binding. Require prepareIntent +
+			// approval for ANY act on a resolved session; inline is reserved for cookie-less
+			// public pages.
+			if (base.session) {
+				throw new BrowserActSurfaceError(
+					"browser_act_cookie_bearing_requires_prepare",
+					"an act on a logged-in (cookie-bearing) session must go through prepareIntent + human approval, not inline act",
+				);
+			}
 			return options.executor.act(base);
 		},
 		async prepareIntent(request) {
