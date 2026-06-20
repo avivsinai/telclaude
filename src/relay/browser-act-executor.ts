@@ -212,11 +212,16 @@ export class BrowserActExecutor {
 	}
 
 	/**
-	 * Execute a NON-committing act (fill/type/select/navigate) inline and return
-	 * its relay-owned evidence. Resolves authority/session the same way a browse
-	 * does; runs under the per-session serial lock so it never races a pending
-	 * committing act on the same page. The live page is closed afterward — a
-	 * non-committing act keeps no pool custody.
+	 * Execute a NON-committing act (fill/type) inline on a COOKIE-LESS public page and
+	 * return its relay-owned evidence. The relay surface refuses inline acts on a
+	 * resolved logged-in session, and committing verbs (selectOption/click/press/goto)
+	 * are refused pre-dispatch and routed to prepareIntent — so this path only ever runs
+	 * a data-entry verb on a public page with no credentials. Runs under the per-session
+	 * serial lock so it never races a pending committing act on the same page. After
+	 * settling, the observed signals are re-classified and the act FAILS CLOSED if a
+	 * mutation actually fired (a "non-committing" verb that nonetheless navigated or
+	 * submitted). The live page is closed afterward — a non-committing act keeps no pool
+	 * custody.
 	 */
 	async act(request: BrowserActRequest): Promise<BrowserActInlineResult> {
 		this.assertActIdentity(request);
@@ -250,6 +255,25 @@ export class BrowserActExecutor {
 				const observed = await driver.settle({
 					timeoutMs: request.settleTimeoutMs ?? DEFAULT_SETTLE_MS,
 				});
+				// Defense-in-depth: a verb classified non-committing can still trigger a
+				// page-driven navigation/submit/mutating request (onchange/oninput auto-save,
+				// single-field search-and-redirect). Re-run the classifier WITH the now-observed
+				// signals; if the inline act actually mutated, fail closed. The surface already
+				// blocks cookie-bearing inline acts, so this guards cookie-less public pages — an
+				// unexpected mutation there is refused, never returned as a clean result.
+				const postSettle = classifyCommitSignal(
+					{
+						verb: request.verb,
+						...(request.target ? { target: request.target } : {}),
+					},
+					observed,
+				);
+				if (postSettle.forceConfirm) {
+					throw new BrowserActExecutorError(
+						"browser_act_inline_mutation_observed",
+						"a non-committing inline act produced an observed mutation (navigation/submit/mutating request); failing closed",
+					);
+				}
 				const evidence = await this.captureEvidence(driver.page, request, observed);
 				return { committing: false, evidence };
 			} finally {

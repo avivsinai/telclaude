@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	BROWSER_ACT_EVIDENCE_SCHEMA_VERSION,
 	type BrowserActEvidencePage,
 	type BrowserActScreenshotSink,
-	BROWSER_ACT_EVIDENCE_SCHEMA_VERSION,
 	captureBrowserActEvidence,
 	classifyCommitSignal,
 	normalizeBrowserDom,
 } from "../../src/relay/browser-act-evidence.js";
+import type { BrowserActVerb } from "../../src/relay/browser-act-executor.js";
 
 const COMMITMENT_SECRET = "browser-act-evidence-test-secret-32b";
 
@@ -216,10 +217,12 @@ describe("browser act evidence", () => {
 	});
 
 	it("treats forceConfirm and observed browser commit signals as escalation-only", () => {
-		expect(classifyCommitSignal({ verb: "hover", forceConfirm: false }).forceConfirm).toBe(false);
+		// `fill` is a provably non-committing verb (in the allowlist), so this isolates
+		// the escalation: only forceConfirm + observed signals drive the classification.
+		expect(classifyCommitSignal({ verb: "fill", forceConfirm: false }).forceConfirm).toBe(false);
 
 		const signal = classifyCommitSignal(
-			{ verb: "hover", forceConfirm: true },
+			{ verb: "fill", forceConfirm: true },
 			{
 				navigation: true,
 				formSubmit: true,
@@ -239,5 +242,49 @@ describe("browser act evidence", () => {
 			"playwright.form_submit_observed",
 			"playwright.mutating_request_observed",
 		]);
+	});
+});
+
+describe("classifyCommitSignal verb classification (HIGH#2 inline-act regression)", () => {
+	// Compile-time exhaustiveness guard: a Record over the BrowserActVerb union fails to
+	// typecheck if a verb is added to the union without being classified here (or if a
+	// non-verb key is listed). This is the build-time guard the inline-act hardening
+	// relies on — the allowlist in browser-act-evidence.ts treats any unlisted verb as
+	// committing (fail-closed), so drift can never silently make a verb inline-able.
+	const VERB_CLASS: Record<BrowserActVerb, "committing" | "non-committing"> = {
+		fill: "non-committing",
+		type: "non-committing",
+		selectOption: "committing",
+		click: "committing",
+		press: "committing",
+		goto: "committing",
+	};
+
+	it("classifies every BrowserActVerb as intended; only fill/type run inline", () => {
+		for (const [verb, klass] of Object.entries(VERB_CLASS)) {
+			const committing = classifyCommitSignal({ verb }, {}).forceConfirm;
+			expect(committing, `${verb} should be ${klass}`).toBe(klass === "committing");
+		}
+	});
+
+	it("selectOption (the union value, not the absent 'select') is committing", () => {
+		// Regression: the old denylist listed "select" and never matched "selectOption",
+		// so a <select> change ran inline with no approval and no WYSIWYS binding.
+		const signal = classifyCommitSignal({ verb: "selectOption" }, {});
+		expect(signal.forceConfirm).toBe(true);
+		expect(signal.reasons).toContain("action.verb.selectoption");
+	});
+
+	it("an unknown/future verb is committing (allowlist fails closed)", () => {
+		expect(classifyCommitSignal({ verb: "drag" }, {}).forceConfirm).toBe(true);
+		expect(classifyCommitSignal({ verb: "" }, {}).forceConfirm).toBe(true);
+	});
+
+	it("an observed mutation forces commit even for a non-committing verb (post-settle re-gate basis)", () => {
+		expect(classifyCommitSignal({ verb: "fill" }, { navigation: true }).forceConfirm).toBe(true);
+		expect(classifyCommitSignal({ verb: "type" }, { formSubmit: true }).forceConfirm).toBe(true);
+		expect(classifyCommitSignal({ verb: "fill" }, { mutatingRequest: true }).forceConfirm).toBe(
+			true,
+		);
 	});
 });

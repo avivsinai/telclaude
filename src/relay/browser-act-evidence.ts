@@ -181,7 +181,7 @@ export function classifyCommitSignal(
 	);
 
 	if (action.forceConfirm === true) reasons.push("action.force_confirm");
-	if (COMMITTING_VERBS.has(verb)) reasons.push(`action.verb.${verb}`);
+	if (!NON_COMMITTING_VERBS.has(verb)) reasons.push(`action.verb.${verb}`);
 	if (observedSignals.navigation) reasons.push("playwright.navigation_observed");
 	if (observedSignals.formSubmit) reasons.push("playwright.form_submit_observed");
 	if (mutatingRequest) reasons.push("playwright.mutating_request_observed");
@@ -305,20 +305,20 @@ function safeUrlOrigin(url: string): string | null {
 	}
 }
 
-const COMMITTING_VERBS = new Set([
-	"check",
-	"click",
-	// `goto` performs a real navigation in a cookie-bearing session, and many
-	// account mutations are GET-triggered (confirm/unsubscribe/delete links), so an
-	// inline goto would be an approval bypass. Treat it as committing: inline act()
-	// refuses it (must prepareIntent), and prepare stages it for approval.
-	"goto",
-	"press",
-	"select",
-	"setinputfiles",
-	"submit",
-	"uncheck",
-	"upload",
-]);
+// Provably NON-committing verbs: pure data entry into a single field that does not
+// itself navigate or submit. This is an ALLOWLIST, not a denylist — every other verb
+// is treated as committing and routed to prepare + human approval (fail-closed). That
+// includes `selectOption` (a `<select>` change can auto-apply), `click`/`press`/`goto`,
+// and any unknown/future `BrowserActVerb`. A denylist silently mis-classified the union
+// value `selectOption` as the absent `select` and let it run inline with no approval; an
+// allowlist makes a forgotten verb committing by default. The parity test in
+// `tests/relay/browser-act-evidence.test.ts` asserts every `BrowserActVerb`.
+//
+// NOTE: a non-committing classification is necessary but NOT sufficient to run inline.
+// A logged-in (cookie-bearing) act NEVER runs inline regardless of verb — the relay
+// surface refuses it and requires prepare + approval. Inline acts are reserved for
+// cookie-less public pages, where `act()` additionally fails closed if the settle step
+// observes a mutation (navigation/submit/mutating request) the verb did not predict.
+const NON_COMMITTING_VERBS = new Set<string>(["fill", "type"]);
 
 const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);

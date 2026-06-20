@@ -89,7 +89,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 		expect(resolved?.url).toBe("https://shop.example.com/cart?step=1");
 	});
 
-	it("attaches a stored login + its origin scope for a matching authority", async () => {
+	it("attaches a stored login + its origin scope for a matching authority (via prepareIntent — cookie-bearing acts must prepare)", async () => {
 		store.putSession({
 			credentialRef: "cred-shop",
 			actorId: "operator",
@@ -108,7 +108,9 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 			catastrophicDomains: [],
 		});
 
-		await surface.act({
+		// A cookie-bearing act routes through prepareIntent (human approval); the resolved
+		// login + its M1 origin scope are attached to the executor request.
+		await surface.prepareIntent({
 			actor: "operator",
 			profileId: "ops",
 			mcpDomain: "private",
@@ -116,11 +118,49 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 			url: "https://shop.example.com/account",
 			verb: "click",
 			target: "#open",
+			actionRef: "effect-shop-1",
 		});
 
-		const resolved = fake.actRequests[0];
+		const resolved = fake.prepareRequests[0];
 		expect(resolved?.session).toBeDefined();
 		expect(resolved?.originScope).toEqual(["shop.example.com"]);
+	});
+
+	it("refuses an inline act on a resolved logged-in session — even a non-committing verb (HIGH#1)", async () => {
+		store.putSession({
+			credentialRef: "cred-shop",
+			actorId: "operator",
+			profileId: "ops",
+			authorityDomain: "private",
+			domain: "shop.example.com",
+			originScope: ["shop.example.com"],
+			storageState: { cookies: [{ name: "sid", value: "x" }] },
+			createdAt: Date.now(),
+			capturedBy: "operator",
+		});
+		const fake = fakeExecutor();
+		const surface = createBrowserActExecutorSurface({
+			executor: fake.executor,
+			cookieStore: store,
+			catastrophicDomains: [],
+		});
+
+		// `fill` is a non-committing verb, but on a logged-in page an auto-submit-on-change
+		// field would be an unapproved authenticated write. The surface refuses ALL inline
+		// acts on a resolved session and never reaches the executor.
+		await expect(
+			surface.act({
+				actor: "operator",
+				profileId: "ops",
+				mcpDomain: "private",
+				sessionRef: "endpoint-private",
+				url: "https://shop.example.com/settings",
+				verb: "fill",
+				target: "#notify-email",
+				submittedValues: "new@example.com",
+			}),
+		).rejects.toMatchObject({ code: "browser_act_cookie_bearing_requires_prepare" });
+		expect(fake.actRequests).toHaveLength(0);
 	});
 
 	it("never resolves a private login for a social/public authority (no cross-persona bleed)", async () => {
