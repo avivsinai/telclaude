@@ -327,11 +327,12 @@ function safeUrlOrigin(url: string): string | null {
 // allowlist makes a forgotten verb committing by default. The parity test in
 // `tests/relay/browser-act-evidence.test.ts` asserts every `BrowserActVerb`.
 //
-// NOTE: a non-committing classification is necessary but NOT sufficient to run inline.
-// A logged-in (cookie-bearing) act NEVER runs inline regardless of verb — the relay
-// surface refuses it and requires prepare + approval. Inline acts are reserved for
-// cookie-less public pages, where `act()` additionally fails closed if the settle step
-// observes a mutation (navigation/submit/mutating request) the verb did not predict.
+// NOTE: this is purely a SIGNAL classification — `fill`/`type` being "non-committing" drives
+// forceConfirm escalation semantics, NOT an inline-execution permission. Production runs NO
+// browser mutation inline: the relay surface disables the inline act path and force-confirms
+// `fill`/`type` on prepare, so EVERY mutating interaction (fill/type included) stages through
+// prepare -> human approval -> execute. Post-hoc observation cannot be fail-closed (the side
+// effect already fired before any throw), so there is no "observe-then-throw" inline path.
 const NON_COMMITTING_VERBS = new Set<string>(["fill", "type"]);
 
 const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
