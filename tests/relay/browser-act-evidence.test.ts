@@ -216,6 +216,38 @@ describe("browser act evidence", () => {
 		).rejects.toThrow("at least 32 bytes");
 	});
 
+	it("revision excludes the non-deterministic screenshot (same DOM/url/nonce, different screenshot -> same revision)", async () => {
+		// Regression for the live B-canary finding: a fullPage PNG of a real page is not
+		// byte-identical between two captures, so the screenshot MUST NOT feed the revision
+		// (the WYSIWYS binding anchor) — else every legitimate approved commit fails closed
+		// as binding drift when the committer recaptures the same page. The screenshot is
+		// still captured + stored for the human's approval display, just not the crypto anchor.
+		const dom = "<form><input name='x'></form>";
+		const first = await captureBrowserActEvidence(
+			new FakePage("https://example.com/form", dom, Buffer.from("png-bytes-A")),
+			{ verb: "click", target: "button" },
+			{
+				commitmentSecret: COMMITMENT_SECRET,
+				evidenceNonce: "same-nonce",
+				screenshotSink: new RecordingScreenshotSink(),
+			},
+		);
+		const second = await captureBrowserActEvidence(
+			new FakePage("https://example.com/form", dom, Buffer.from("png-bytes-COMPLETELY-DIFFERENT")),
+			{ verb: "click", target: "button" },
+			{
+				commitmentSecret: COMMITMENT_SECRET,
+				evidenceNonce: "same-nonce",
+				screenshotSink: new RecordingScreenshotSink(),
+			},
+		);
+		// The screenshot DID differ (still captured + stored) ...
+		expect(first.screenshotHash).not.toBe(second.screenshotHash);
+		// ... but the revision (and the submitted-values hash bound to it) are IDENTICAL.
+		expect(first.revision).toBe(second.revision);
+		expect(first.submittedValuesHash).toBe(second.submittedValuesHash);
+	});
+
 	it("treats forceConfirm and observed browser commit signals as escalation-only", () => {
 		// `fill` is a provably non-committing verb (in the allowlist), so this isolates
 		// the escalation: only forceConfirm + observed signals drive the classification.

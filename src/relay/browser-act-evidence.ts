@@ -101,12 +101,25 @@ export async function captureBrowserActEvidence(
 		contentType: "image/png",
 		hash: screenshotHash,
 	});
+	// The revision is the WYSIWYS binding anchor (deriveBrowserWriteBindingHash). It MUST
+	// be DETERMINISTIC for an unchanged page: the committer recaptures the SAME live page at
+	// execute time (browser-act-executor.ts recaptureEvidence) and the revision must
+	// re-produce identically, or a legitimate approved write fails closed as binding drift.
+	// screenshotHash is EXCLUDED on purpose: a fullPage PNG of a real page is NOT
+	// byte-identical between two captures (render timing, animation, blinking cursor,
+	// sub-pixel anti-aliasing, lazy images), so folding it into the binding makes every
+	// real-page commit fail re-verification (caught by the live B canary; the committer-probe
+	// missed it because it fakes a deterministic screenshot). The screenshot remains in the
+	// evidence below (screenshotHash/screenshotRef) as the human's approval-card display +
+	// audit — it is the VISUAL confirmation, not the crypto anchor. The binding still fails
+	// on any DOM / url / submitted-value change (a real page mutation), which is the WYSIWYS
+	// intent; a purely cosmetic re-render that does not change the DOM is intentionally not
+	// drift.
 	const revision = hmacCanonical(
 		"page-revision",
 		{
 			domDigest,
 			evidenceNonce,
-			screenshotHash,
 			urlHash,
 		},
 		commitmentSecret,
