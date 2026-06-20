@@ -423,7 +423,7 @@ The overlay default for `TELCLAUDE_INTERNAL_HOSTS` includes `tc-hermes-contained
 
 ### Proof spine
 
-Hermes runtime operation is gated by signed evidence, not trust. The `telclaude hermes` command group (`pnpm dev hermes ...`) generates and evaluates the steady-state proofs — no-fork proof (`prove --upstream-clean`), feature probes (`probes` / `probe <surface>`), network-isolation probes (`network-probes`), and the live canary (`verify-live`). Production readiness is `doctor` + `probes` + `verify-live`; rollback is the previous container image. See `docs/operator-playbook.md` and `docs/architecture.md` for the trust-boundary rationale.
+Hermes runtime operation is gated by signed evidence, not trust. The `telclaude hermes` command group (`pnpm dev hermes ...`) generates and evaluates the steady-state proofs — version-update planning (`version-update`), no-fork proof (`prove --upstream-clean`), feature probes (`probes` / `probe <surface>`), network-isolation probes (`network-probes`), and the live canary (`verify-live`). Production readiness is `doctor` + `probes` + `verify-live`; rollback is the previous container image. See `docs/operator-playbook.md`, `docs/hermes/version-update.md`, and `docs/architecture.md` for the trust-boundary rationale.
 
 ## Commands
 

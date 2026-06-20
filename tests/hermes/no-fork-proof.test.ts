@@ -5,7 +5,15 @@ import {
 	type NoForkGitRunner,
 	type NoForkWrapperRunEvidence,
 	noForkSha256Digest,
+	parseNoForkWrapperRunEvidence,
 } from "../../src/hermes/no-fork-proof.js";
+import {
+	NO_FORK_WRAPPER_RUN_RUNNER,
+	NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+	NO_FORK_WRAPPER_RUN_SOURCE,
+	signNoForkWrapperRunAttestation,
+} from "../../src/hermes/no-fork-attestation.js";
+import { DEFAULT_HERMES_SOURCE_COMMIT } from "../../src/hermes/pin.js";
 import { generateKeyPair } from "../../src/internal-auth.js";
 
 const ORIGINAL_ENV = {
@@ -46,6 +54,7 @@ describe("Hermes no-fork proof", () => {
 			checkoutPath,
 			expectedRef: "v2026.5.29",
 			expectedVersion: "0.15.1",
+			expectedCommit: DEFAULT_HERMES_SOURCE_COMMIT,
 			head: HEAD,
 			expectedRefCommit: HEAD,
 			exactTags: ["v2026.5.29"],
@@ -57,6 +66,7 @@ describe("Hermes no-fork proof", () => {
 			source: "telclaude-no-fork-proof-runner",
 			runner: "telclaude-hermes-no-fork-runner",
 			checkoutPath,
+			expectedCommit: DEFAULT_HERMES_SOURCE_COMMIT,
 			head: HEAD,
 			expectedRefCommit: HEAD,
 			checksSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -173,14 +183,81 @@ describe("Hermes no-fork proof", () => {
 			status: "fail",
 		});
 	});
+
+	it("fails closed when wrapper-run evidence is from a different checkout head", () => {
+		const checkoutPath = path.resolve("/tmp/hermes-agent");
+		const runner = fakeGitRunner(checkoutPath, {
+			"rev-parse --show-toplevel": { exitCode: 0, stdout: `${checkoutPath}\n` },
+			"rev-parse HEAD": { exitCode: 0, stdout: `${HEAD}\n` },
+			"rev-parse --verify v2026.5.29^{commit}": { exitCode: 0, stdout: `${HEAD}\n` },
+			"status --porcelain=v1": { exitCode: 0, stdout: "" },
+			"diff --quiet": { exitCode: 0, stdout: "" },
+			"diff --cached --quiet": { exitCode: 0, stdout: "" },
+			"branch --show-current": { exitCode: 0, stdout: "" },
+			"tag --points-at HEAD": { exitCode: 0, stdout: "v2026.5.29\n" },
+		});
+
+		const report = buildNoForkProof({
+			checkoutPath,
+			runner,
+			wrapperRun: wrapperRunEvidence({ head: "b".repeat(40), expectedRefCommit: "b".repeat(40) }),
+		});
+
+		expect(report.hermesCheckoutClean).toBe(false);
+		expect(report.checks.find((check) => check.name === "runner.checkoutBinding")).toMatchObject({
+			status: "fail",
+		});
+	});
+
+	it("rejects malformed wrapper-run timestamps before signing imported evidence", () => {
+		expect(() =>
+			parseNoForkWrapperRunEvidence({
+				...wrapperRunEvidence(),
+				source: "other-runner",
+			}),
+		).toThrow("source must be telclaude-hermes-no-fork-wrapper");
+
+		expect(() =>
+			parseNoForkWrapperRunEvidence({
+				...wrapperRunEvidence(),
+				startedAt: "not-a-timestamp",
+			}),
+		).toThrow("startedAt must be a valid timestamp");
+
+		expect(() =>
+			parseNoForkWrapperRunEvidence({
+				...wrapperRunEvidence(),
+				startedAt: "2026-06-20T10:01:00.000Z",
+				endedAt: "2026-06-20T10:00:00.000Z",
+			}),
+		).toThrow("endedAt must not be before startedAt");
+	});
+
+	it("rejects tampered wrapper-run claims before signing imported evidence", () => {
+		expect(() =>
+			parseNoForkWrapperRunEvidence({
+				...wrapperRunEvidence(),
+				p0Status: "fail",
+			}),
+		).toThrow("signature is invalid");
+	});
 });
 
-const HEAD = "a".repeat(40);
+const HEAD = DEFAULT_HERMES_SOURCE_COMMIT;
 
 function wrapperRunEvidence(
 	overrides: Partial<NoForkWrapperRunEvidence> = {},
 ): NoForkWrapperRunEvidence {
-	return {
+	return signNoForkWrapperRunAttestation({
+		schemaVersion: NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+		source: NO_FORK_WRAPPER_RUN_SOURCE,
+		runner: NO_FORK_WRAPPER_RUN_RUNNER,
+		checkoutPath: path.resolve("/tmp/hermes-agent"),
+		expectedRef: "v2026.5.29",
+		expectedVersion: "0.15.1",
+		expectedCommit: DEFAULT_HERMES_SOURCE_COMMIT,
+		head: HEAD,
+		expectedRefCommit: HEAD,
 		startedAt: "2026-05-31T09:00:00.000Z",
 		endedAt: "2026-05-31T09:01:00.000Z",
 		wrapperPackageSha256: noForkSha256Digest("wrapper-package"),
@@ -193,7 +270,7 @@ function wrapperRunEvidence(
 		runtimeSourceReplacementDenied: true,
 		monkeypatchDenied: true,
 		...overrides,
-	};
+	});
 }
 
 function fakeGitRunner(

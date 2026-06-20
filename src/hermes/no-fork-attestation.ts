@@ -12,6 +12,11 @@ export const NO_FORK_RUNNER_ATTESTATION_SOURCE = "telclaude-no-fork-proof-runner
 export const NO_FORK_RUNNER_ATTESTATION_RUNNER = "telclaude-hermes-no-fork-runner";
 export const NO_FORK_RUNNER_ATTESTATION_PATH = "/v1/hermes.no-fork.runner-attestation";
 const NO_FORK_RUNNER_ATTESTATION_SCOPE = "operator";
+export const NO_FORK_WRAPPER_RUN_SCHEMA_VERSION = "telclaude.hermes.no-fork-wrapper-run.v1";
+export const NO_FORK_WRAPPER_RUN_SOURCE = "telclaude-hermes-no-fork-wrapper";
+export const NO_FORK_WRAPPER_RUN_RUNNER = "telclaude-hermes-wrapper-p0";
+export const NO_FORK_WRAPPER_RUN_ATTESTATION_PATH = "/v1/hermes.no-fork.wrapper-run.attestation";
+const NO_FORK_WRAPPER_RUN_ATTESTATION_SCOPE = "operator";
 
 type NoForkProofCheckLike = {
 	readonly name: string;
@@ -26,6 +31,7 @@ type NoForkProofEvidenceLike = {
 	readonly checkoutPath?: string;
 	readonly expectedRef?: string;
 	readonly expectedVersion?: string;
+	readonly expectedCommit?: string;
 	readonly head?: string;
 	readonly expectedRefCommit?: string;
 	readonly currentBranch?: string;
@@ -40,11 +46,15 @@ export type NoForkRunnerAttestationSignedFields = {
 	readonly schemaVersion: typeof NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION;
 	readonly source: typeof NO_FORK_RUNNER_ATTESTATION_SOURCE;
 	readonly runner: typeof NO_FORK_RUNNER_ATTESTATION_RUNNER;
+	readonly wrapperRunSchemaVersion: typeof NO_FORK_WRAPPER_RUN_SCHEMA_VERSION;
+	readonly wrapperRunSource: typeof NO_FORK_WRAPPER_RUN_SOURCE;
+	readonly wrapperRunRunner: typeof NO_FORK_WRAPPER_RUN_RUNNER;
 	readonly startedAt: string;
 	readonly endedAt: string;
 	readonly checkoutPath: string;
 	readonly expectedRef: string;
 	readonly expectedVersion: string;
+	readonly expectedCommit: string;
 	readonly head: string;
 	readonly expectedRefCommit: string;
 	readonly wrapperPackageSha256: `sha256:${string}`;
@@ -66,6 +76,75 @@ export type NoForkRunnerAttestationSignedFields = {
 export type NoForkRunnerAttestation = NoForkRunnerAttestationSignedFields & {
 	readonly signature: InternalResponseProof;
 };
+
+export type NoForkWrapperRunSignedFields = {
+	readonly schemaVersion: typeof NO_FORK_WRAPPER_RUN_SCHEMA_VERSION;
+	readonly source: typeof NO_FORK_WRAPPER_RUN_SOURCE;
+	readonly runner: typeof NO_FORK_WRAPPER_RUN_RUNNER;
+	readonly checkoutPath: string;
+	readonly expectedRef: string;
+	readonly expectedVersion: string;
+	readonly expectedCommit: string;
+	readonly head: string;
+	readonly expectedRefCommit: string;
+	readonly startedAt: string;
+	readonly endedAt: string;
+	readonly wrapperPackageSha256: `sha256:${string}`;
+	readonly profileGenerationSha256: `sha256:${string}`;
+	readonly fixtureResultsSha256: `sha256:${string}`;
+	readonly transcriptSha256: `sha256:${string}`;
+	readonly p0Command: readonly string[];
+	readonly p0ExitCode: number;
+	readonly p0Status: "pass" | "fail";
+	readonly runtimeSourceReplacementDenied: boolean;
+	readonly monkeypatchDenied: boolean;
+};
+
+export type NoForkWrapperRunAttestation = NoForkWrapperRunSignedFields & {
+	readonly signature: InternalResponseProof;
+};
+
+export function signNoForkWrapperRunAttestation(
+	attestation: NoForkWrapperRunSignedFields,
+): NoForkWrapperRunAttestation {
+	const payload = noForkWrapperRunSignedPayload(attestation);
+	return {
+		...attestation,
+		signature: buildInternalResponseProof(
+			"POST",
+			NO_FORK_WRAPPER_RUN_ATTESTATION_PATH,
+			payload,
+			payload,
+			{ scope: NO_FORK_WRAPPER_RUN_ATTESTATION_SCOPE },
+		),
+	};
+}
+
+export function noForkWrapperRunAttestationSignatureFailure(
+	attestation: NoForkWrapperRunSignedFields & {
+		readonly signature?: InternalResponseProof;
+	},
+	options?: {
+		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
+	},
+): string | null {
+	if (!attestation.signature) return "signature is missing";
+	const payload = noForkWrapperRunSignedPayload(attestation);
+	return internalResponseProofVerificationFailure(
+		attestation.signature,
+		"POST",
+		NO_FORK_WRAPPER_RUN_ATTESTATION_PATH,
+		payload,
+		payload,
+		{
+			scope: NO_FORK_WRAPPER_RUN_ATTESTATION_SCOPE,
+			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
+			relayPublicKey: options?.relayPublicKey,
+		},
+	);
+}
 
 export function signNoForkRunnerAttestation(
 	attestation: NoForkRunnerAttestationSignedFields,
@@ -127,6 +206,7 @@ function noForkProofEvidenceSignedPayload(evidence: NoForkProofEvidenceLike): st
 		checkoutPath: evidence.checkoutPath ?? null,
 		expectedRef: evidence.expectedRef ?? null,
 		expectedVersion: evidence.expectedVersion ?? null,
+		...(evidence.expectedCommit ? { expectedCommit: evidence.expectedCommit } : {}),
 		head: evidence.head ?? null,
 		expectedRefCommit: evidence.expectedRefCommit ?? null,
 		currentBranch: evidence.currentBranch ?? null,
@@ -145,11 +225,15 @@ function noForkRunnerAttestationSignedPayload(
 		schemaVersion: attestation.schemaVersion,
 		source: attestation.source,
 		runner: attestation.runner,
+		wrapperRunSchemaVersion: attestation.wrapperRunSchemaVersion,
+		wrapperRunSource: attestation.wrapperRunSource,
+		wrapperRunRunner: attestation.wrapperRunRunner,
 		startedAt: attestation.startedAt,
 		endedAt: attestation.endedAt,
 		checkoutPath: attestation.checkoutPath,
 		expectedRef: attestation.expectedRef,
 		expectedVersion: attestation.expectedVersion,
+		expectedCommit: attestation.expectedCommit,
 		head: attestation.head,
 		expectedRefCommit: attestation.expectedRefCommit,
 		wrapperPackageSha256: attestation.wrapperPackageSha256,
@@ -166,6 +250,31 @@ function noForkRunnerAttestationSignedPayload(
 		postRunStatusPorcelain: attestation.postRunStatusPorcelain,
 		postRunDiffExitCode: attestation.postRunDiffExitCode,
 		postRunCachedDiffExitCode: attestation.postRunCachedDiffExitCode,
+	});
+}
+
+function noForkWrapperRunSignedPayload(attestation: NoForkWrapperRunSignedFields): string {
+	return JSON.stringify({
+		schemaVersion: attestation.schemaVersion,
+		source: attestation.source,
+		runner: attestation.runner,
+		checkoutPath: attestation.checkoutPath,
+		expectedRef: attestation.expectedRef,
+		expectedVersion: attestation.expectedVersion,
+		expectedCommit: attestation.expectedCommit,
+		head: attestation.head,
+		expectedRefCommit: attestation.expectedRefCommit,
+		startedAt: attestation.startedAt,
+		endedAt: attestation.endedAt,
+		wrapperPackageSha256: attestation.wrapperPackageSha256,
+		profileGenerationSha256: attestation.profileGenerationSha256,
+		fixtureResultsSha256: attestation.fixtureResultsSha256,
+		transcriptSha256: attestation.transcriptSha256,
+		p0Command: [...attestation.p0Command],
+		p0ExitCode: attestation.p0ExitCode,
+		p0Status: attestation.p0Status,
+		runtimeSourceReplacementDenied: attestation.runtimeSourceReplacementDenied,
+		monkeypatchDenied: attestation.monkeypatchDenied,
 	});
 }
 

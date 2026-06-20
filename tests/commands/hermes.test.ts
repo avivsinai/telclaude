@@ -35,10 +35,22 @@ import {
 	signNetworkProbeEvidenceAttestation,
 } from "../../src/hermes/network-probe-attestation.js";
 import {
+	NO_FORK_WRAPPER_RUN_RUNNER,
+	NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+	NO_FORK_WRAPPER_RUN_SOURCE,
+	signNoForkWrapperRunAttestation,
+} from "../../src/hermes/no-fork-attestation.js";
+import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
+import {
 	DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
 } from "../../src/hermes/network-probes.js";
+import {
+	DEFAULT_HERMES_DOCKER_IMAGE,
+	HERMES_VERSION_UPDATE_TARGET,
+	type HermesVersionUpdatePlan,
+} from "../../src/hermes/pin.js";
 import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
@@ -1061,6 +1073,30 @@ describe("Hermes wrapper foundation", () => {
 		});
 		expect(invalidProbe.valid).toBe(false);
 		expect(invalidProbe.errors.join("\n")).toContain("hermes_pin");
+	});
+
+	it("prints the Hermes version-update target and proof gates", async () => {
+		const result = await runHermesCommand(["hermes", "version-update", "--json"]);
+		const plan = JSON.parse(result.stdout) as HermesVersionUpdatePlan;
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(plan.current.image).toBe(DEFAULT_HERMES_DOCKER_IMAGE);
+		expect(plan.target).toMatchObject(HERMES_VERSION_UPDATE_TARGET);
+		expect(plan.status).toBe("target_identified_production_bump_pending_evidence");
+		expect(plan.requiredGates.map((gate) => gate.id)).toEqual([
+			"upstream.no_fork_clean",
+			"feature_probes.regenerated",
+			"network_probes.signed",
+			"compat_lock.bound",
+			"doctor.gate",
+			"live.verify",
+		]);
+		expect(plan.requiredGates.find((gate) => gate.id === "network_probes.signed")?.command).toContain(
+			HERMES_VERSION_UPDATE_TARGET.image,
+		);
+		expect(plan.requiredGates.find((gate) => gate.id === "live.verify")?.requiredEvidence).toContain(
+			"runtime.skill_manage_write_denied",
+		);
 	});
 
 	it("generates the canonical feature-probe matrix from observed evidence", async () => {
@@ -2110,6 +2146,97 @@ describe("Hermes wrapper foundation", () => {
 		expect(result.exitCode).toBe(1);
 		expect(report.hermesCheckoutClean).toBe(false);
 		expect(artifact.hermesCheckoutClean).toBe(false);
+	});
+
+	it("writes passing no-fork proof evidence with imported wrapper-run evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-wrapper-"));
+		const checkoutPath = path.join(tempDir, "hermes-agent");
+		const evidencePath = path.join(tempDir, "no-fork.json");
+		const wrapperRunPath = path.join(tempDir, "wrapper-run.json");
+		fs.mkdirSync(checkoutPath);
+		execFileSync("git", ["init"], { cwd: checkoutPath, stdio: "ignore" });
+		fs.writeFileSync(path.join(checkoutPath, "README.md"), "Hermes fixture\n");
+		execFileSync("git", ["add", "README.md"], { cwd: checkoutPath, stdio: "ignore" });
+		execFileSync(
+			"git",
+			["-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "-m", "init"],
+			{ cwd: checkoutPath, stdio: "ignore" },
+		);
+		const head = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: checkoutPath,
+			encoding: "utf8",
+		}).trim();
+		execFileSync("git", ["tag", "v2026.6.19"], { cwd: checkoutPath, stdio: "ignore" });
+		const realCheckoutPath = fs.realpathSync(checkoutPath);
+		writeJson(wrapperRunPath, signNoForkWrapperRunAttestation({
+			schemaVersion: NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+			source: NO_FORK_WRAPPER_RUN_SOURCE,
+			runner: NO_FORK_WRAPPER_RUN_RUNNER,
+			checkoutPath: realCheckoutPath,
+			expectedRef: "v2026.6.19",
+			expectedVersion: "0.17.0",
+			expectedCommit: head,
+			head,
+			expectedRefCommit: head,
+			startedAt: "2026-06-20T10:00:00.000Z",
+			endedAt: "2026-06-20T10:01:00.000Z",
+			wrapperPackageSha256: noForkSha256Digest("wrapper-package"),
+			profileGenerationSha256: noForkSha256Digest("profile-generation"),
+			fixtureResultsSha256: noForkSha256Digest("fixture-results"),
+			transcriptSha256: noForkSha256Digest("command-transcript"),
+			p0Command: ["pnpm", "dev", "hermes", "prove", "--upstream-clean"],
+			p0ExitCode: 0,
+			p0Status: "pass",
+			runtimeSourceReplacementDenied: true,
+			monkeypatchDenied: true,
+		}));
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--upstream-clean",
+			"--json",
+			"--checkout",
+			realCheckoutPath,
+			"--expected-ref",
+			"v2026.6.19",
+			"--expected-version",
+			"0.17.0",
+			"--expected-commit",
+			head,
+			"--wrapper-run",
+			wrapperRunPath,
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			hermesCheckoutClean: boolean;
+			head: string;
+			expectedRefCommit: string;
+			runnerAttestation?: {
+				wrapperRunSchemaVersion: string;
+				wrapperRunSource: string;
+				wrapperRunRunner: string;
+				expectedCommit: string;
+				p0Status: string;
+				signature: { path: string };
+			};
+		};
+		const artifact = readJson(evidencePath) as typeof report;
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.hermesCheckoutClean).toBe(true);
+		expect(report.head).toBe(head);
+		expect(report.expectedRefCommit).toBe(head);
+		expect(report.runnerAttestation).toMatchObject({
+			wrapperRunSchemaVersion: NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+			wrapperRunSource: NO_FORK_WRAPPER_RUN_SOURCE,
+			wrapperRunRunner: NO_FORK_WRAPPER_RUN_RUNNER,
+			expectedCommit: head,
+			p0Status: "pass",
+			signature: { path: "/v1/hermes.no-fork.runner-attestation" },
+		});
+		expect(artifact.hermesCheckoutClean).toBe(true);
 	});
 
 	it("does not execute or write network-probe artifacts without --allow-run", async () => {

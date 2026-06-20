@@ -6,6 +6,7 @@ import {
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
+import { DEFAULT_HERMES_DOCKER_IMAGE } from "./pin.js";
 import {
 	findHermesLaunchSecretFindings,
 	type HermesLaunchInvocation,
@@ -18,8 +19,7 @@ export const HERMES_API_SERVER_CONTAINMENT_SCHEMA_VERSION =
 	"telclaude.hermes.api-server-containment.v1";
 export const DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH =
 	"artifacts/hermes/probes/execution-api-server-containment.json";
-export const DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE =
-	"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7";
+export const DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE = DEFAULT_HERMES_DOCKER_IMAGE;
 export const DEFAULT_HERMES_API_SERVER_CONTAINER_NAME = "tc-hermes-contained";
 export const DEFAULT_HERMES_API_SERVER_NETWORK = "telclaude-hermes-private";
 export const DEFAULT_HERMES_API_SERVER_PORT = 8642;

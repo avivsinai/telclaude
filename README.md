@@ -406,7 +406,8 @@ All commands live under the `telclaude hermes` group; most accept `--json`. Prob
 | Command | Description |
 |---------|-------------|
 | `telclaude hermes doctor [--pin <pin>] [--probes] [--compat-lock]` | Check pinned Hermes wrapper readiness |
-| `telclaude hermes prove --upstream-clean` | Generate the fail-closed no-fork proof of the pinned upstream checkout |
+| `telclaude hermes version-update [--json]` | Show the next upstream target and required proof gates without promoting it |
+| `telclaude hermes prove --upstream-clean --wrapper-run <path>` | Generate the fail-closed no-fork proof of the pinned upstream checkout and wrapper P0 evidence |
 | `telclaude hermes probes [--pin <pin>] [--out <path>]` | Generate the canonical feature-probe matrix from observed evidence |
 | `telclaude hermes probe <surface> [--allow-run] [--out <path>]` | Evaluate a single feature probe |
 | `telclaude hermes network-probes [--allow-run] [--posture <posture>]` | Run gated network isolation probes and write signed evidence |
@@ -415,6 +416,8 @@ All commands live under the `telclaude hermes` group; most accept `--json`. Prob
 | `telclaude hermes private-runtime status` | Show the relay-observed private-runtime state |
 | `telclaude hermes live-mcp probe-tokens` | Issue served-MCP containment probe tokens through the relay admin socket |
 | `telclaude dev doctor` | Includes advisory Hermes connector readiness for Google, web fetch/search, and WhatsApp |
+
+See `docs/hermes/version-update.md` for the pin-bump path and current target.
 
 ### Media & messaging
 | Command | Description |

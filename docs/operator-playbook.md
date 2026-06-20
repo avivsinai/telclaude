@@ -192,12 +192,12 @@ Hermes private-runtime readiness is proven through generated evidence rather tha
 
 ```
 pnpm dev hermes doctor --probes --compat-lock
-pnpm dev hermes prove --upstream-clean
+pnpm dev hermes prove --upstream-clean --wrapper-run <wrapper-run.json>
 pnpm dev hermes network-probes --allow-run
 pnpm dev hermes verify-live
 ```
 
-Treat `doctor` + `probes` + `verify-live` as the readiness gate: doctor fails closed unless the pinned feature-probe matrix and compatibility lockfile are present and green, `prove --upstream-clean` proves the checkout is unmodified upstream, and `verify-live` exercises the live contained runtime end to end.
+Treat `doctor` + `probes` + `verify-live` as the readiness gate: doctor fails closed unless the pinned feature-probe matrix and compatibility lockfile are present and green, `prove --upstream-clean --wrapper-run <wrapper-run.json>` proves the checkout is unmodified upstream and the wrapper P0 run denies runtime source replacement/monkeypatching, and `verify-live` exercises the live contained runtime end to end.
 
 ### Connector readiness
 
@@ -261,7 +261,8 @@ policy, and is covered by the steady-state Hermes proofs.
 
 The cutover completed; Hermes is the only runtime. What remains is the recurring proof loop, run after every Hermes pin bump or containment change:
 
-- **`prove --upstream-clean`** — the pinned Hermes checkout is byte-identical to upstream: no diff, no patch, no monkeypatch, no runtime source replacement.
+- **`version-update --json`** — reports the current production pin, the next upstream target, and the proof gates required before production defaults or tracked green artifacts can move. See `docs/hermes/version-update.md`.
+- **`prove --upstream-clean --wrapper-run <wrapper-run.json>`** — the pinned Hermes checkout is byte-identical to upstream and imports wrapper-run evidence proving there is no patch, monkeypatch, or runtime source replacement.
 - **`probes` / `probe <surface> --allow-run`** — regenerate the feature-probe matrix from observed evidence (headless execution, API-server and served-MCP containment, served-MCP memory air-gap, skills allowlist, model relay, edge adapters, providers, workflows, side-effect ledger).
 - **`network-probes --allow-run`** — gated egress isolation: the relay/control URL stays reachable while direct calls to providers, the vault, the model provider, and DNS exfil targets are all denied. `--posture` is `agent-iptables` or `contained-internal`. Use `--defer-attestation` only to capture an unsigned diagnostic run report; `--from-report` promotes already-attested reports into canonical artifacts.
 - **`doctor --probes --compat-lock`** — fails closed unless the matrix and the pin-bound compatibility lockfile are present, schema-valid, and green.

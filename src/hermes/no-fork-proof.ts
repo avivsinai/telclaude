@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
+import type { InternalResponseProof } from "../internal-auth.js";
 import {
 	type HermesArtifactWriteOptions,
 	type NoForkProof,
@@ -11,15 +12,29 @@ import {
 	NO_FORK_RUNNER_ATTESTATION_RUNNER,
 	NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
 	NO_FORK_RUNNER_ATTESTATION_SOURCE,
+	NO_FORK_WRAPPER_RUN_RUNNER,
+	NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+	NO_FORK_WRAPPER_RUN_SOURCE,
+	type NoForkWrapperRunSignedFields,
 	noForkProofChecksSha256,
 	noForkProofEvidenceSha256,
+	noForkWrapperRunAttestationSignatureFailure,
 	signNoForkRunnerAttestation,
 } from "./no-fork-attestation.js";
+import {
+	DEFAULT_HERMES_SOURCE_COMMIT,
+	DEFAULT_HERMES_UPSTREAM_REF,
+	DEFAULT_HERMES_UPSTREAM_VERSION,
+} from "./pin.js";
+
+export {
+	DEFAULT_HERMES_SOURCE_COMMIT,
+	DEFAULT_HERMES_UPSTREAM_REF,
+	DEFAULT_HERMES_UPSTREAM_VERSION,
+} from "./pin.js";
 
 export const HERMES_UPSTREAM_CHECKOUT_PATH_ENV = "HERMES_CHECKOUT_PATH";
 export const DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH = "hermes-agent";
-export const DEFAULT_HERMES_UPSTREAM_REF = "v2026.5.29";
-export const DEFAULT_HERMES_UPSTREAM_VERSION = "0.15.1";
 export const DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH = "artifacts/hermes/no-fork.json";
 
 export type NoForkGitResult = {
@@ -34,6 +49,7 @@ export type NoForkProofReport = NoForkProof & {
 	readonly checkoutPath: string;
 	readonly expectedRef: string;
 	readonly expectedVersion: string;
+	readonly expectedCommit: string;
 	readonly head?: string;
 	readonly expectedRefCommit?: string;
 	readonly currentBranch?: string;
@@ -49,6 +65,15 @@ export type NoForkProofReport = NoForkProof & {
 };
 
 export type NoForkWrapperRunEvidence = {
+	readonly schemaVersion: typeof NO_FORK_WRAPPER_RUN_SCHEMA_VERSION;
+	readonly source: typeof NO_FORK_WRAPPER_RUN_SOURCE;
+	readonly runner: typeof NO_FORK_WRAPPER_RUN_RUNNER;
+	readonly checkoutPath: string;
+	readonly expectedRef: string;
+	readonly expectedVersion: string;
+	readonly expectedCommit: string;
+	readonly head: string;
+	readonly expectedRefCommit: string;
 	readonly startedAt: string;
 	readonly endedAt: string;
 	readonly wrapperPackageSha256: `sha256:${string}`;
@@ -60,12 +85,16 @@ export type NoForkWrapperRunEvidence = {
 	readonly p0Status: "pass" | "fail";
 	readonly runtimeSourceReplacementDenied: boolean;
 	readonly monkeypatchDenied: boolean;
+	readonly signature: InternalResponseProof;
 };
+
+const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/i;
 
 export function buildNoForkProof(input: {
 	readonly checkoutPath?: string;
 	readonly expectedRef?: string;
 	readonly expectedVersion?: string;
+	readonly expectedCommit?: string;
 	readonly evidencePath?: string;
 	readonly runner?: NoForkGitRunner;
 	readonly wrapperRun?: NoForkWrapperRunEvidence;
@@ -77,6 +106,7 @@ export function buildNoForkProof(input: {
 	);
 	const expectedRef = nonEmpty(input.expectedRef, DEFAULT_HERMES_UPSTREAM_REF);
 	const expectedVersion = nonEmpty(input.expectedVersion, DEFAULT_HERMES_UPSTREAM_VERSION);
+	const expectedCommit = nonEmpty(input.expectedCommit, DEFAULT_HERMES_SOURCE_COMMIT);
 	const evidencePath = input.evidencePath ?? DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH;
 	const runner = input.runner ?? runGit;
 	const checks: NoForkProofReport["checks"] = [];
@@ -113,12 +143,20 @@ export function buildNoForkProof(input: {
 	});
 
 	const headAtExpected = !!head && !!expectedRefCommit && head === expectedRefCommit;
+	const refAtExpectedCommit = !!expectedRefCommit && expectedRefCommit === expectedCommit;
 	checks.push({
 		name: "checkout.pinned",
 		status: headAtExpected ? "pass" : "fail",
 		detail: headAtExpected
 			? `HEAD matches pinned Hermes ref ${expectedRef}`
 			: `HEAD ${head ?? "unknown"} does not match ${expectedRef} ${expectedRefCommit ?? "unknown"}`,
+	});
+	checks.push({
+		name: "checkout.expectedCommit",
+		status: refAtExpectedCommit ? "pass" : "fail",
+		detail: refAtExpectedCommit
+			? `${expectedRef} resolves to expected commit ${expectedCommit}`
+			: `${expectedRef} resolves to ${expectedRefCommit ?? "unknown"}, expected ${expectedCommit}`,
 	});
 
 	const status = checkoutExists ? runner(["status", "--porcelain=v1"], checkoutPath) : failedGit();
@@ -174,13 +212,32 @@ export function buildNoForkProof(input: {
 		? runner(["diff", "--cached", "--quiet"], checkoutPath)
 		: failedGit();
 	const wrapperRun = input.wrapperRun;
-	const runnerAttestationAvailable = !!wrapperRun && !!head && !!expectedRefCommit;
+	const wrapperRunSignatureFailure = wrapperRun
+		? noForkWrapperRunAttestationSignatureFailure(wrapperRun, { allowStale: true })
+		: "signature is missing";
+	const runnerAttestationAvailable =
+		!!wrapperRun && !!head && !!expectedRefCommit && wrapperRunSignatureFailure === null;
+	const wrapperRunCheckoutBound =
+		!!wrapperRun &&
+		wrapperRun.checkoutPath === checkoutPath &&
+		wrapperRun.expectedRef === expectedRef &&
+		wrapperRun.expectedVersion === expectedVersion &&
+		wrapperRun.expectedCommit === expectedCommit &&
+		wrapperRun.head === head &&
+		wrapperRun.expectedRefCommit === expectedRefCommit;
 	checks.push({
 		name: "runner.attestation",
 		status: runnerAttestationAvailable ? "pass" : "fail",
 		detail: runnerAttestationAvailable
-			? "no-fork wrapper run attestation is signed"
-			: "no-fork wrapper run attestation is missing",
+			? "no-fork wrapper run signature is valid"
+			: `no-fork wrapper run signature is invalid: ${wrapperRunSignatureFailure}`,
+	});
+	checks.push({
+		name: "runner.checkoutBinding",
+		status: wrapperRunCheckoutBound ? "pass" : "fail",
+		detail: wrapperRunCheckoutBound
+			? "wrapper run evidence is bound to the proved checkout/head/ref/version"
+			: "wrapper run evidence is not bound to the proved checkout/head/ref/version",
 	});
 	checks.push({
 		name: "runner.p0",
@@ -240,6 +297,7 @@ export function buildNoForkProof(input: {
 		checkoutPath,
 		expectedRef,
 		expectedVersion,
+		expectedCommit,
 		...(head ? { head } : {}),
 		...(expectedRefCommit ? { expectedRefCommit } : {}),
 		...(branchResult.exitCode === 0 && branchResult.stdout.trim()
@@ -257,11 +315,15 @@ export function buildNoForkProof(input: {
 					schemaVersion: NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
 					source: NO_FORK_RUNNER_ATTESTATION_SOURCE,
 					runner: NO_FORK_RUNNER_ATTESTATION_RUNNER,
+					wrapperRunSchemaVersion: wrapperRun.schemaVersion,
+					wrapperRunSource: wrapperRun.source,
+					wrapperRunRunner: wrapperRun.runner,
 					startedAt: wrapperRun.startedAt,
 					endedAt: wrapperRun.endedAt,
 					checkoutPath,
 					expectedRef,
 					expectedVersion,
+					expectedCommit,
 					head,
 					expectedRefCommit,
 					wrapperPackageSha256: wrapperRun.wrapperPackageSha256,
@@ -301,6 +363,88 @@ export function writeNoForkProofReport(
 	return report;
 }
 
+export function parseNoForkWrapperRunEvidence(value: unknown): NoForkWrapperRunEvidence {
+	const errors: string[] = [];
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error("invalid no-fork wrapper-run evidence: expected an object");
+	}
+	const record = value as Record<string, unknown>;
+	const schemaVersion = readRequiredLiteral(
+		record,
+		"schemaVersion",
+		NO_FORK_WRAPPER_RUN_SCHEMA_VERSION,
+		errors,
+	);
+	const source = readRequiredLiteral(record, "source", NO_FORK_WRAPPER_RUN_SOURCE, errors);
+	const runner = readRequiredLiteral(record, "runner", NO_FORK_WRAPPER_RUN_RUNNER, errors);
+	const checkoutPath = readRequiredString(record, "checkoutPath", errors);
+	const expectedRef = readRequiredString(record, "expectedRef", errors);
+	const expectedVersion = readRequiredString(record, "expectedVersion", errors);
+	const expectedCommit = readRequiredString(record, "expectedCommit", errors);
+	const head = readRequiredString(record, "head", errors);
+	const expectedRefCommit = readRequiredString(record, "expectedRefCommit", errors);
+	const startedAt = readRequiredString(record, "startedAt", errors);
+	const endedAt = readRequiredString(record, "endedAt", errors);
+	const startedAtMs = readTimestampMs(startedAt, "startedAt", errors);
+	const endedAtMs = readTimestampMs(endedAt, "endedAt", errors);
+	if (startedAtMs !== undefined && endedAtMs !== undefined && endedAtMs < startedAtMs) {
+		errors.push("endedAt must not be before startedAt");
+	}
+	const wrapperPackageSha256 = readRequiredSha256(record, "wrapperPackageSha256", errors);
+	const profileGenerationSha256 = readRequiredSha256(record, "profileGenerationSha256", errors);
+	const fixtureResultsSha256 = readRequiredSha256(record, "fixtureResultsSha256", errors);
+	const transcriptSha256 = readRequiredSha256(record, "transcriptSha256", errors);
+	const p0Command = readRequiredStringArray(record, "p0Command", errors);
+	const p0ExitCode = readRequiredInteger(record, "p0ExitCode", errors);
+	let p0Status: "pass" | "fail" = "fail";
+	if (record.p0Status === "pass" || record.p0Status === "fail") {
+		p0Status = record.p0Status;
+	} else {
+		errors.push("p0Status must be pass or fail");
+	}
+	const runtimeSourceReplacementDenied = readRequiredBoolean(
+		record,
+		"runtimeSourceReplacementDenied",
+		errors,
+	);
+	const monkeypatchDenied = readRequiredBoolean(record, "monkeypatchDenied", errors);
+	const signature = readInternalResponseProof(record, "signature", errors);
+	const candidate: NoForkWrapperRunSignedFields & { signature: InternalResponseProof } = {
+		schemaVersion,
+		source,
+		runner,
+		checkoutPath,
+		expectedRef,
+		expectedVersion,
+		expectedCommit,
+		head,
+		expectedRefCommit,
+		startedAt,
+		endedAt,
+		wrapperPackageSha256,
+		profileGenerationSha256,
+		fixtureResultsSha256,
+		transcriptSha256,
+		p0Command,
+		p0ExitCode,
+		p0Status,
+		runtimeSourceReplacementDenied,
+		monkeypatchDenied,
+		signature,
+	};
+	const signatureFailure =
+		errors.length === 0
+			? noForkWrapperRunAttestationSignatureFailure(candidate, { allowStale: true })
+			: null;
+	if (signatureFailure) {
+		errors.push(`signature is invalid: ${signatureFailure}`);
+	}
+	if (errors.length > 0) {
+		throw new Error(`invalid no-fork wrapper-run evidence: ${errors.join("; ")}`);
+	}
+	return candidate;
+}
+
 function runGit(args: readonly string[], cwd: string): NoForkGitResult {
 	const result = spawnSync("git", [...args], {
 		cwd,
@@ -316,6 +460,136 @@ function runGit(args: readonly string[], cwd: string): NoForkGitResult {
 
 function failedGit(): NoForkGitResult {
 	return { exitCode: 1, stdout: "", stderr: "" };
+}
+
+function readRequiredString(
+	record: Record<string, unknown>,
+	key: string,
+	errors: string[],
+): string {
+	const value = record[key];
+	if (typeof value === "string" && value.trim()) return value;
+	errors.push(`${key} must be a non-empty string`);
+	return "";
+}
+
+function readRequiredSha256(
+	record: Record<string, unknown>,
+	key: string,
+	errors: string[],
+): `sha256:${string}` {
+	const value = readRequiredString(record, key, errors);
+	if (value && !SHA256_DIGEST_PATTERN.test(value)) {
+		errors.push(`${key} must be a sha256 digest`);
+	}
+	return value as `sha256:${string}`;
+}
+
+function readRequiredLiteral<T extends string>(
+	record: Record<string, unknown>,
+	key: string,
+	expected: T,
+	errors: string[],
+): T {
+	const value = readRequiredString(record, key, errors);
+	if (value && value !== expected) {
+		errors.push(`${key} must be ${expected}`);
+	}
+	return expected;
+}
+
+function readTimestampMs(value: string, key: string, errors: string[]): number | undefined {
+	if (!value) return undefined;
+	const timestamp = Date.parse(value);
+	if (!Number.isFinite(timestamp)) {
+		errors.push(`${key} must be a valid timestamp`);
+		return undefined;
+	}
+	return timestamp;
+}
+
+function readRequiredStringArray(
+	record: Record<string, unknown>,
+	key: string,
+	errors: string[],
+): string[] {
+	const value = record[key];
+	if (
+		Array.isArray(value) &&
+		value.length > 0 &&
+		value.every((entry) => typeof entry === "string" && entry.trim())
+	) {
+		return value;
+	}
+	errors.push(`${key} must be a non-empty string array`);
+	return [];
+}
+
+function readRequiredInteger(
+	record: Record<string, unknown>,
+	key: string,
+	errors: string[],
+): number {
+	const value = record[key];
+	if (typeof value === "number" && Number.isInteger(value)) return value;
+	errors.push(`${key} must be an integer`);
+	return 1;
+}
+
+function readRequiredBoolean(
+	record: Record<string, unknown>,
+	key: string,
+	errors: string[],
+): boolean {
+	const value = record[key];
+	if (typeof value === "boolean") return value;
+	errors.push(`${key} must be a boolean`);
+	return false;
+}
+
+function readInternalResponseProof(
+	record: Record<string, unknown>,
+	key: string,
+	errors: string[],
+): InternalResponseProof {
+	const value = record[key];
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		errors.push(`${key} must be a response proof object`);
+		return emptyInternalResponseProof();
+	}
+	const proof = value as Record<string, unknown>;
+	for (const proofKey of [
+		"scope",
+		"timestamp",
+		"nonce",
+		"method",
+		"path",
+		"requestBodySha256",
+		"responseBodySha256",
+		"signature",
+	]) {
+		if (typeof proof[proofKey] !== "string" || !proof[proofKey].trim()) {
+			errors.push(`${key}.${proofKey} must be a non-empty string`);
+		}
+	}
+	if (proof.version !== "v1") {
+		errors.push(`${key}.version must be v1`);
+	}
+	return proof as InternalResponseProof;
+}
+
+function emptyInternalResponseProof(): InternalResponseProof {
+	return {
+		version: "v1",
+		scope: "",
+		timestamp: "",
+		nonce: "",
+		method: "",
+		path: "",
+		requestBodySha256: "",
+		responseBodySha256: "",
+		signature: "",
+	};
 }
 
 function nonEmpty(value: string | undefined, fallback: string): string {

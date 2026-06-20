@@ -101,11 +101,14 @@ import {
 import {
 	buildNoForkProof,
 	DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH,
+	DEFAULT_HERMES_SOURCE_COMMIT,
 	DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH,
 	DEFAULT_HERMES_UPSTREAM_REF,
 	DEFAULT_HERMES_UPSTREAM_VERSION,
+	parseNoForkWrapperRunEvidence,
 	writeNoForkProofReport,
 } from "../hermes/no-fork-proof.js";
+import { buildHermesVersionUpdatePlan, HERMES_VERSION_UPDATE_TARGET } from "../hermes/pin.js";
 import {
 	buildHermesCliProbeInvocation,
 	buildHermesOpenAiCodexRelayAuthStorePayload,
@@ -2314,6 +2317,30 @@ export function registerHermesCommand(program: Command): void {
 		);
 
 	hermes
+		.command("version-update")
+		.description("Show the Hermes upstream version-update target and required proof gates")
+		.option("--json", "Emit structured JSON")
+		.action((options: JsonOption) => {
+			const plan = buildHermesVersionUpdatePlan();
+			if (options.json) {
+				printJson(plan);
+			} else {
+				console.log(`Hermes version-update: ${plan.status}`);
+				console.log(
+					`- current: ${plan.current.ref} / ${plan.current.version} (${plan.current.imageDigest})`,
+				);
+				console.log(
+					`- target: ${HERMES_VERSION_UPDATE_TARGET.ref} / ${HERMES_VERSION_UPDATE_TARGET.version} (${HERMES_VERSION_UPDATE_TARGET.imageDigest})`,
+				);
+				console.log(`- rule: ${plan.productionDefaultRule}`);
+				for (const gate of plan.requiredGates) {
+					console.log(`- ${gate.id}: ${gate.command}`);
+				}
+			}
+			process.exitCode = 0;
+		});
+
+	hermes
 		.command("probes")
 		.description("Generate the canonical Hermes feature-probe matrix from observed evidence")
 		.option("--json", "Emit structured JSON")
@@ -2368,6 +2395,15 @@ export function registerHermesCommand(program: Command): void {
 			"Pinned upstream Hermes package version",
 			DEFAULT_HERMES_UPSTREAM_VERSION,
 		)
+		.option(
+			"--expected-commit <commit>",
+			"Immutable commit that the pinned upstream ref must resolve to",
+			DEFAULT_HERMES_SOURCE_COMMIT,
+		)
+		.option(
+			"--wrapper-run <path>",
+			"Wrapper/P0 run evidence JSON to bind into the no-fork runner attestation",
+		)
 		.option("--out <path>", "No-fork proof evidence path", DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH)
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(
@@ -2377,6 +2413,8 @@ export function registerHermesCommand(program: Command): void {
 					checkout: string;
 					expectedRef: string;
 					expectedVersion: string;
+					expectedCommit: string;
+					wrapperRun?: string;
 					out: string;
 				} & TrackedSeedWriteOption,
 			) => {
@@ -2402,12 +2440,20 @@ export function registerHermesCommand(program: Command): void {
 					process.exitCode = 2;
 					return;
 				}
+				const wrapperRun =
+					options.wrapperRun !== undefined
+						? parseNoForkWrapperRunEvidence(
+								readJsonFile(resolveHermesArtifactPath(options.wrapperRun)),
+							)
+						: undefined;
 				const report = writeNoForkProofReport(
 					buildNoForkProof({
 						checkoutPath: options.checkout,
 						expectedRef: options.expectedRef,
 						expectedVersion: options.expectedVersion,
+						expectedCommit: options.expectedCommit,
 						evidencePath: options.out,
+						wrapperRun,
 					}),
 					trackedSeedWriteOptions(options),
 				);
@@ -2537,6 +2583,7 @@ export function registerHermesCommand(program: Command): void {
 			"Also require a read-only tc_provider_read canary, as providerId:service:action",
 		)
 		.option("--timeout-ms <ms>", "Per-step timeout in milliseconds")
+		.option("--out <path>", "Write live verification report JSON to this path")
 		.action(
 			async (
 				options: JsonOption & {
@@ -2553,6 +2600,7 @@ export function registerHermesCommand(program: Command): void {
 					apiBaseUrl?: string;
 					providerCanary?: string;
 					timeoutMs?: string;
+					out?: string;
 				},
 			) => {
 				const checks: HermesVerifyLiveCheck[] = [];
@@ -2694,6 +2742,9 @@ export function registerHermesCommand(program: Command): void {
 				}
 
 				const report = buildHermesVerifyLiveReport(checks);
+				if (options.out) {
+					writeJsonArtifact(resolveHermesArtifactPath(options.out), report);
+				}
 				if (options.json) {
 					printJson(report);
 				} else {
