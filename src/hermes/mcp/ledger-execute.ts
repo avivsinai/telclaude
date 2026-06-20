@@ -61,10 +61,23 @@ export interface BrowserWriteCommitter {
 	): Promise<{ readonly receipt: Record<string, unknown> }>;
 }
 
+export type BrowserWriteSessionValidationResult =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly code: string; readonly reason: string };
+
+export type BrowserWriteSessionValidator = (input: {
+	readonly record: TelclaudeMcpBrowserWriteSideEffectRecord;
+	readonly request: TelclaudeMcpBrowserWriteExecuteRequest;
+	readonly activeSessionRef: string;
+	readonly nowMs: number;
+}) => BrowserWriteSessionValidationResult | Promise<BrowserWriteSessionValidationResult>;
+
 export type TelclaudeMcpBrowserWriteExecuteRequest = {
 	readonly actorId: string;
 	readonly profileId: string;
 	readonly domain: string;
+	readonly endpointId: string;
+	readonly turnConversationRef?: string;
 	readonly actionRef: string;
 };
 
@@ -154,6 +167,7 @@ export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly browserWriteCommitter?: BrowserWriteCommitter;
+	readonly browserWriteSessionValidator?: BrowserWriteSessionValidator;
 	readonly nowMs?: () => number;
 };
 
@@ -270,6 +284,30 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 					"browser-write committer is not configured",
 					checked.record,
 				);
+			}
+			if (!options.browserWriteSessionValidator) {
+				return terminalFailure(
+					"browser_write_session_validator_missing",
+					"browser-write session validator is not configured",
+					checked.record,
+				);
+			}
+			const activeSessionRef = browserWriteActiveSessionRef(request);
+			if (checked.record.sessionRef !== activeSessionRef) {
+				return terminalFailure(
+					"browser_write_session_mismatch",
+					"browser-write active session no longer matches the prepared write",
+					checked.record,
+				);
+			}
+			const sessionValidation = await options.browserWriteSessionValidator({
+				record: checked.record,
+				request,
+				activeSessionRef,
+				nowMs,
+			});
+			if (!sessionValidation.ok) {
+				return terminalFailure(sessionValidation.code, sessionValidation.reason, checked.record);
 			}
 			const resolved = await resolveSideEffectApprovalToken(
 				options.sideEffectApprovalTokenResolver,
@@ -412,9 +450,13 @@ function reconstructPreparedBrowserWrite(
 		authorityDomain: record.authorityDomain,
 		host: record.host,
 		originScope: record.originScope,
+		browserCredentialRef: record.browserCredentialRef,
+		browserCredentialCreatedAt: record.browserCredentialCreatedAt,
 		evidenceRevision: record.evidenceRevision,
 		evidenceNonce: record.evidenceNonce,
 		bindingHash: record.bindingHash,
+		evidenceScreenshotHash: record.evidenceScreenshotHash,
+		evidenceScreenshotRef: record.evidenceScreenshotRef,
 		display: record.display,
 		commitSignal: record.commitSignal,
 		createdAtMs: record.createdAtMs,
@@ -432,7 +474,17 @@ function browserWriteContext(
 		authorityDomain: record.authorityDomain,
 		host: record.host,
 		originScope: record.originScope,
+		browserCredentialRef: record.browserCredentialRef,
+		browserCredentialCreatedAt: record.browserCredentialCreatedAt,
 	};
+}
+
+function browserWriteActiveSessionRef(request: TelclaudeMcpBrowserWriteExecuteRequest): string {
+	const sessionRef = (request.turnConversationRef ?? request.endpointId).trim();
+	if (!sessionRef) {
+		throw new Error("browser-write execute requires endpointId or turnConversationRef");
+	}
+	return sessionRef;
 }
 
 async function providerLedgerEffectRecord(

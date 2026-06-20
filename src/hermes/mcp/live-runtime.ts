@@ -9,6 +9,7 @@ import { createTelclaudeMcpAuthorityRegistry } from "./authority-registry.js";
 import type { TelclaudeMcpAuthority } from "./bridge.js";
 import type {
 	BrowserWriteCommitter,
+	BrowserWriteSessionValidator,
 	TelclaudeMcpInboundTurnAuthorityResolver,
 	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
@@ -171,6 +172,8 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	/** Commits an approved browser write (S3); omitted → tc_browse_act_execute fails closed. */
 	readonly browserWriteCommitter?: BrowserWriteCommitter;
+	/** Revalidates current browser credential/session binding before S3 execute. */
+	readonly browserWriteSessionValidator?: BrowserWriteSessionValidator;
 	readonly nowMs?: () => number;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
 };
@@ -248,6 +251,9 @@ export async function startTelclaudeLiveMcpRuntime(
 				providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 				...(options.browserWriteCommitter
 					? { browserWriteCommitter: options.browserWriteCommitter }
+					: {}),
+				...(options.browserWriteSessionValidator
+					? { browserWriteSessionValidator: options.browserWriteSessionValidator }
 					: {}),
 				nowMs: options.nowMs,
 			});

@@ -93,6 +93,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 	});
 
 	it("attaches a stored login + its origin scope for a matching authority (via prepareIntent — cookie-bearing acts must prepare)", async () => {
+		const createdAt = Date.now();
 		store.putSession({
 			credentialRef: "cred-shop",
 			actorId: "operator",
@@ -101,7 +102,7 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 			domain: "shop.example.com",
 			originScope: ["shop.example.com"],
 			storageState: { cookies: [{ name: "sid", value: "x" }] },
-			createdAt: Date.now(),
+			createdAt,
 			capturedBy: "operator",
 		});
 		const fake = fakeExecutor();
@@ -126,7 +127,50 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 
 		const resolved = fake.prepareRequests[0];
 		expect(resolved?.session).toBeDefined();
+		expect(resolved?.session?.credentialRef).toBe("cred-shop");
 		expect(resolved?.originScope).toEqual(["shop.example.com"]);
+		await expect(
+			surface.validatePreparedSession({
+				actor: "operator",
+				profileId: "ops",
+				authorityDomain: "private",
+				sessionRef: "endpoint-private",
+				host: "shop.example.com",
+				originScope: ["shop.example.com"],
+				browserCredentialRef: "cred-shop",
+				browserCredentialCreatedAt: createdAt,
+			}),
+		).resolves.toEqual({ ok: true });
+		await expect(
+			surface.validatePreparedSession({
+				actor: "operator",
+				profileId: "ops",
+				authorityDomain: "private",
+				sessionRef: "endpoint-private",
+				host: "shop.example.com",
+				originScope: ["shop.example.com"],
+				browserCredentialRef: "cred-shop",
+				browserCredentialCreatedAt: createdAt - 1,
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			code: "browser_write_session_credential_replaced",
+		});
+		await expect(
+			surface.validatePreparedSession({
+				actor: "operator",
+				profileId: "ops",
+				authorityDomain: "private",
+				sessionRef: "endpoint-private",
+				host: "shop.example.com",
+				originScope: ["shop.example.com"],
+				browserCredentialRef: "missing-credential",
+				browserCredentialCreatedAt: createdAt,
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			code: "browser_write_session_credential_revoked",
+		});
 	});
 
 	it("refuses an inline act on a resolved logged-in session with the same hard gate", async () => {
@@ -196,6 +240,18 @@ describe("browser-act relay surface (session + authority resolution)", () => {
 
 		expect(fake.prepareRequests[0]?.session).toBeUndefined();
 		expect(fake.prepareRequests[0]?.originScope).toEqual(["shop.example.com"]);
+		await expect(
+			surface.validatePreparedSession({
+				actor: "operator",
+				profileId: "ops",
+				authorityDomain: "public-social",
+				sessionRef: "endpoint-social",
+				host: "shop.example.com",
+				originScope: ["shop.example.com"],
+				browserCredentialRef: null,
+				browserCredentialCreatedAt: null,
+			}),
+		).resolves.toEqual({ ok: true });
 	});
 
 	it("threads the pre-allocated actionRef into prepareIntent for the committing path", async () => {
@@ -386,9 +442,13 @@ function minimalPrepared(
 		authorityDomain: "private" as const,
 		host: "shop.example.com",
 		originScope: ["shop.example.com"],
+		browserCredentialRef: null,
+		browserCredentialCreatedAt: null,
 		evidenceRevision: "hmac-sha256:r",
 		evidenceNonce: "n",
 		bindingHash: `sha256:${"a".repeat(64)}`,
+		evidenceScreenshotHash: `sha256:${"b".repeat(64)}`,
+		evidenceScreenshotRef: "/relay/media/x.png",
 		display: {
 			verb: "click",
 			target: "#pay-origin",

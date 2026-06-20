@@ -146,6 +146,10 @@ export interface BrowserBrokerConfig {
  * in a cookie-bearing context whose egress is pinned (M1) to `originScope`.
  */
 export interface BrowseSession {
+	/** Relay-owned credential record that produced this cookie-bearing session. */
+	readonly credentialRef: string;
+	/** Creation time of the credential record that produced this session. */
+	readonly credentialCreatedAt: number;
 	/** Decrypted Playwright storageState (cookies + per-origin localStorage). */
 	readonly storageState: BrowserStorageState;
 	/** M1 login-origin set; the cookie-bearing context may only egress to these. */

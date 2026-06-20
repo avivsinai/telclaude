@@ -481,6 +481,21 @@ export function registerRelayCommand(program: Command): void {
 					...(liveMcpBrowserWriteCommitter
 						? { browserWriteCommitter: liveMcpBrowserWriteCommitter }
 						: {}),
+					...(liveMcpBrowserActSurface
+						? {
+								browserWriteSessionValidator: ({ record }) =>
+									liveMcpBrowserActSurface.validatePreparedSession({
+										actor: record.actorId,
+										profileId: record.profileId,
+										authorityDomain: record.authorityDomain,
+										sessionRef: record.sessionRef,
+										host: record.host,
+										originScope: record.originScope,
+										browserCredentialRef: record.browserCredentialRef,
+										browserCredentialCreatedAt: record.browserCredentialCreatedAt,
+									}),
+							}
+						: {}),
 					createRelayClients: ({ ledger }) => {
 						if (liveMcpSideEffectApprovals) {
 							setTelclaudeLiveMcpSideEffectApprovalBinding({

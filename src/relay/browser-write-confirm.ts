@@ -232,6 +232,10 @@ export interface BrowserWriteContext {
 	readonly host: string;
 	/** The cookie-bearing session's M1 origin scope (egress is pinned to it). */
 	readonly originScope: readonly string[];
+	/** Stored browser credential that hydrated this page, or null for a cookie-less page. */
+	readonly browserCredentialRef: string | null;
+	/** Creation time of the stored browser credential, or null for a cookie-less page. */
+	readonly browserCredentialCreatedAt: number | null;
 }
 
 /** A redacted, display-only summary of the staged write — NEVER raw values/URL. */
@@ -256,6 +260,8 @@ export interface PreparedBrowserWrite {
 	readonly authorityDomain: BrowserAuthorityDomain;
 	readonly host: string;
 	readonly originScope: readonly string[];
+	readonly browserCredentialRef: string | null;
+	readonly browserCredentialCreatedAt: number | null;
 	/** HMAC page revision the human is approving (drift signal). */
 	readonly evidenceRevision: string;
 	/**
@@ -266,6 +272,10 @@ export interface PreparedBrowserWrite {
 	readonly evidenceNonce: string;
 	/** The WYSIWYS binding hash — re-derived and matched at execute time. */
 	readonly bindingHash: string;
+	/** Display/audit artifact captured during prepare; not part of deterministic drift recapture. */
+	readonly evidenceScreenshotHash: string;
+	/** Opaque media ref for the prepare screenshot shown/audited for approval. */
+	readonly evidenceScreenshotRef: string;
 	/** Redacted action summary surfaced to the approver (no raw values/URL). */
 	readonly display: BrowserWriteDisplay;
 	/** Relay-computed commit signal (why confirmation is required); relay OUTPUT. */
@@ -319,6 +329,8 @@ export function deriveBrowserWriteBindingHash(
 			originScope: buildCanonicalOriginScope(context.originScope),
 			profile: context.profile.trim(),
 			sessionRef: context.sessionRef.trim(),
+			browserCredentialRef: context.browserCredentialRef?.trim() || null,
+			browserCredentialCreatedAt: context.browserCredentialCreatedAt ?? null,
 		},
 		action: {
 			target: action.target?.trim() || null,
@@ -400,6 +412,15 @@ export function prepareBrowserWrite(input: {
 		MAX_WRITE_CONFIRM_TTL_MS,
 	);
 	const context: BrowserWriteContext = { ...input.context, actor, host };
+	const browserCredentialRef = context.browserCredentialRef?.trim() || null;
+	const browserCredentialCreatedAt = browserCredentialRef
+		? (context.browserCredentialCreatedAt ?? null)
+		: null;
+	const bindingContext: BrowserWriteContext = {
+		...context,
+		browserCredentialRef,
+		browserCredentialCreatedAt,
+	};
 
 	return {
 		writeRef: nextWriteRef(),
@@ -409,9 +430,13 @@ export function prepareBrowserWrite(input: {
 		authorityDomain: context.authorityDomain,
 		host,
 		originScope: buildCanonicalOriginScope(context.originScope),
+		browserCredentialRef,
+		browserCredentialCreatedAt,
 		evidenceRevision: input.evidence.revision,
 		evidenceNonce: input.evidence.evidenceNonce,
-		bindingHash: deriveBrowserWriteBindingHash(context, input.action, input.evidence),
+		bindingHash: deriveBrowserWriteBindingHash(bindingContext, input.action, input.evidence),
+		evidenceScreenshotHash: input.evidence.screenshotHash,
+		evidenceScreenshotRef: input.evidence.screenshotRef,
 		display: {
 			verb: input.action.verb.trim().toLowerCase(),
 			// Redacted/scrubbed — the raw target is bound in the hash, never persisted/displayed.

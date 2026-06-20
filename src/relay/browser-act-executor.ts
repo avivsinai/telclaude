@@ -52,6 +52,7 @@ import type {
 	BrowserActPoolEntry,
 	BrowserActSessionPool,
 } from "./browser-act-session-pool.js";
+import type { BrowseSession } from "./browser-broker.js";
 import {
 	type BrowserAuthorityDomain,
 	type BrowserSessionAuthority,
@@ -113,6 +114,8 @@ export interface BrowserActRequest {
 	readonly sessionRef: string;
 	readonly host: string;
 	readonly originScope: readonly string[];
+	/** Relay-resolved cookie-bearing session, when one applies. Runtime never supplies this. */
+	readonly session?: BrowseSession;
 	/**
 	 * Server-resolved ENTRY url the live page is auto-loaded to before capture/
 	 * dispatch (Option A). NOT a runtime free-field beyond the already-validated +
@@ -283,6 +286,8 @@ export class BrowserActExecutor {
 						authorityDomain: this.authorityDomain(request),
 						host: request.host,
 						originScope: request.originScope,
+						browserCredentialRef: request.session?.credentialRef ?? null,
+						browserCredentialCreatedAt: request.session?.credentialCreatedAt ?? null,
 					},
 					action: {
 						verb: request.verb,

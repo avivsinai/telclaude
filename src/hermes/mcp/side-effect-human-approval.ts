@@ -665,6 +665,8 @@ function formatSideEffectHumanApprovalBody(
 			`Verb: ${record.display.verb}`,
 			`Target: ${record.display.target ?? "(none)"}`,
 			`Origin: ${record.display.urlOrigin ?? "(opaque origin)"}`,
+			`Screenshot hash: ${record.evidenceScreenshotHash}`,
+			`Screenshot ref: ${record.evidenceScreenshotRef}`,
 			...browserWriteSubmittedValueLines(record.display.submittedValues),
 			"",
 			...common,
@@ -685,7 +687,12 @@ function integrityHashLines(
 	binding: TelclaudeMcpSideEffectApprovalBinding,
 ): string[] {
 	if (record.kind === "browser-write") {
-		return [`Binding hash: ${record.bindingHash}`, `Evidence revision: ${record.evidenceRevision}`];
+		return [
+			`Binding hash: ${record.bindingHash}`,
+			`Evidence revision: ${record.evidenceRevision}`,
+			`Evidence screenshot hash: ${record.evidenceScreenshotHash}`,
+			`Evidence screenshot ref: ${record.evidenceScreenshotRef}`,
+		];
 	}
 	if (binding.kind === "browser-write") return [];
 	return [`Params hash: ${binding.paramsHash}`, `Body hash: ${binding.bodyHash}`];
