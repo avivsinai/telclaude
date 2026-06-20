@@ -28,9 +28,15 @@ import {
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
 import { DEFAULT_MODEL_RELAY_PROFILE_DIR } from "../../src/hermes/model-relay.js";
-import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
+import {
+	NETWORK_PROBE_ATTESTATION_PATH,
+	NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV,
+	NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV,
+	signNetworkProbeEvidenceAttestation,
+} from "../../src/hermes/network-probe-attestation.js";
 import {
 	DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
+	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
 } from "../../src/hermes/network-probes.js";
 import {
@@ -61,6 +67,8 @@ const HERMES_COMMAND_TEST_ENV_KEYS = [
 	"OPERATOR_RPC_AGENT_PUBLIC_KEY",
 	"OPERATOR_RPC_RELAY_PRIVATE_KEY",
 	"OPERATOR_RPC_RELAY_PUBLIC_KEY",
+	NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV,
+	NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV,
 	"TELCLAUDE_CAPABILITIES_URL",
 	"TELCLAUDE_HERMES_BIN",
 	"TELCLAUDE_HERMES_CONTAINED_CONTAINER_NAME",
@@ -530,16 +538,15 @@ function writeFirewallSentinel(tempDir: string): string {
 	return sentinelPath;
 }
 
-function ensureOperatorRelayKeys(): { privateKey: string; publicKey: string } {
-	if (process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
-		return {
-			privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
-			publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
-		};
+function ensureNetworkProbeRunnerKeys(): { privateKey: string; publicKey: string } {
+	const privateKey = process.env[NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV];
+	const publicKey = process.env[NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV];
+	if (privateKey && publicKey) {
+		return { privateKey, publicKey };
 	}
 	const relayKeys = generateKeyPair();
-	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
-	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	process.env[NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV] = relayKeys.privateKey;
+	process.env[NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV] = relayKeys.publicKey;
 	return relayKeys;
 }
 
@@ -556,10 +563,7 @@ function passingNetworkProbeEvidence(id: string, evidencePath: string) {
 				: `${id} observed only expected denials`,
 		generatedAt: freshHermesFixtureTimestamp(),
 		evidence_path: evidencePath,
-		attempts:
-			id === "network.direct-provider-denied"
-				? passingNetworkProbeAttempts(id)
-				: [passingFirewallSentinelAttempt(), ...passingNetworkProbeAttempts(id)],
+		attempts: passingNetworkProbeAttempts(id),
 	});
 }
 
@@ -575,7 +579,7 @@ function withNetworkProbeAttestation<
 		attempts: readonly unknown[];
 	},
 >(evidence: T): T & { attestation: ReturnType<typeof signNetworkProbeEvidenceAttestation> } {
-	ensureOperatorRelayKeys();
+	ensureNetworkProbeRunnerKeys();
 	return {
 		...evidence,
 		attestation: signNetworkProbeEvidenceAttestation(evidence),
@@ -2137,15 +2141,15 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("refuses live network-probe signing without operator relay signing keys before network I/O", async () => {
+	it("refuses live network-probe signing without runner relay signing keys before network I/O", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-no-key-"));
 		const relay = await startProbeServer();
-		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalPrivateKey = process.env[NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV];
+		const originalPublicKey = process.env[NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV];
 
 		try {
-			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			delete process.env[NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV];
+			delete process.env[NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV];
 			const outPath = path.join(tempDir, "network-probes.json");
 			const evidenceDir = path.join(tempDir, "evidence");
 			const result = await runHermesCommand([
@@ -2173,14 +2177,14 @@ describe("Hermes wrapper foundation", () => {
 				status: "fail",
 				ran: false,
 				summary:
-					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+					"Missing relay response signing key for network-probe-runner. Set NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY.",
 			});
 			expect(relay.requests.count).toBe(0);
 			expect(fs.existsSync(outPath)).toBe(false);
 			expect(fs.existsSync(evidenceDir)).toBe(false);
 		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
-			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+			restoreEnv(NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV, originalPrivateKey);
+			restoreEnv(NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV, originalPublicKey);
 			await relay.close();
 		}
 	});
@@ -2191,7 +2195,7 @@ describe("Hermes wrapper foundation", () => {
 		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
-			ensureOperatorRelayKeys();
+			ensureNetworkProbeRunnerKeys();
 			const outPath = path.join(tempDir, "network-probes.json");
 			const evidenceDir = path.join(tempDir, "evidence");
 
@@ -2266,7 +2270,7 @@ describe("Hermes wrapper foundation", () => {
 		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
-			ensureOperatorRelayKeys();
+			ensureNetworkProbeRunnerKeys();
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -2322,7 +2326,7 @@ describe("Hermes wrapper foundation", () => {
 			inconclusiveTargets: [DEFAULT_MODEL_PROVIDER_PROBE_URL],
 		});
 		try {
-			ensureOperatorRelayKeys();
+			ensureNetworkProbeRunnerKeys();
 			const result = await runHermesCommandWithEnv(
 				[
 					"hermes",
@@ -2371,7 +2375,7 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("does not count the contained-internal model-provider blackhole as denial proof", async () => {
+	it("does not count contained-internal model-provider blackhole denial without a firewall sentinel", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-model-ip-"));
 		const relay = await startProbeServer();
 		const policyDenied = await startPolicyDeniedProbeServer();
@@ -2380,7 +2384,7 @@ describe("Hermes wrapper foundation", () => {
 			inconclusiveTargets: [DEFAULT_MODEL_PROVIDER_PROBE_URL],
 		});
 		try {
-			ensureOperatorRelayKeys();
+			ensureNetworkProbeRunnerKeys();
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -2417,12 +2421,113 @@ describe("Hermes wrapper foundation", () => {
 					?.attempts.find((attempt) => attempt.name === "model-provider"),
 			).toMatchObject({
 				target: DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
-				observed: "inconclusive_error",
+				observed: "denied",
 				errorCode: "ENETUNREACH",
+			});
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-model-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "firewall-sentinel"),
+			).toMatchObject({
+				observed: "missing",
 			});
 		} finally {
 			fetchSpy.mockRestore();
 			await policyDenied.close();
+			await relay.close();
+		}
+	});
+
+	it("attributes contained-internal direct network denials to the firewall sentinel", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-direct-denial-"));
+		const relay = await startProbeServer();
+		const providerTargets = [
+			["bank", "http://192.0.2.10/probe"],
+			["clalit", "http://192.0.2.11/probe"],
+			["government", "http://192.0.2.12/probe"],
+			["google", "http://192.0.2.13/probe"],
+		] as const;
+		const modelTarget = "http://192.0.2.20/probe";
+		const vaultTarget = "http://192.0.2.30/probe";
+		const fetchSpy = spyOnNetworkProbeFetch({
+			networkErrorTargets: [...providerTargets.map(([, url]) => url), modelTarget, vaultTarget],
+		});
+		const realExistsSync = fs.existsSync;
+		const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((candidate) => {
+			if (candidate === DEFAULT_FIREWALL_SENTINEL_PATH) return true;
+			return realExistsSync(candidate);
+		});
+		try {
+			ensureNetworkProbeRunnerKeys();
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--posture",
+				"contained-internal",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				providerTargets.map(([name, url]) => `${name}=${url}`).join(","),
+				"--model-url",
+				modelTarget,
+				"--vault-url",
+				vaultTarget,
+				"--dns-url",
+				DETERMINISTIC_DNS_DENIAL_URL,
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				evidence: Array<{
+					id: string;
+					status: string;
+					attempts: Array<{
+						kind: string;
+						name: string;
+						observed: string;
+						errorCode?: string;
+					}>;
+				}>;
+			};
+			const directProvider = report.evidence.find(
+				(probe) => probe.id === "network.direct-provider-denied",
+			);
+			const directModel = report.evidence.find(
+				(probe) => probe.id === "network.direct-model-provider-denied",
+			);
+			const directVault = report.evidence.find(
+				(probe) => probe.id === "network.direct-vault-denied",
+			);
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.status).toBe("pass");
+			for (const [name] of providerTargets) {
+				expect(
+					directProvider?.attempts.find((attempt) => attempt.name === `provider:${name}`),
+				).toMatchObject({ observed: "denied", errorCode: "ENETUNREACH" });
+			}
+			expect(
+				directModel?.attempts.find((attempt) => attempt.name === "model-provider"),
+			).toMatchObject({ observed: "denied", errorCode: "ENETUNREACH" });
+			expect(directVault?.attempts.find((attempt) => attempt.name === "vault-url")).toMatchObject({
+				observed: "denied",
+				errorCode: "ENETUNREACH",
+			});
+			for (const probe of [directProvider, directModel, directVault]) {
+				expect(
+					probe?.attempts.find((attempt) => attempt.name === "firewall-sentinel"),
+				).toMatchObject({ kind: "firewall_sentinel", observed: "present" });
+			}
+		} finally {
+			existsSpy.mockRestore();
+			fetchSpy.mockRestore();
 			await relay.close();
 		}
 	});
@@ -2486,14 +2591,9 @@ describe("Hermes wrapper foundation", () => {
 		const sourceDir = path.join(tempDir, "source");
 		const outPath = path.join(tempDir, "network-probes.json");
 		const evidenceDir = path.join(tempDir, "canonical");
-		const evidence = requiredNetworkProbeIds.map((id) => {
-			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
-			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
-				id,
-				evidencePath,
-			);
-			return unsignedEvidence;
-		});
+		const evidence = requiredNetworkProbeIds.map((id) =>
+			passingNetworkProbeEvidence(id, path.join(sourceDir, `${id.replace(/^network\./, "")}.json`)),
+		);
 		const reportPath = path.join(tempDir, "run-report.json");
 		writeJson(reportPath, {
 			schemaVersion: "telclaude.hermes.network-probe-run.v1",
@@ -2545,7 +2645,7 @@ describe("Hermes wrapper foundation", () => {
 				evidence_path: probe.evidence_path,
 				attestation: {
 					probeId: probe.id,
-					signature: { path: "/v1/hermes.network-probe.attestation" },
+					signature: { path: NETWORK_PROBE_ATTESTATION_PATH },
 				},
 			});
 		}
@@ -2566,14 +2666,14 @@ describe("Hermes wrapper foundation", () => {
 				evidencePath,
 			);
 			return id === "network.direct-provider-denied"
-				? {
+				? withNetworkProbeAttestation({
 						...unsignedEvidence,
 						attempts: [
 							passingFirewallSentinelAttempt(),
 							passingHttpDenialAttempt("provider", "https://provider.internal/probe"),
 						],
-					}
-				: unsignedEvidence;
+					})
+				: withNetworkProbeAttestation(unsignedEvidence);
 		});
 		const reportPath = path.join(tempDir, "run-report.json");
 		writeJson(reportPath, {
@@ -2607,13 +2707,11 @@ describe("Hermes wrapper foundation", () => {
 		expect(fs.existsSync(evidenceDir)).toBe(false);
 	});
 
-	it("refuses unsigned network-probe report promotion without operator relay signing keys", async () => {
+	it("refuses unsigned network-probe report promotion", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-promote-no-key-"));
 		const sourceDir = path.join(tempDir, "source");
 		const outPath = path.join(tempDir, "network-probes.json");
 		const evidenceDir = path.join(tempDir, "canonical");
-		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const evidence = requiredNetworkProbeIds.map((id) => {
 			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
 			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
@@ -2632,35 +2730,27 @@ describe("Hermes wrapper foundation", () => {
 			evidence,
 		});
 
-		try {
-			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-			const result = await runHermesCommand([
-				"hermes",
-				"network-probes",
-				"--json",
-				"--from-report",
-				reportPath,
-				"--out",
-				outPath,
-				"--evidence-dir",
-				evidenceDir,
-			]);
-			const report = JSON.parse(result.stdout) as { status: string; ran: boolean; summary: string };
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--json",
+			"--from-report",
+			reportPath,
+			"--out",
+			outPath,
+			"--evidence-dir",
+			evidenceDir,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; ran: boolean; summary: string };
 
-			expect(result.exitCode).toBe(1);
-			expect(report).toMatchObject({
-				status: "fail",
-				ran: false,
-				summary:
-					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
-			});
-			expect(fs.existsSync(outPath)).toBe(false);
-			expect(fs.existsSync(evidenceDir)).toBe(false);
-		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
-			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
-		}
+		expect(result.exitCode).toBe(1);
+		expect(report).toMatchObject({
+			status: "fail",
+			ran: false,
+			summary: "network probe evidence network.relay-control-allowed attestation is missing",
+		});
+		expect(fs.existsSync(outPath)).toBe(false);
+		expect(fs.existsSync(evidenceDir)).toBe(false);
 	});
 
 	it("refuses network-probe report promotion when any attempt failed", async () => {
@@ -2804,7 +2894,7 @@ describe("Hermes wrapper foundation", () => {
 		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
-			ensureOperatorRelayKeys();
+			ensureNetworkProbeRunnerKeys();
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -2860,7 +2950,7 @@ describe("Hermes wrapper foundation", () => {
 		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
-			ensureOperatorRelayKeys();
+			ensureNetworkProbeRunnerKeys();
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -2913,7 +3003,7 @@ describe("Hermes wrapper foundation", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const policyDenied = await startPolicyDeniedProbeServer();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
-		ensureOperatorRelayKeys();
+		ensureNetworkProbeRunnerKeys();
 		try {
 			const result = await runHermesCommand([
 				"hermes",

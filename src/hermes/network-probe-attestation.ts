@@ -7,11 +7,15 @@ import {
 import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION =
-	"telclaude.hermes.network-probe-attestation.v1";
+	"telclaude.hermes.network-probe-runner-attestation.v2";
 export const NETWORK_PROBE_ATTESTATION_SOURCE = "telclaude-hermes-network-probe-runner";
 export const NETWORK_PROBE_ATTESTATION_RUNNER = "telclaude-hermes-network-probes";
-export const NETWORK_PROBE_ATTESTATION_PATH = "/v1/hermes.network-probe.attestation";
-const NETWORK_PROBE_ATTESTATION_SCOPE = "operator";
+export const NETWORK_PROBE_ATTESTATION_PATH = "/v2/hermes.network-probe-runner.attestation";
+export const NETWORK_PROBE_ATTESTATION_SCOPE = "network-probe-runner";
+export const NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV =
+	"NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY";
+export const NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV =
+	"NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY";
 
 type NetworkProbeEvidenceLike = {
 	readonly schemaVersion: string;

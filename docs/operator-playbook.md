@@ -226,7 +226,8 @@ Operator-supplied inputs to the overlay (`docker/.env` or shell):
 - `TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=<ephemeral>` — separate shared Bearer between relay and social contained API server.
 - `TELCLAUDE_HERMES_MCP_RELAY_TOKEN=<ephemeral>` — shared live-MCP transport token between the relay and contained Hermes peers.
 - `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=<relay-scoped>` — the relay-owned OpenAI Codex subscription token.
-- `OPERATOR_RPC_AGENT_PUBLIC_KEY` / `OPERATOR_RPC_RELAY_PRIVATE_KEY` — operator RPC keypair from `pnpm dev keygen operator`, used to sign the proof attestations below.
+- `OPERATOR_RPC_AGENT_PUBLIC_KEY` / `OPERATOR_RPC_RELAY_PRIVATE_KEY` — operator RPC keypair from `pnpm dev keygen operator`, used for operator relay mutations and non-network relay-observed proof attestations.
+- `NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY` / `NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY` — network-probe runner keypair from `pnpm dev keygen network-probe-runner`, used only for machine-observed `network-probes` report attestations and import verification.
 
 ### Management plane
 
@@ -262,7 +263,7 @@ The cutover completed; Hermes is the only runtime. What remains is the recurring
 
 - **`prove --upstream-clean`** — the pinned Hermes checkout is byte-identical to upstream: no diff, no patch, no monkeypatch, no runtime source replacement.
 - **`probes` / `probe <surface> --allow-run`** — regenerate the feature-probe matrix from observed evidence (headless execution, API-server and served-MCP containment, served-MCP memory air-gap, skills allowlist, model relay, edge adapters, providers, workflows, side-effect ledger).
-- **`network-probes --allow-run`** — gated egress isolation: the relay/control URL stays reachable while direct calls to providers, the vault, the model provider, and DNS exfil targets are all denied. `--posture` is `agent-iptables` or `contained-internal`. Use `--defer-attestation` to capture an unsigned run report on the runner and `--from-report` to promote it into signed artifacts later.
+- **`network-probes --allow-run`** — gated egress isolation: the relay/control URL stays reachable while direct calls to providers, the vault, the model provider, and DNS exfil targets are all denied. `--posture` is `agent-iptables` or `contained-internal`. Use `--defer-attestation` only to capture an unsigned diagnostic run report; `--from-report` promotes already-attested reports into canonical artifacts.
 - **`doctor --probes --compat-lock`** — fails closed unless the matrix and the pin-bound compatibility lockfile are present, schema-valid, and green.
 - **`verify-live`** — the live canary: exercises the contained runtime, live MCP, and provider canaries end to end.
 

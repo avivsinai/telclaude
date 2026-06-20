@@ -232,6 +232,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator public key — relay verifies operator-only RPC mutations |
 | `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key — signs relay-observed operator RPC responses such as Hermes rollback evidence |
 | `OPERATOR_RPC_RELAY_PUBLIC_KEY` | Host CLI only | Operator relay public key — CLI verifies relay-observed operator RPC responses |
+| `NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY` | Yes | Network-probe runner private key — signs machine-observed network-probe reports |
+| `NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY` | Yes | Network-probe runner public key — verifies network-probe report attestations |
 | `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Telegram-domain runtime private key — signs runtime→relay requests. Generate with `telclaude keygen telegram` |
 | `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Telegram-domain runtime public key — relay verifies runtime→relay requests |
 | `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay-observed Telegram-domain responses |
@@ -250,6 +252,7 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 
 Generate:
 - `telclaude keygen operator` for operator-only relay mutations and relay-observed rollback evidence. Keep `OPERATOR_RPC_AGENT_PRIVATE_KEY` and `OPERATOR_RPC_RELAY_PUBLIC_KEY` on the host where you run the CLI; put `OPERATOR_RPC_AGENT_PUBLIC_KEY` and `OPERATOR_RPC_RELAY_PRIVATE_KEY` in the relay container env.
+- `telclaude keygen network-probe-runner` for network-probe report attestations. Put the relay private key only in the approved runner/signing environment; put the relay public key wherever reports are verified or promoted.
 - `telclaude keygen telegram` / `telclaude keygen social` for runtime scopes. Each command generates two keypairs (4 keys): the runtime keypair (runtime signs, relay verifies) and the relay keypair (relay signs, runtime verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; private deployment secrets provide `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY` to the approved runtime path.
 
 Telegram admin wizards for `/providers add|edit|remove` do not require `OPERATOR_RPC_AGENT_PRIVATE_KEY`. They run inside the relay process, which writes the runtime overlay locally after Telegram admin/TOTP checks. The operator keypair is still required for host-side CLI or agent-container calls that hit the relay's operator-scope RPC endpoints over HTTP.
@@ -406,6 +409,8 @@ as advisory readiness without failing a minimal deployment.
 | `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN` | Yes | Relay-scoped OpenAI Codex subscription token (relay owns the credential; Hermes only sees a peer-bound relay token) |
 | `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator RPC public key (`pnpm dev keygen operator`); relay verifies operator RPC mutations |
 | `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key; signs relay-observed RPC responses such as rollback evidence |
+| `NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY` | Yes | Network-probe runner private key; signs machine-observed network-probe reports |
+| `NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY` | Yes | Network-probe runner public key; verifies network-probe report attestations |
 | `TELCLAUDE_HERMES_IMAGE` | No | Override the pinned Hermes image digest (default pinned in the compose file) |
 | `TELCLAUDE_HERMES_INFERENCE_MODEL` | No | Hermes inference model (default `gpt-5.5`) |
 | `TELCLAUDE_HERMES_LIVE_MCP_ENABLED` | No | Enable the relay live MCP bridge (default `0`) |
