@@ -218,6 +218,12 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.OPERATOR_RPC_RELAY_PRIVATE_KEY).toBe(
 			"${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}",
 		);
+		expect(telclaudeEnv.NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY).toBe(
+			"${NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen network-probe-runner}",
+		);
+		expect(telclaudeEnv.NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY).toBe(
+			"${NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen network-probe-runner}",
+		);
 		expect(telclaudeEnv.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN).toBe(
 			"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
 		);
@@ -396,6 +402,8 @@ TELCLAUDE_LOG_LEVEL=info
 					"TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID",
 					"OPERATOR_RPC_AGENT_PUBLIC_KEY",
 					"OPERATOR_RPC_RELAY_PRIVATE_KEY",
+					"NETWORK_PROBE_RUNNER_RPC_RELAY_PRIVATE_KEY",
+					"NETWORK_PROBE_RUNNER_RPC_RELAY_PUBLIC_KEY",
 					"TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN",
 				]).toContain(variableName);
 			}

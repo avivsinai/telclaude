@@ -23,13 +23,15 @@ import {
 } from "./network-probe-evidence-validation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 import {
+	DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES,
 	DNS_GUARD_NETWORK_DENIAL_ERROR_CODES,
 	REQUIRED_CONTAINED_PROVIDER_DENY_NAMES,
+	REQUIRED_FIREWALL_SENTINEL_PATH,
 } from "./network-probe-semantic-proof.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
 export const DEFAULT_NETWORK_PROBE_EVIDENCE_DIR = "artifacts/hermes/network";
-export const DEFAULT_FIREWALL_SENTINEL_PATH = "/run/telclaude/firewall-active";
+export const DEFAULT_FIREWALL_SENTINEL_PATH = REQUIRED_FIREWALL_SENTINEL_PATH;
 export const DEFAULT_VAULT_SOCKET_PATH = "/run/vault/vault.sock";
 export const DEFAULT_MODEL_PROVIDER_PROBE_URL =
 	"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
@@ -145,12 +147,10 @@ export function writeHermesNetworkProbeArtifacts(
 		options.allowTrackedSeedWrite === undefined
 			? {}
 			: { allowTrackedSeedWrite: options.allowTrackedSeedWrite };
-	const evidence = report.evidence.map((probe) =>
-		canonicalNetworkProbeEvidence({
-			...probe,
-			evidence_path: path.join(options.evidenceDir, `${probeFileStem(probe.id)}.json`),
-		}),
-	);
+	const evidence = report.evidence.map((probe) => ({
+		...probe,
+		evidence_path: path.join(options.evidenceDir, `${probeFileStem(probe.id)}.json`),
+	}));
 	const bundle = buildNetworkProbeBundle(evidence);
 	const promotedReport = {
 		...report,
@@ -251,16 +251,6 @@ export function assertHermesNetworkProbeRunReport(
 	return raw as NetworkProbeRunnerReport;
 }
 
-function canonicalNetworkProbeEvidence(evidence: NetworkProbeEvidence): NetworkProbeEvidence {
-	if (evidence.status === "pass" && !evidence.attestation) {
-		return {
-			...evidence,
-			attestation: signNetworkProbeEvidenceAttestation(evidence),
-		};
-	}
-	return evidence;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -298,16 +288,27 @@ async function runDirectProviderDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
 	const providerTargets = options.providerUrls.map(parseProviderDenyTarget);
-	const attempts = [
-		...boundaryProofAttempts(options),
-		...containedInternalProviderNameAttempts(options, providerTargets),
-		...(options.providerUrls.length === 0
+	const directAttempts =
+		options.providerUrls.length === 0
 			? [configurationAttempt("providerUrls", "TELCLAUDE_HERMES_NETWORK_PROVIDER_URL")]
 			: await Promise.all(
 					providerTargets.map((target) =>
-						attemptHttpDenied(target.name, target.url, options.timeoutMs),
+						attemptHttpDenied(
+							target.name,
+							target.url,
+							options.timeoutMs,
+							containedInternalDirectDenialOptions(
+								options,
+								"direct provider egress was blocked by containment",
+							),
+						),
 					),
-				)),
+				);
+	const attempts = [
+		...boundaryProofAttempts(options),
+		...containedInternalProviderNameAttempts(options, providerTargets),
+		...directAttempts,
+		...containedInternalFirewallAttributionAttempts(options, directAttempts),
 	];
 	return networkProbeEvidence("network.direct-provider-denied", attempts, options);
 }
@@ -380,12 +381,24 @@ async function runRelayControlAllowed(
 async function runDirectVaultDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
+	const directAttempts = options.vaultUrl
+		? [
+				await attemptHttpDenied(
+					"vault-url",
+					options.vaultUrl,
+					options.timeoutMs,
+					containedInternalDirectDenialOptions(
+						options,
+						"direct vault egress was blocked by containment",
+					),
+				),
+			]
+		: [];
 	const attempts = [
 		...boundaryProofAttempts(options),
 		attemptUnixSocketAbsent("vault-socket", options.vaultSocketPath),
-		...(options.vaultUrl
-			? [await attemptHttpDenied("vault-url", options.vaultUrl, options.timeoutMs)]
-			: []),
+		...directAttempts,
+		...containedInternalFirewallAttributionAttempts(options, directAttempts),
 	];
 	return networkProbeEvidence("network.direct-vault-denied", attempts, options);
 }
@@ -393,9 +406,19 @@ async function runDirectVaultDenied(
 async function runDirectModelProviderDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
+	const directAttempt = await attemptHttpDenied(
+		"model-provider",
+		options.modelProviderUrl,
+		options.timeoutMs,
+		containedInternalDirectDenialOptions(
+			options,
+			"direct model-provider egress was blocked by containment",
+		),
+	);
 	const attempts = [
 		...boundaryProofAttempts(options),
-		await attemptHttpDenied("model-provider", options.modelProviderUrl, options.timeoutMs),
+		directAttempt,
+		...containedInternalFirewallAttributionAttempts(options, [directAttempt]),
 	];
 	return networkProbeEvidence("network.direct-model-provider-denied", attempts, options);
 }
@@ -419,6 +442,37 @@ async function runDnsExfilDenied(
 function boundaryProofAttempts(options: NetworkProbeRunnerOptions): NetworkProbeAttempt[] {
 	if ((options.posture ?? "agent-iptables") === "contained-internal") return [];
 	return [firewallSentinelAttempt(options.firewallSentinelPath)];
+}
+
+function containedInternalDirectDenialOptions(
+	options: NetworkProbeRunnerOptions,
+	positiveErrorDetail: string,
+): HttpDeniedAttemptOptions {
+	if ((options.posture ?? "agent-iptables") !== "contained-internal") return {};
+	return {
+		positiveErrorCodes: DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES,
+		positiveErrorDetail,
+	};
+}
+
+function containedInternalFirewallAttributionAttempts(
+	options: NetworkProbeRunnerOptions,
+	attempts: NetworkProbeAttempt[],
+): NetworkProbeAttempt[] {
+	if ((options.posture ?? "agent-iptables") !== "contained-internal") return [];
+	if (!attempts.some(isDirectNetworkDenialAttempt)) return [];
+	return [firewallSentinelAttempt(REQUIRED_FIREWALL_SENTINEL_PATH)];
+}
+
+function isDirectNetworkDenialAttempt(attempt: NetworkProbeAttempt): boolean {
+	return (
+		attempt.kind === "http" &&
+		attempt.expectation === "deny" &&
+		attempt.status === "pass" &&
+		attempt.observed === "denied" &&
+		attempt.errorCode !== undefined &&
+		DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES.has(attempt.errorCode)
+	);
 }
 
 function firewallSentinelAttempt(sentinelPath: string): NetworkProbeAttempt {

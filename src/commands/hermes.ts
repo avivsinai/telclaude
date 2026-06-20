@@ -80,6 +80,12 @@ import {
 	writeHermesModelRelayEvidence,
 } from "../hermes/model-relay.js";
 import {
+	NETWORK_PROBE_ATTESTATION_PATH,
+	NETWORK_PROBE_ATTESTATION_SCOPE,
+	NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV,
+	NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV,
+} from "../hermes/network-probe-attestation.js";
+import {
 	DEFAULT_CONTAINED_INTERNAL_MODEL_PROVIDER_PROBE_URL,
 	DEFAULT_DNS_EXFIL_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
@@ -820,21 +826,43 @@ function operatorRelaySigningRoundTripFailure(): string | null {
 	}
 }
 
-function assertOperatorRelaySigningEnv(): void {
-	const failure = operatorRelaySigningEnvFailure();
-	if (failure) throw new Error(failure);
+function networkProbeRunnerSigningEnvFailure(): string | null {
+	if (!process.env[NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV]?.trim()) {
+		return `Missing relay response signing key for ${NETWORK_PROBE_ATTESTATION_SCOPE}. Set ${NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV}.`;
+	}
+	if (!process.env[NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV]?.trim()) {
+		return `Missing relay response verification key for ${NETWORK_PROBE_ATTESTATION_SCOPE}. Set ${NETWORK_PROBE_RUNNER_RELAY_PUBLIC_KEY_ENV}.`;
+	}
+	return networkProbeRunnerSigningRoundTripFailure();
 }
 
-function importedNetworkProbeReportRequiresSigning(reportPath: string): boolean {
-	const raw = readJsonFile(resolveHermesArtifactPath(reportPath));
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
-	const evidence = (raw as { readonly evidence?: unknown }).evidence;
-	if (!Array.isArray(evidence)) return false;
-	return evidence.some((probe) => {
-		if (typeof probe !== "object" || probe === null || Array.isArray(probe)) return false;
-		const item = probe as { readonly status?: unknown; readonly attestation?: unknown };
-		return item.status === "pass" && item.attestation === undefined;
-	});
+function networkProbeRunnerSigningRoundTripFailure(): string | null {
+	const body = "telclaude-hermes-network-probe-runner-signing-preflight";
+	try {
+		const proof = buildInternalResponseProof("POST", NETWORK_PROBE_ATTESTATION_PATH, body, body, {
+			scope: NETWORK_PROBE_ATTESTATION_SCOPE,
+		});
+		const failure = internalResponseProofVerificationFailure(
+			proof,
+			"POST",
+			NETWORK_PROBE_ATTESTATION_PATH,
+			body,
+			body,
+			{ scope: NETWORK_PROBE_ATTESTATION_SCOPE },
+		);
+		return failure
+			? `Network-probe runner signing keys failed round-trip verification: ${failure}`
+			: null;
+	} catch (error) {
+		return `Network-probe runner signing keys failed round-trip verification: ${
+			error instanceof Error ? error.message : String(error)
+		}`;
+	}
+}
+
+function assertNetworkProbeRunnerSigningEnv(): void {
+	const failure = networkProbeRunnerSigningEnvFailure();
+	if (failure) throw new Error(failure);
 }
 
 function failHermesProbeInput(
@@ -3673,11 +3701,11 @@ export function registerHermesCommand(program: Command): void {
 		.option("--allow-run", "Permit real network probes and artifact writes")
 		.option(
 			"--defer-attestation",
-			"Run probes without relay signing and emit/write a machine-observed run report for later promotion",
+			"Run probes without relay signing and emit/write a machine-observed run report without canonical artifacts",
 		)
 		.option(
 			"--from-report <path>",
-			"Promote a machine-observed network-probe run report into canonical cutover artifacts",
+			"Promote an attested machine-observed network-probe run report into canonical cutover artifacts",
 		)
 		.option(
 			"--run-report-out <path>",
@@ -3727,11 +3755,8 @@ export function registerHermesCommand(program: Command): void {
 					if (options.allowRun === true) {
 						throw new Error("Use either --from-report or --allow-run, not both.");
 					}
-					if (importedNetworkProbeReportRequiresSigning(options.fromReport)) {
-						assertOperatorRelaySigningEnv();
-					}
 					report = writeHermesNetworkProbeArtifacts(
-						readHermesNetworkProbeRunReport(options.fromReport, { requireAttestation: false }),
+						readHermesNetworkProbeRunReport(options.fromReport),
 						{
 							outPath: options.out,
 							evidenceDir: options.evidenceDir,
@@ -3740,7 +3765,7 @@ export function registerHermesCommand(program: Command): void {
 					);
 				} else {
 					if (options.allowRun === true && options.deferAttestation !== true) {
-						assertOperatorRelaySigningEnv();
+						assertNetworkProbeRunnerSigningEnv();
 					}
 					const posture = parseNetworkProbePosture(options.posture);
 					report = await runHermesNetworkProbes({
