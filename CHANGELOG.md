@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.2] - 2026-06-22
 
+### Security
+
+- **GitHub git proxy mediation** — Hardened Smart HTTP and LFS proxying with scoped, peer-bound git proxy tokens, repository/ref policy enforcement, mediated LFS action handles, private-network target blocking, and sanitized policy-denial logging.
+
+### Fixed
+
+- **Codex git access containment** — Kept Codex work-unit git tokens fetch-only, avoided exposing durable credentials to child runtimes, and preserved workspace-write network denial while routing GitHub reads through the relay.
+
 ## [0.7.1] - 2026-05-17
 
 ### Fixed
