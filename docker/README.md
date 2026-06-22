@@ -242,7 +242,12 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `SOCIAL_RPC_AGENT_PUBLIC_KEY` | Yes (if social enabled) | Social-domain runtime public key — relay verifies social-domain requests |
 | `SOCIAL_RPC_RELAY_PRIVATE_KEY` | Yes (if social enabled) | Relay private key for social-domain responses |
 | `SOCIAL_RPC_RELAY_PUBLIC_KEY` | Yes (if social enabled) | Relay public key for social-domain verification |
-| `TELCLAUDE_GIT_PROXY_SECRET` | No | HMAC secret for git proxy session tokens. Generate: `openssl rand -hex 32` |
+| `TELCLAUDE_GIT_PROXY_SECRET` | No | Relay-only signing secret for scoped, peer-bound git proxy tokens. Generate: `openssl rand -hex 32` |
+| `TELCLAUDE_GIT_PROXY_ALLOWED_REPOS` | No | Comma-separated repository allowlist for minted git proxy tokens, e.g. `owner/repo,owner/*` (default `*/*`) |
+| `TELCLAUDE_GIT_PROXY_PERMISSIONS` | No | Comma-separated token permissions: `fetch`, `push` (default `fetch,push`) |
+| `TELCLAUDE_GIT_PROXY_ALLOWED_PUSH_REFS` | No | Comma-separated push ref allowlist (default `refs/heads/*`) |
+| `TELCLAUDE_GIT_PROXY_DENIED_PUSH_REFS` | No | Comma-separated push ref denylist checked before allowlist (default `refs/heads/main,refs/heads/master`) |
+| `TELCLAUDE_CODEX_GIT_PROXY_URL` | No | Optional Codex Git proxy base URL. Codex wiring is fetch-only and rejected for `workspace-write` because Codex exposes only broad network egress, not endpoint-restricted egress. |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
 | `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,google-services`) |

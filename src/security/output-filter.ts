@@ -60,6 +60,15 @@ export const CORE_SECRET_PATTERNS: SecretPattern[] = [
 		description: "Codex relay proxy bearer - would allow relay-brokered inference within TTL",
 		core: true,
 	},
+	{
+		name: "git_proxy_token",
+		// tc-git-proxy-v1.<payload_b64url>.<sig_b64url> — short-lived,
+		// peer-bound bearer for relay-mediated GitHub smart HTTP.
+		pattern: /\btc-git-proxy-v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+		severity: "critical",
+		description: "Git proxy bearer - would allow relay-brokered GitHub access within TTL",
+		core: true,
+	},
 
 	// === CRITICAL: Private keys ===
 	{

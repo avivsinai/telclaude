@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { buildGitProxyConfigKeys } from "../../src/commands/git-proxy-init.js";
 
 describe("git-proxy-init", () => {
 	let tempHome: string;
@@ -18,8 +19,7 @@ describe("git-proxy-init", () => {
 		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "git-proxy-test-"));
 		process.env.HOME = tempHome;
 
-		// Set required environment variables
-		process.env.TELCLAUDE_GIT_PROXY_SECRET = "test-secret-for-git-proxy-init";
+		// git-proxy-init no longer requires the relay signing secret in the runtime.
 	});
 
 	afterEach(() => {
@@ -40,29 +40,50 @@ describe("git-proxy-init", () => {
 		vi.restoreAllMocks();
 	});
 
-	describe("git config multi-value insteadOf", () => {
-		it("should set all three URL scheme rewrites", () => {
+		describe("git config multi-value insteadOf", () => {
+		it("should build argv-safe git config keys without shell quotes", () => {
 			const proxyUrl = "http://test-proxy:8791";
+			const keys = buildGitProxyConfigKeys(proxyUrl);
 
-			// Simulate what configureGit does for insteadOf
-			const key = `url."${proxyUrl}/github.com/".insteadOf`;
-			const values = ["https://github.com/", "git@github.com:", "ssh://git@github.com/"];
+			expect(keys.urlRewrite).toBe("url.http://test-proxy:8791/github.com/.insteadOf");
+			expect(keys.extraHeader).toBe("http.http://test-proxy:8791/.extraHeader");
+			expect(keys.sslVerify).toBe("http.http://test-proxy:8791/.sslVerify");
+			expect(Object.values(keys).join("\n")).not.toContain('"');
+		});
 
-			// Unset any existing values
-			try {
-				execSync(`git config --global --unset-all ${key}`, { stdio: "ignore" });
-			} catch {
-				// Ignore if key doesn't exist
-			}
+		it("should keep HTTPS proxy URLs on normal certificate validation", () => {
+			const keys = buildGitProxyConfigKeys("https://git-proxy.example");
 
-			// Add each value
-			for (const value of values) {
-				execSync(`git config --global --add ${key} "${value}"`, { stdio: "ignore" });
-			}
+			expect(keys.urlRewrite).toBe("url.https://git-proxy.example/github.com/.insteadOf");
+			expect(keys.extraHeader).toBe("http.https://git-proxy.example/.extraHeader");
+			expect(keys.sslVerify).toBeUndefined();
+		});
 
-			// Verify all three values are present
-			const result = execSync(`git config --global --get-all ${key}`, { encoding: "utf-8" });
-			const lines = result.trim().split("\n");
+			it("should set all three URL scheme rewrites", () => {
+				const proxyUrl = "http://test-proxy:8791";
+
+				// Simulate configureGit's execFileSync argv calls. Shell-style quoted
+				// config keys would be passed literally here and break URL rewriting.
+				const key = buildGitProxyConfigKeys(proxyUrl).urlRewrite;
+				const values = ["https://github.com/", "git@github.com:", "ssh://git@github.com/"];
+
+				// Unset any existing values
+				try {
+					execFileSync("git", ["config", "--global", "--unset-all", key], { stdio: "ignore" });
+				} catch {
+					// Ignore if key doesn't exist
+				}
+
+				// Add each value
+				for (const value of values) {
+					execFileSync("git", ["config", "--global", "--add", key, value], { stdio: "ignore" });
+				}
+
+				// Verify all three values are present
+				const result = execFileSync("git", ["config", "--global", "--get-all", key], {
+					encoding: "utf-8",
+				});
+				const lines = result.trim().split("\n");
 
 			expect(lines).toHaveLength(3);
 			expect(lines).toContain("https://github.com/");
@@ -70,28 +91,34 @@ describe("git-proxy-init", () => {
 			expect(lines).toContain("ssh://git@github.com/");
 		});
 
-		it("should replace existing values on re-run", () => {
-			const proxyUrl = "http://test-proxy:8791";
-			const key = `url."${proxyUrl}/github.com/".insteadOf`;
+			it("should replace existing values on re-run", () => {
+				const proxyUrl = "http://test-proxy:8791";
+				const key = buildGitProxyConfigKeys(proxyUrl).urlRewrite;
 
-			// Set initial values
-			execSync(`git config --global --add ${key} "old-value-1"`, { stdio: "ignore" });
-			execSync(`git config --global --add ${key} "old-value-2"`, { stdio: "ignore" });
+				// Set initial values
+				execFileSync("git", ["config", "--global", "--add", key, "old-value-1"], {
+					stdio: "ignore",
+				});
+				execFileSync("git", ["config", "--global", "--add", key, "old-value-2"], {
+					stdio: "ignore",
+				});
 
-			// Simulate re-run: unset all, then add new values
-			try {
-				execSync(`git config --global --unset-all ${key}`, { stdio: "ignore" });
-			} catch {
-				// Ignore
-			}
+				// Simulate re-run: unset all, then add new values
+				try {
+					execFileSync("git", ["config", "--global", "--unset-all", key], { stdio: "ignore" });
+				} catch {
+					// Ignore
+				}
 
-			const newValues = ["https://github.com/", "git@github.com:"];
-			for (const value of newValues) {
-				execSync(`git config --global --add ${key} "${value}"`, { stdio: "ignore" });
-			}
+				const newValues = ["https://github.com/", "git@github.com:"];
+				for (const value of newValues) {
+					execFileSync("git", ["config", "--global", "--add", key, value], { stdio: "ignore" });
+				}
 
-			// Verify only new values exist
-			const result = execSync(`git config --global --get-all ${key}`, { encoding: "utf-8" });
+				// Verify only new values exist
+				const result = execFileSync("git", ["config", "--global", "--get-all", key], {
+					encoding: "utf-8",
+				});
 			const lines = result.trim().split("\n");
 
 			expect(lines).toHaveLength(2);
@@ -169,30 +196,30 @@ describe("git-proxy-init", () => {
 	});
 
 	describe("session header configuration", () => {
-		it("should set extraHeader for proxy authentication", () => {
-			const proxyUrl = "http://test-proxy:8791";
-			const sessionToken = "test-session-token";
-			const section = `${proxyUrl}/`;
-			const header = `X-Telclaude-Session: ${sessionToken}`;
+			it("should set extraHeader for proxy authentication", () => {
+				const proxyUrl = "http://test-proxy:8791";
+				const sessionToken = "test-session-token";
+				const key = buildGitProxyConfigKeys(proxyUrl).extraHeader;
+				const header = `X-Telclaude-Session: ${sessionToken}`;
 
-			// Unset existing
-			try {
-				execSync(`git config --global --unset-all http."${section}".extraHeader`, {
+				// Unset existing
+				try {
+					execFileSync("git", ["config", "--global", "--unset-all", key], {
+						stdio: "ignore",
+					});
+				} catch {
+				// Ignore
+				}
+
+				// Add header
+				execFileSync("git", ["config", "--global", "--add", key, header], {
 					stdio: "ignore",
 				});
-			} catch {
-				// Ignore
-			}
 
-			// Add header
-			execSync(`git config --global --add http."${section}".extraHeader "${header}"`, {
-				stdio: "ignore",
-			});
-
-			// Verify
-			const result = execSync(`git config --global http."${section}".extraHeader`, {
-				encoding: "utf-8",
-			}).trim();
+				// Verify
+				const result = execFileSync("git", ["config", "--global", key], {
+					encoding: "utf-8",
+				}).trim();
 			expect(result).toBe(header);
 		});
 	});
