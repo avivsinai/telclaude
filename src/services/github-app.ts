@@ -48,11 +48,20 @@ export interface InstallationTokenInfo {
 	expiresAt: Date;
 }
 
+export type GitHubInstallationContentsPermission = "read" | "write";
+
+export interface InstallationTokenScope {
+	/** Full repository name: owner/repo. Omit for the legacy installation-wide token. */
+	repository?: string;
+	/** Narrow the installation token to GitHub Contents read/write when possible. */
+	contentsPermission?: GitHubInstallationContentsPermission;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Token Cache
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let cachedToken: CachedToken | null = null;
+const cachedTokens = new Map<string, CachedToken>();
 let cachedConfig: GitHubAppConfig | null = null;
 
 /**
@@ -60,7 +69,7 @@ let cachedConfig: GitHubAppConfig | null = null;
  * Call after credential changes.
  */
 export function clearGitHubAppCache(): void {
-	cachedToken = null;
+	cachedTokens.clear();
 	cachedConfig = null;
 	logger.debug("github app cache cleared");
 }
@@ -128,24 +137,61 @@ function getPrivateKeyContent(privateKey: string): string {
 // Token Generation
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const SAFE_GITHUB_REPO_NAME = /^[A-Za-z0-9_.-]+$/;
+
+function getRepositoryNameForToken(repository: string | undefined): string | null | undefined {
+	if (!repository) return undefined;
+	const parts = repository.split("/");
+	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+	const repoName = parts[1];
+	return SAFE_GITHUB_REPO_NAME.test(repoName) ? repoName : null;
+}
+
+function installationTokenCacheKey(
+	repositoryName: string | undefined,
+	contentsPermission: GitHubInstallationContentsPermission | undefined,
+): string {
+	return `${repositoryName ?? "*"}:${contentsPermission ?? "*"}`;
+}
+
 /**
  * Get a valid installation token.
  * Returns cached token if still valid, otherwise generates a new one.
  *
  * Token is valid for 1 hour from generation.
  */
-export async function getInstallationTokenInfo(): Promise<InstallationTokenInfo | null> {
+export async function getInstallationTokenInfo(
+	scope: InstallationTokenScope = {},
+): Promise<InstallationTokenInfo | null> {
 	const config = await getGitHubAppConfig();
 	if (!config) {
 		return null;
 	}
 
+	const repositoryName = getRepositoryNameForToken(scope.repository);
+	if (repositoryName === null) {
+		logger.warn(
+			{ repository: scope.repository },
+			"invalid github installation token repository scope",
+		);
+		return null;
+	}
+
+	const cacheKey = installationTokenCacheKey(repositoryName, scope.contentsPermission);
+
 	// Check if cached token is still valid (with 5 min buffer)
+	const cachedToken = cachedTokens.get(cacheKey);
 	if (cachedToken) {
 		const now = new Date();
 		const bufferMs = 5 * 60 * 1000; // 5 minutes
 		if (cachedToken.expiresAt.getTime() - bufferMs > now.getTime()) {
-			logger.debug("using cached installation token");
+			logger.debug(
+				{
+					repository: scope.repository,
+					contentsPermission: scope.contentsPermission,
+				},
+				"using cached installation token",
+			);
 			return { token: cachedToken.token, expiresAt: cachedToken.expiresAt };
 		}
 		logger.debug("cached token expired, generating new one");
@@ -160,27 +206,65 @@ export async function getInstallationTokenInfo(): Promise<InstallationTokenInfo 
 			installationId: Number(config.installationId),
 		});
 
-		const { token, expiresAt } = await auth({ type: "installation" });
+		const authResult = await auth({
+			type: "installation",
+			...(repositoryName ? { repositoryNames: [repositoryName] } : null),
+			...(scope.contentsPermission
+				? { permissions: { contents: scope.contentsPermission } }
+				: null),
+		});
+		if (
+			typeof authResult.token !== "string" ||
+			!authResult.token ||
+			typeof authResult.expiresAt !== "string"
+		) {
+			logger.warn(
+				{
+					repository: scope.repository,
+					contentsPermission: scope.contentsPermission,
+				},
+				"github app auth returned an invalid installation token response",
+			);
+			return null;
+		}
+		const expiresAt = new Date(authResult.expiresAt);
+		if (!Number.isFinite(expiresAt.getTime())) {
+			logger.warn(
+				{
+					repository: scope.repository,
+					contentsPermission: scope.contentsPermission,
+				},
+				"github app auth returned an invalid installation token expiry",
+			);
+			return null;
+		}
 
-		cachedToken = {
-			token,
-			expiresAt: new Date(expiresAt),
+		const nextCachedToken = {
+			token: authResult.token,
+			expiresAt,
 		};
+		cachedTokens.set(cacheKey, nextCachedToken);
 
 		logger.info(
-			{ expiresAt: cachedToken.expiresAt.toISOString() },
+			{
+				expiresAt: nextCachedToken.expiresAt.toISOString(),
+				repository: scope.repository,
+				contentsPermission: scope.contentsPermission,
+			},
 			"generated new installation token",
 		);
 
-		return { token, expiresAt: cachedToken.expiresAt };
+		return { token: authResult.token, expiresAt: nextCachedToken.expiresAt };
 	} catch (err) {
 		logger.error({ error: String(err) }, "failed to generate installation token");
 		return null;
 	}
 }
 
-export async function getInstallationToken(): Promise<string | null> {
-	const info = await getInstallationTokenInfo();
+export async function getInstallationToken(
+	scope: InstallationTokenScope = {},
+): Promise<string | null> {
+	const info = await getInstallationTokenInfo(scope);
 	return info?.token ?? null;
 }
 

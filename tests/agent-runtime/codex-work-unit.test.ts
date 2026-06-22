@@ -4,6 +4,19 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { codexWorkUnitExecutor } from "../../src/agent-runtime/codex-work-unit.js";
 import type { BackgroundJob } from "../../src/background/types.js";
+import { verifyGitProxyToken } from "../../src/relay/git-proxy-auth.js";
+
+const ENV_KEYS = [
+	"TELCLAUDE_CODEX_GIT_PROXY_URL",
+	"TELCLAUDE_GIT_PROXY_URL",
+	"TELCLAUDE_CODEX_GIT_PROXY_PEER_ADDRESS",
+	"TELCLAUDE_GIT_PROXY_SECRET",
+	"TELCLAUDE_GIT_PROXY_PORT",
+	"TELCLAUDE_GIT_PROXY_ALLOWED_REPOS",
+	"TELCLAUDE_GIT_PROXY_PERMISSIONS",
+	"TELCLAUDE_GIT_PROXY_ALLOWED_PUSH_REFS",
+	"TELCLAUDE_GIT_PROXY_DENIED_PUSH_REFS",
+] as const;
 
 function makeJob(payload: BackgroundJob["payload"]): BackgroundJob {
 	return {
@@ -71,13 +84,24 @@ process.stdin.on("end", () => {
 
 describe("codex work-unit executor", () => {
 	let tempDir: string;
+	let originalEnv: Record<(typeof ENV_KEYS)[number], string | undefined>;
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-codex-test-"));
+		originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]])) as Record<
+			(typeof ENV_KEYS)[number],
+			string | undefined
+		>;
+		for (const key of ENV_KEYS) delete process.env[key];
 	});
 
 	afterEach(() => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
+		for (const key of ENV_KEYS) {
+			const value = originalEnv[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 	});
 
 	it("runs codex exec with confined cwd, safety flags, and wrapped final output", async () => {
@@ -173,6 +197,152 @@ describe("codex work-unit executor", () => {
 		const args = readArgs(tempDir);
 		expect(args).not.toContain('model_provider="telclaude_relay"');
 		expect(readChildEnv(tempDir).CODEX_TELCLAUDE_RELAY_TOKEN).toBeUndefined();
+	});
+
+	it("wires a pre-minted scoped git proxy token through job-local git config", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		const job = makeJob({ kind: "codex-work-unit", prompt: "go", sandbox: "read-only", cwd: "." });
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+			gitProxyUrl: "http://127.0.0.1:8791",
+			gitProxyToken: "tc-git-proxy-v1.payload.signature",
+		});
+
+		expect(result.ok).toBe(true);
+		const childEnv = readChildEnv(tempDir);
+		expect(childEnv.GIT_CONFIG_COUNT).toBe("6");
+		expect(childEnv.GIT_CONFIG_KEY_0).toBe("url.http://127.0.0.1:8791/github.com/.insteadOf");
+		expect(childEnv.GIT_CONFIG_VALUE_0).toBe("https://github.com/");
+		expect(childEnv.GIT_CONFIG_VALUE_1).toBe("git@github.com:");
+		expect(childEnv.GIT_CONFIG_VALUE_2).toBe("ssh://git@github.com/");
+		expect(childEnv.GIT_CONFIG_KEY_3).toBe("http.http://127.0.0.1:8791/.extraHeader");
+		expect(childEnv.GIT_CONFIG_VALUE_3).toBe(
+			"X-Telclaude-Session: tc-git-proxy-v1.payload.signature",
+		);
+		expect(childEnv.TELCLAUDE_GIT_PROXY_SECRET).toBeUndefined();
+	});
+
+	it("does not disable TLS verification for HTTPS git proxy URLs", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		const job = makeJob({ kind: "codex-work-unit", prompt: "go", sandbox: "read-only", cwd: "." });
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+			gitProxyUrl: "https://git-proxy.example",
+			gitProxyToken: "tc-git-proxy-v1.payload.signature",
+		});
+
+		expect(result.ok).toBe(true);
+		const childEnv = readChildEnv(tempDir);
+		expect(childEnv.GIT_CONFIG_COUNT).toBe("5");
+		expect(Object.values(childEnv).join("\n")).not.toContain(".sslVerify");
+	});
+
+	it("mints job-scoped git proxy tokens without leaking the relay signing secret", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		process.env.TELCLAUDE_GIT_PROXY_SECRET = "git-proxy-signing-secret";
+		process.env.TELCLAUDE_GIT_PROXY_ALLOWED_REPOS = "owner/repo";
+		process.env.TELCLAUDE_GIT_PROXY_ALLOWED_PUSH_REFS = "refs/heads/codex/*";
+		process.env.TELCLAUDE_GIT_PROXY_DENIED_PUSH_REFS = "refs/heads/main";
+
+		const job = makeJob({ kind: "codex-work-unit", prompt: "go", sandbox: "read-only", cwd: "." });
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+			gitProxyUrl: "http://127.0.0.1:8791",
+			gitProxyPeerAddress: "::ffff:127.0.0.1",
+			gitProxyTokenTtlMs: 20 * 60_000,
+		});
+
+		expect(result.ok).toBe(true);
+		const childEnv = readChildEnv(tempDir);
+		expect(childEnv.TELCLAUDE_GIT_PROXY_SECRET).toBeUndefined();
+		const token = childEnv.GIT_CONFIG_VALUE_3.replace("X-Telclaude-Session: ", "");
+		const verified = verifyGitProxyToken(token, {
+			secret: "git-proxy-signing-secret",
+			peerAddress: "127.0.0.1",
+		});
+		expect(verified.ok).toBe(true);
+		if (verified.ok) {
+			expect(verified.sessionId).toBe("codex-work-unit:job-1");
+			expect(verified.repositories).toEqual(["owner/repo"]);
+			expect(verified.permissions).toEqual(["fetch"]);
+			expect(verified.allowedRefs).toEqual(["refs/heads/codex/*"]);
+			expect(verified.deniedRefs).toEqual(["refs/heads/main"]);
+			expect(verified.expiresAt - verified.createdAt).toBe(5 * 60_000);
+		}
+	});
+
+	it("rejects workspace-write git proxy jobs before spawning or minting tokens", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		process.env.TELCLAUDE_GIT_PROXY_SECRET = "git-proxy-signing-secret";
+		const job = {
+			...makeJob({ kind: "codex-work-unit", prompt: "go", sandbox: "workspace-write", cwd: "." }),
+			tier: "FULL_ACCESS" as const,
+		};
+
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+			gitProxyUrl: "http://127.0.0.1:8791",
+			gitProxyPeerAddress: "127.0.0.1",
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("network access is not endpoint-restricted");
+		expect(fs.existsSync(path.join(tempDir, "fake-codex-args.json"))).toBe(false);
+	});
+
+	it("keeps Codex git proxy tokens fetch-only even when relay policy includes push", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		process.env.TELCLAUDE_GIT_PROXY_SECRET = "git-proxy-signing-secret";
+		process.env.TELCLAUDE_GIT_PROXY_PERMISSIONS = "fetch,push";
+		const job = makeJob({ kind: "codex-work-unit", prompt: "go", sandbox: "read-only", cwd: "." });
+
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+			gitProxyUrl: "http://127.0.0.1:8791",
+			gitProxyPeerAddress: "127.0.0.1",
+		});
+
+		expect(result.ok).toBe(true);
+		const args = readArgs(tempDir);
+		expect(args).toEqual(
+			expect.arrayContaining(["-c", "sandbox_workspace_write.network_access=false"]),
+		);
+		const childEnv = readChildEnv(tempDir);
+		const token = childEnv.GIT_CONFIG_VALUE_3.replace("X-Telclaude-Session: ", "");
+		const verified = verifyGitProxyToken(token, {
+			secret: "git-proxy-signing-secret",
+			peerAddress: "127.0.0.1",
+		});
+		expect(verified.ok).toBe(true);
+		if (verified.ok) {
+			expect(verified.permissions).toEqual(["fetch"]);
+		}
+	});
+
+	it("rejects workspace-write git proxy jobs even when a caller passes a pre-minted token", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		process.env.TELCLAUDE_GIT_PROXY_SECRET = "git-proxy-signing-secret";
+		const job = {
+			...makeJob({ kind: "codex-work-unit", prompt: "go", sandbox: "workspace-write", cwd: "." }),
+			tier: "FULL_ACCESS" as const,
+		};
+
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+			gitProxyUrl: "http://127.0.0.1:8791",
+			gitProxyPeerAddress: "127.0.0.1",
+			gitProxyToken: "tc-git-proxy-v1.payload.signature",
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("network access is not endpoint-restricted");
+		expect(fs.existsSync(path.join(tempDir, "fake-codex-args.json"))).toBe(false);
 	});
 
 	it("rejects a malformed relay base URL before spawning codex", async () => {

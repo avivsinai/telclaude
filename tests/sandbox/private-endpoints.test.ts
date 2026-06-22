@@ -29,13 +29,44 @@ describe("isNonOverridableBlock", () => {
 		expect(isNonOverridableBlock("169.254.170.2")).toBe(true);
 	});
 
+	it("blocks AWS IMDSv6 metadata endpoint", () => {
+		expect(isNonOverridableBlock("fd00:ec2::254")).toBe(true);
+		expect(isNonOverridableBlock("fd00:0ec2:0:0:0:0:0:0254")).toBe(true);
+	});
+
+	it("blocks AWS EKS Pod Identity IPv6 credential endpoint", () => {
+		expect(isNonOverridableBlock("fd00:ec2::23")).toBe(true);
+		expect(isNonOverridableBlock("fd00:0ec2:0:0:0:0:0:0023")).toBe(true);
+	});
+
+	it("blocks GCP IMDSv6 metadata endpoint", () => {
+		expect(isNonOverridableBlock("fd20:ce::254")).toBe(true);
+		expect(isNonOverridableBlock("fd20:00ce:0:0:0:0:0:0254")).toBe(true);
+	});
+
 	it("blocks link-local range (169.254.x.x)", () => {
 		expect(isNonOverridableBlock("169.254.0.1")).toBe(true);
 		expect(isNonOverridableBlock("169.254.255.255")).toBe(true);
+		expect(isNonOverridableBlock("::ffff:a9fe:0001")).toBe(true);
+		expect(isNonOverridableBlock("::ffff:a9fe:a9fe")).toBe(true);
+		expect(isNonOverridableBlock("::169.254.0.1")).toBe(true);
+		expect(isNonOverridableBlock("::169.254.255.255")).toBe(true);
 	});
 
 	it("blocks Alibaba Cloud metadata", () => {
 		expect(isNonOverridableBlock("100.100.100.200")).toBe(true);
+		expect(isNonOverridableBlock("::ffff:6464:64c8")).toBe(true);
+		expect(isNonOverridableBlock("::100.100.100.200")).toBe(true);
+	});
+
+	it("blocks unspecified IPv4 addresses", () => {
+		expect(isNonOverridableBlock("0.0.0.0")).toBe(true);
+		expect(isNonOverridableBlock("0.255.255.255")).toBe(true);
+	});
+
+	it("blocks IPv6 unspecified address", () => {
+		expect(isNonOverridableBlock("::")).toBe(true);
+		expect(isNonOverridableBlock("0:0:0:0:0:0:0:0")).toBe(true);
 	});
 
 	it("blocks IPv6 link-local (fe80::/10)", () => {
@@ -43,6 +74,7 @@ describe("isNonOverridableBlock", () => {
 		expect(isNonOverridableBlock("fe9f::1234")).toBe(true);
 		expect(isNonOverridableBlock("fea0::1")).toBe(true);
 		expect(isNonOverridableBlock("febf::1")).toBe(true);
+		expect(isNonOverridableBlock("fe80::8.8.8.8")).toBe(true);
 	});
 
 	it("does NOT block regular private IPs (those are allowlistable)", () => {
@@ -81,9 +113,32 @@ describe("isPrivateIP", () => {
 		expect(isPrivateIP("::ffff:10.0.0.1")).toBe(true);
 	});
 
+	it("identifies IPv4-compatible IPv6 private addresses", () => {
+		expect(isPrivateIP("::192.168.1.1")).toBe(true);
+		expect(isPrivateIP("::10.0.0.1")).toBe(true);
+	});
+
 	it("does NOT identify link-local as private (handled by non-overridable)", () => {
+		expect(isPrivateIP("::")).toBe(false);
+		expect(isPrivateIP("0:0:0:0:0:0:0:0")).toBe(false);
 		expect(isPrivateIP("169.254.1.1")).toBe(false);
 		expect(isPrivateIP("fe80::1")).toBe(false);
+		expect(isPrivateIP("::169.254.1.1")).toBe(false);
+	});
+
+	it("does NOT identify AWS IMDSv6 as private because it is non-overridable", () => {
+		expect(isPrivateIP("fd00:ec2::254")).toBe(false);
+		expect(isPrivateIP("fd00:0ec2:0:0:0:0:0:0254")).toBe(false);
+	});
+
+	it("does NOT identify AWS EKS Pod Identity IPv6 as private because it is non-overridable", () => {
+		expect(isPrivateIP("fd00:ec2::23")).toBe(false);
+		expect(isPrivateIP("fd00:0ec2:0:0:0:0:0:0023")).toBe(false);
+	});
+
+	it("does NOT identify GCP IMDSv6 as private because it is non-overridable", () => {
+		expect(isPrivateIP("fd20:ce::254")).toBe(false);
+		expect(isPrivateIP("fd20:00ce:0:0:0:0:0:0254")).toBe(false);
 	});
 
 	it("does NOT identify public IPs as private", () => {
@@ -200,6 +255,58 @@ describe("checkPrivateNetworkAccess", () => {
 	it("ALWAYS blocks link-local range (non-overridable)", async () => {
 		const result = await checkPrivateNetworkAccess("169.254.1.1", 80, endpoints);
 		expect(result.allowed).toBe(false);
+	});
+
+	it("ALWAYS blocks IPv6 unspecified addresses after canonicalization", async () => {
+		for (const host of ["::", "0:0:0:0:0:0:0:0"]) {
+			const result = await checkPrivateNetworkAccess(host, 443, [
+				...endpoints,
+				{ label: "fake-unspecified", host, ports: [443] },
+			]);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("Non-overridable");
+		}
+	});
+
+	it("ALWAYS blocks AWS IMDSv6 after canonicalization even when allowlisted", async () => {
+		for (const host of ["fd00:ec2::254", "fd00:0ec2:0:0:0:0:0:0254"]) {
+			const result = await checkPrivateNetworkAccess(host, 80, [
+				...endpoints,
+				{ label: "fake-imdsv6", host, ports: [80] },
+			]);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("Non-overridable");
+		}
+	});
+
+	it("ALWAYS blocks AWS EKS Pod Identity IPv6 after canonicalization even when allowlisted", async () => {
+		for (const host of ["fd00:ec2::23", "fd00:0ec2:0:0:0:0:0:0023"]) {
+			const result = await checkPrivateNetworkAccess(host, 80, [
+				...endpoints,
+				{ label: "fake-eks-pod-identity", host, ports: [80] },
+			]);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("Non-overridable");
+		}
+	});
+
+	it("ALWAYS blocks GCP IMDSv6 after canonicalization even when allowlisted", async () => {
+		for (const host of ["fd20:ce::254", "fd20:00ce:0:0:0:0:0:0254"]) {
+			const result = await checkPrivateNetworkAccess(host, 80, [
+				...endpoints,
+				{ label: "fake-gcp-imdsv6", host, ports: [80] },
+			]);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("Non-overridable");
+		}
+	});
+
+	it("blocks IPv6 loopback addresses after canonicalization unless allowlisted", async () => {
+		for (const host of ["::1", "0:0:0:0:0:0:0:1"]) {
+			const result = await checkPrivateNetworkAccess(host, 443, endpoints);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("not in the allowlist");
+		}
 	});
 
 	it("allows access to public IPs (handled by domain allowlist)", async () => {

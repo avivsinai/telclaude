@@ -72,6 +72,8 @@ import {
 	isAnthropicTokenRequest,
 } from "./anthropic-proxy.js";
 import { buildAttachmentFilename, ensureDocumentsDir } from "./attachment-helpers.js";
+import { mintGitProxyToken } from "./git-proxy-auth.js";
+import { resolveGitProxyTokenPolicy } from "./git-proxy-policy.js";
 import {
 	handleCodexRelayTokenMint,
 	handleOpenAiCodexProxyRequest,
@@ -447,6 +449,84 @@ function normalizeObservedPeerAddress(remoteAddress?: string | null): string | u
 	const trimmed = remoteAddress?.trim();
 	if (!trimmed) return undefined;
 	return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+}
+
+const GIT_PROXY_TOKEN_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const GIT_PROXY_TOKEN_MAX_TTL_MS = 12 * 60 * 60 * 1000;
+
+function resolveGitProxyRunId(value: unknown): { ok: true; runId: string } | { ok: false } {
+	if (value === undefined || value === null) return { ok: true, runId: crypto.randomUUID() };
+	if (typeof value !== "string") return { ok: false };
+	const runId = value.trim();
+	if (!runId) return { ok: true, runId: crypto.randomUUID() };
+	if (runId.length > 160 || runId.includes("\0") || runId.includes("\r") || runId.includes("\n")) {
+		return { ok: false };
+	}
+	return { ok: true, runId };
+}
+
+function runtimeGitProxyPolicy(): ReturnType<typeof resolveGitProxyTokenPolicy> {
+	const policy = resolveGitProxyTokenPolicy();
+	if (!policy.permissions.includes("fetch")) {
+		throw new Error("runtime git proxy token policy must include fetch permission");
+	}
+	return { ...policy, permissions: ["fetch"] };
+}
+
+function handleGitProxyTokenMint(
+	req: http.IncomingMessage,
+	res: http.ServerResponse,
+	body: string,
+): void {
+	const secret = process.env.TELCLAUDE_GIT_PROXY_SECRET;
+	if (!secret) {
+		logger.warn("git proxy token mint requested but TELCLAUDE_GIT_PROXY_SECRET is not configured");
+		writeJson(res, 500, { error: "Git proxy signing secret is not configured." });
+		return;
+	}
+
+	const peerAddress = normalizeObservedPeerAddress(req.socket.remoteAddress);
+	if (!peerAddress) {
+		writeJson(res, 400, { error: "Could not determine peer address for token binding." });
+		return;
+	}
+
+	let parsed: { runId?: unknown; ttlMs?: unknown };
+	try {
+		parsed = JSON.parse(body || "{}") as { runId?: unknown; ttlMs?: unknown };
+	} catch {
+		writeJson(res, 400, { error: "Invalid JSON." });
+		return;
+	}
+
+	const requestedTtl =
+		typeof parsed.ttlMs === "number" && Number.isFinite(parsed.ttlMs)
+			? parsed.ttlMs
+			: GIT_PROXY_TOKEN_DEFAULT_TTL_MS;
+	const ttlMs = Math.min(Math.max(requestedTtl, 60_000), GIT_PROXY_TOKEN_MAX_TTL_MS);
+	const runIdResult = resolveGitProxyRunId(parsed.runId);
+	if (!runIdResult.ok) {
+		writeJson(res, 400, { error: "Invalid runId." });
+		return;
+	}
+	let policy: ReturnType<typeof resolveGitProxyTokenPolicy>;
+	try {
+		policy = runtimeGitProxyPolicy();
+	} catch (err) {
+		logger.warn({ error: String(err) }, "git proxy token mint policy rejected");
+		writeJson(res, 500, { error: "Git proxy token policy is not usable for runtime fetch." });
+		return;
+	}
+
+	const token = mintGitProxyToken({
+		secret,
+		peerAddress,
+		sessionId: runIdResult.runId,
+		ttlMs,
+		...policy,
+	});
+
+	writeJson(res, 200, { token, expiresInMs: ttlMs, policy });
 }
 
 function writeRelayProvenJson(
@@ -1049,6 +1129,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			// non-telegram scopes are already rejected by the allowedPaths gate above.
 			if (req.method === "POST" && requestPath === "/v1/codex-relay-token") {
 				handleCodexRelayTokenMint(req, res, body);
+				return;
+			}
+
+			if (req.method === "POST" && requestPath === "/v1/git-proxy-token") {
+				handleGitProxyTokenMint(req, res, body);
 				return;
 			}
 

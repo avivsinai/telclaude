@@ -5,23 +5,23 @@
  * The proxy adds authentication transparently - runtime code never sees the real token.
  *
  * This command:
- * 1. Generates a session token (HMAC-signed, scoped to our system)
+ * 1. Mints a scoped git proxy token through relay capabilities
  * 2. Configures git URL rewriting to route GitHub traffic through the proxy
- * 3. Adds the session token as an HTTP header for proxy authentication
+ * 3. Adds the scoped token as an HTTP header for proxy authentication
  * 4. Fetches and configures git identity from the proxy
  *
  * Usage:
  *   telclaude git-proxy-init
  *
  * Environment:
- *   TELCLAUDE_GIT_PROXY_URL   - URL of the git proxy (e.g., http://telclaude:8791)
- *   TELCLAUDE_GIT_PROXY_SECRET - Shared secret for token generation
+ *   TELCLAUDE_GIT_PROXY_URL    - URL of the git proxy (e.g., http://telclaude:8791)
+ *   TELCLAUDE_CAPABILITIES_URL - URL of the relay capabilities server (for scoped token mint)
  */
 
 import { execFileSync } from "node:child_process";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
-import { generateSessionId, generateSessionToken } from "../relay/git-proxy-auth.js";
+import { buildRpcAuthHeaders } from "../relay/rpc-auth-client.js";
 
 const logger = getChildLogger({ module: "git-proxy-init" });
 
@@ -31,6 +31,30 @@ const REFRESH_INTERVAL_MS = 45 * 60 * 1000;
 interface GitIdentity {
 	username: string;
 	email: string;
+}
+
+interface GitProxyTokenResponse {
+	token: string;
+	expiresInMs: number;
+	policy?: {
+		repositories: string[];
+		permissions: string[];
+		allowedRefs: string[];
+		deniedRefs: string[];
+	};
+}
+
+export function buildGitProxyConfigKeys(proxyUrl: string): {
+	urlRewrite: string;
+	extraHeader: string;
+	sslVerify?: string;
+} {
+	const parsed = new URL(proxyUrl);
+	return {
+		urlRewrite: `url.${proxyUrl}/github.com/.insteadOf`,
+		extraHeader: `http.${proxyUrl}/.extraHeader`,
+		...(parsed.protocol === "http:" ? { sslVerify: `http.${proxyUrl}/.sslVerify` } : {}),
+	};
 }
 
 /**
@@ -53,6 +77,32 @@ async function fetchGitIdentity(proxyUrl: string): Promise<GitIdentity | null> {
 		logger.debug({ error: String(err) }, "error fetching git identity");
 		return null;
 	}
+}
+
+async function mintGitProxyToken(ttlMs: number): Promise<GitProxyTokenResponse> {
+	const capabilitiesUrl = process.env.TELCLAUDE_CAPABILITIES_URL?.replace(/\/+$/, "");
+	if (!capabilitiesUrl) {
+		throw new Error("TELCLAUDE_CAPABILITIES_URL is not set - cannot mint git proxy token");
+	}
+	const path = "/v1/git-proxy-token";
+	const body = JSON.stringify({ ttlMs });
+	const response = await fetch(`${capabilitiesUrl}${path}`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...buildRpcAuthHeaders("POST", path, body, "telegram"),
+		},
+		body,
+	});
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(`git proxy token mint failed: ${response.status} ${text.slice(0, 200)}`);
+	}
+	const parsed = (await response.json()) as Partial<GitProxyTokenResponse>;
+	if (!parsed.token || typeof parsed.expiresInMs !== "number") {
+		throw new Error("git proxy token mint returned an invalid response");
+	}
+	return parsed as GitProxyTokenResponse;
 }
 
 /**
@@ -88,33 +138,35 @@ function configureGit(proxyUrl: string, sessionToken: string, identity: GitIdent
 	};
 
 	// Helper for extraHeader
-	const gitConfigHeader = (section: string, header: string) => {
-		const configKey = `http.${section}.extraHeader`;
+	const gitConfigHeader = (key: string, header: string) => {
 		try {
-			execFileSync("git", ["config", "--global", "--unset-all", configKey], {
+			execFileSync("git", ["config", "--global", "--unset-all", key], {
 				stdio: "ignore",
 			});
 		} catch {
 			// Ignore if key doesn't exist
 		}
-		execFileSync("git", ["config", "--global", "--add", configKey, header], {
+		execFileSync("git", ["config", "--global", "--add", key, header], {
 			stdio: "inherit",
 		});
 	};
+	const configKeys = buildGitProxyConfigKeys(proxyUrl);
 
 	// URL rewriting: GitHub URLs → proxy
 	// All three URL schemes need to be rewritten to the proxy
-	gitConfigMulti(`url."${proxyUrl}/github.com/".insteadOf`, [
+	gitConfigMulti(configKeys.urlRewrite, [
 		"https://github.com/",
 		"git@github.com:",
 		"ssh://git@github.com/",
 	]);
 
 	// Add session token header for proxy authentication
-	gitConfigHeader(`${proxyUrl}/`, `X-Telclaude-Session: ${sessionToken}`);
+	gitConfigHeader(configKeys.extraHeader, `X-Telclaude-Session: ${sessionToken}`);
 
-	// Disable SSL verification for the proxy (internal HTTP)
-	gitConfigSet(`http."${proxyUrl}/".sslVerify`, "false");
+	// Keep HTTPS proxy URLs on normal certificate validation.
+	if (configKeys.sslVerify) {
+		gitConfigSet(configKeys.sslVerify, "false");
+	}
 
 	// Disable credential helpers (proxy handles auth)
 	gitConfigSet("credential.helper", "");
@@ -132,14 +184,12 @@ async function initializeGitProxy(
 	ttlMs: number,
 	showToken: boolean,
 ): Promise<void> {
-	// Generate session token
-	const sessionId = generateSessionId();
-	const sessionToken = generateSessionToken(sessionId, ttlMs);
+	const minted = await mintGitProxyToken(ttlMs);
+	const sessionToken = minted.token;
 
-	logger.info({ sessionId, ttlMs }, "generated git proxy session token");
+	logger.info({ ttlMs, policy: minted.policy }, "minted scoped git proxy token");
 
 	if (showToken) {
-		console.log(`[git-proxy-init] Session ID: ${sessionId}`);
 		console.log(`[git-proxy-init] Session token: ${sessionToken}`);
 	}
 
@@ -174,7 +224,7 @@ async function initializeGitProxy(
 		throw err;
 	}
 
-	const expiresAt = new Date(Date.now() + ttlMs);
+	const expiresAt = new Date(Date.now() + minted.expiresInMs);
 	console.log(`[git-proxy-init] Token expires at: ${expiresAt.toISOString()}`);
 }
 
@@ -193,13 +243,6 @@ export function registerGitProxyInitCommand(program: Command): void {
 					"This command should only run when relay git proxy configuration is present.",
 				);
 				process.exit(0); // Not an error - just not applicable
-			}
-
-			const proxySecret = process.env.TELCLAUDE_GIT_PROXY_SECRET;
-			if (!proxySecret) {
-				console.error("TELCLAUDE_GIT_PROXY_SECRET is not set - cannot generate session token");
-				console.error("Ensure the relay proxy secret is configured.");
-				process.exit(1);
 			}
 
 			const ttlMinutes = Number.parseInt(opts.ttl ?? "60", 10);

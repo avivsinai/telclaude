@@ -212,6 +212,7 @@ export const DEFAULT_NETWORK_CONFIG: NetworkProxyConfig = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type IPv4Classification =
+	| "this-network" // 0.0.0.0/8
 	| "loopback" // 127.0.0.0/8
 	| "private-10" // 10.0.0.0/8
 	| "private-172" // 172.16.0.0/12
@@ -225,6 +226,7 @@ type IPv4Classification =
  * Used by both isBlockedIP and isPrivateIP to avoid duplicating range checks.
  */
 function classifyIPv4(a: number, b: number): IPv4Classification {
+	if (a === 0) return "this-network";
 	if (a === 127) return "loopback";
 	if (a === 10) return "private-10";
 	if (a === 172 && b >= 16 && b <= 31) return "private-172";
@@ -232,6 +234,38 @@ function classifyIPv4(a: number, b: number): IPv4Classification {
 	if (a === 169 && b === 254) return "link-local";
 	if (a === 100 && b >= 64 && b <= 127) return "cgnat";
 	return "public";
+}
+
+function normalizeIPv6MixedNotation(address: string): string | null {
+	const lower = address.toLowerCase();
+	if (!lower.includes(".")) return lower;
+
+	const lastColon = lower.lastIndexOf(":");
+	if (lastColon < 0) return null;
+	const dotted = lower.slice(lastColon + 1);
+	if (net.isIP(dotted) !== 4) return null;
+	const octets = dotted.split(".").map(Number);
+	if (octets.length !== 4 || octets.some((octet) => octet < 0 || octet > 255)) return null;
+	const high = ((octets[0] << 8) | octets[1]).toString(16);
+	const low = ((octets[2] << 8) | octets[3]).toString(16);
+	return `${lower.slice(0, lastColon)}:${high}:${low}`;
+}
+
+function ipv4MappedIPv6ToIPv4(ip: string): string | null {
+	const ipBig = ipv6ToBigInt(ip);
+	if (ipBig === null) return null;
+	if (ipBig >> 32n !== 0xffffn) return null;
+	const v4 = Number(ipBig & 0xffffffffn);
+	return [(v4 >>> 24) & 0xff, (v4 >>> 16) & 0xff, (v4 >>> 8) & 0xff, v4 & 0xff].join(".");
+}
+
+function ipv4CompatibleIPv6ToIPv4(ip: string): string | null {
+	const ipBig = ipv6ToBigInt(ip);
+	if (ipBig === null) return null;
+	if (ipBig >> 32n !== 0n) return null;
+	if (ipBig <= 1n) return null;
+	const v4 = Number(ipBig & 0xffffffffn);
+	return [(v4 >>> 24) & 0xff, (v4 >>> 16) & 0xff, (v4 >>> 8) & 0xff, v4 & 0xff].join(".");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -261,16 +295,20 @@ export function isBlockedIP(ip: string): boolean {
 
 	// Check IPv6 private/link-local ranges declared in BLOCKED_PRIVATE_NETWORKS
 	if (ipType === 6) {
-		// Handle IPv4-mapped IPv6 addresses like ::ffff:192.168.1.1
-		if (ip.includes(".")) {
-			const maybeV4 = ip.slice(ip.lastIndexOf(":") + 1);
-			if (net.isIP(maybeV4) === 4) {
-				return isBlockedIP(maybeV4);
-			}
+		// Handle IPv4-mapped IPv6 addresses like ::ffff:192.168.1.1 and ::ffff:c0a8:0101.
+		const mappedV4 = ipv4MappedIPv6ToIPv4(ip);
+		if (mappedV4) {
+			return isBlockedIP(mappedV4);
 		}
+		const compatibleV4 = ipv4CompatibleIPv6ToIPv4(ip);
+		if (compatibleV4) {
+			return isBlockedIP(compatibleV4);
+		}
+		if (isIPv6Unspecified(ip) || isIPv6Loopback(ip)) return true;
 
 		const ipBig = ipv6ToBigInt(ip);
 		if (ipBig !== null) {
+			if (ipBig === 0n) return true;
 			for (const blocked of BLOCKED_PRIVATE_NETWORKS) {
 				if (blocked.includes(":") && blocked.includes("/")) {
 					if (ipv6InCidr(ipBig, blocked)) return true;
@@ -283,8 +321,8 @@ export function isBlockedIP(ip: string): boolean {
 }
 
 function ipv6ToBigInt(address: string): bigint | null {
-	const lower = address.toLowerCase();
-	if (lower.includes(".")) return null;
+	const lower = normalizeIPv6MixedNotation(address);
+	if (!lower) return null;
 
 	const hasCompression = lower.includes("::");
 	const [left, right] = lower.split("::");
@@ -319,6 +357,23 @@ function ipv6InCidr(ipBig: bigint, cidr: string): boolean {
 	if (prefixBig === null) return false;
 	const shift = BigInt(128 - bits);
 	return ipBig >> shift === prefixBig >> shift;
+}
+
+function isIPv6Unspecified(ip: string): boolean {
+	return net.isIP(ip) === 6 && ipv6ToBigInt(ip) === 0n;
+}
+
+function isIPv6Loopback(ip: string): boolean {
+	return net.isIP(ip) === 6 && ipv6ToBigInt(ip) === 1n;
+}
+
+const NON_OVERRIDABLE_METADATA_IPV6_ADDRESSES = ["fd00:ec2::254", "fd00:ec2::23", "fd20:ce::254"]
+	.map((address) => ipv6ToBigInt(address))
+	.filter((address): address is bigint => address !== null);
+
+function isMetadataIPv6(ip: string): boolean {
+	const ipBig = ipv6ToBigInt(ip);
+	return ipBig !== null && NON_OVERRIDABLE_METADATA_IPV6_ADDRESSES.includes(ipBig);
 }
 
 /**
@@ -361,6 +416,7 @@ const NON_OVERRIDABLE_BLOCKS = [
 	"169.254.169.254", // AWS/GCP/Azure metadata
 	"169.254.170.2", // AWS ECS metadata
 	"100.100.100.200", // Alibaba Cloud metadata
+	"::", // IPv6 unspecified
 	"fe80::/10", // IPv6 link-local
 ];
 
@@ -379,11 +435,19 @@ export function isNonOverridableBlock(ip: string): boolean {
 		const match = ip.match(/^(\d+)\.(\d+)\./);
 		if (match) {
 			const [, a, b] = match.map(Number);
+			if (a === 0) return true;
 			if (a === 169 && b === 254) return true;
 			// Alibaba Cloud metadata
 			if (a === 100 && ip === "100.100.100.200") return true;
 		}
 	} else if (ipType === 6) {
+		const mappedV4 = ipv4MappedIPv6ToIPv4(ip);
+		if (mappedV4) return isNonOverridableBlock(mappedV4);
+		const compatibleV4 = ipv4CompatibleIPv6ToIPv4(ip);
+		if (compatibleV4) return isNonOverridableBlock(compatibleV4);
+		if (isIPv6Unspecified(ip)) return true;
+		if (isMetadataIPv6(ip)) return true;
+
 		// Check IPv6 link-local (fe80::/10)
 		const lower = ip.toLowerCase();
 		if (
@@ -417,20 +481,21 @@ export function isPrivateIP(ip: string): boolean {
 		// link-local is handled by isNonOverridableBlock above
 		return cls !== "public" && cls !== "link-local";
 	} else if (ipType === 6) {
-		// Handle IPv4-mapped IPv6 (::ffff:192.168.1.1)
-		if (ip.includes(".")) {
-			const maybeV4 = ip.slice(ip.lastIndexOf(":") + 1);
-			if (net.isIP(maybeV4) === 4) {
-				return isPrivateIP(maybeV4);
-			}
+		// Handle IPv4-mapped IPv6 (::ffff:192.168.1.1 and ::ffff:c0a8:0101)
+		const mappedV4 = ipv4MappedIPv6ToIPv4(ip);
+		if (mappedV4) {
+			return isPrivateIP(mappedV4);
 		}
+		const compatibleV4 = ipv4CompatibleIPv6ToIPv4(ip);
+		if (compatibleV4) {
+			return isPrivateIP(compatibleV4);
+		}
+		if (isIPv6Loopback(ip)) return true;
+		if (isIPv6Unspecified(ip)) return false;
 
 		// fc00::/7 (Unique Local Addresses)
 		const lower = ip.toLowerCase();
 		if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-
-		// ::1 (loopback)
-		if (ip === "::1") return true;
 	}
 
 	return false;
