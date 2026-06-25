@@ -212,6 +212,24 @@ export type TelclaudeMcpScheduleCancelRequest = TelclaudeMcpAuthorityStamp & {
 	jobId: string;
 };
 
+export type TelclaudeMcpGithubListReposRequest = TelclaudeMcpAuthorityStamp;
+
+export type TelclaudeMcpGithubListRefsRequest = TelclaudeMcpAuthorityStamp & {
+	repository: string;
+};
+
+export type TelclaudeMcpGithubGetTreeRequest = TelclaudeMcpAuthorityStamp & {
+	repository: string;
+	ref?: string;
+	path?: string;
+};
+
+export type TelclaudeMcpGithubReadFileRequest = TelclaudeMcpAuthorityStamp & {
+	repository: string;
+	path: string;
+	ref?: string;
+};
+
 export type TelclaudeMcpBridgeDependencies = {
 	providerRead(request: TelclaudeMcpProviderReadRequest): Promise<unknown>;
 	providerPrepareWrite(request: TelclaudeMcpProviderPrepareWriteRequest): Promise<unknown>;
@@ -234,6 +252,10 @@ export type TelclaudeMcpBridgeDependencies = {
 	scheduleCreate(request: TelclaudeMcpScheduleCreateRequest): Promise<unknown>;
 	scheduleList(request: TelclaudeMcpScheduleListRequest): Promise<unknown>;
 	scheduleCancel(request: TelclaudeMcpScheduleCancelRequest): Promise<unknown>;
+	githubListRepos(request: TelclaudeMcpGithubListReposRequest): Promise<unknown>;
+	githubListRefs(request: TelclaudeMcpGithubListRefsRequest): Promise<unknown>;
+	githubGetTree(request: TelclaudeMcpGithubGetTreeRequest): Promise<unknown>;
+	githubReadFile(request: TelclaudeMcpGithubReadFileRequest): Promise<unknown>;
 };
 
 export type TelclaudeMcpBridge = {
@@ -259,6 +281,10 @@ export type TelclaudeMcpBridge = {
 	tc_schedule_create(input: unknown): Promise<unknown>;
 	tc_schedule_list(input: unknown): Promise<unknown>;
 	tc_schedule_cancel(input: unknown): Promise<unknown>;
+	tc_github_list_repos(input: unknown): Promise<unknown>;
+	tc_github_list_refs(input: unknown): Promise<unknown>;
+	tc_github_get_tree(input: unknown): Promise<unknown>;
+	tc_github_read_file(input: unknown): Promise<unknown>;
 };
 
 const NonEmptyString = z.string().trim().min(1);
@@ -480,6 +506,34 @@ const ScheduleListInputSchema = z
 const ScheduleCancelInputSchema = z
 	.object({
 		jobId: NonEmptyString.max(128),
+	})
+	.strip();
+
+const GithubRepositorySchema = NonEmptyString.max(140);
+const GithubRefSchema = NonEmptyString.max(256);
+const GithubPathSchema = NonEmptyString.max(1024);
+
+const GithubListReposInputSchema = z.object({}).strip();
+
+const GithubListRefsInputSchema = z
+	.object({
+		repository: GithubRepositorySchema,
+	})
+	.strip();
+
+const GithubGetTreeInputSchema = z
+	.object({
+		repository: GithubRepositorySchema,
+		ref: GithubRefSchema.optional(),
+		path: GithubPathSchema.optional(),
+	})
+	.strip();
+
+const GithubReadFileInputSchema = z
+	.object({
+		repository: GithubRepositorySchema,
+		path: GithubPathSchema,
+		ref: GithubRefSchema.optional(),
 	})
 	.strip();
 
@@ -811,6 +865,56 @@ export function createTelclaudeMcpBridge(
 			);
 			const parsed = ScheduleCancelInputSchema.parse(input);
 			return dependencies.scheduleCancel({ ...stamp, jobId: parsed.jobId });
+		},
+
+		async tc_github_list_repos(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_github_list_repos,
+			);
+			GithubListReposInputSchema.parse(input);
+			return dependencies.githubListRepos({ ...stamp });
+		},
+
+		async tc_github_list_refs(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_github_list_refs,
+			);
+			const parsed = GithubListRefsInputSchema.parse(input);
+			return dependencies.githubListRefs({ ...stamp, repository: parsed.repository });
+		},
+
+		async tc_github_get_tree(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_github_get_tree,
+			);
+			const parsed = GithubGetTreeInputSchema.parse(input);
+			return dependencies.githubGetTree({
+				...stamp,
+				repository: parsed.repository,
+				...(parsed.ref !== undefined ? { ref: parsed.ref } : {}),
+				...(parsed.path !== undefined ? { path: parsed.path } : {}),
+			});
+		},
+
+		async tc_github_read_file(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_github_read_file,
+			);
+			const parsed = GithubReadFileInputSchema.parse(input);
+			return dependencies.githubReadFile({
+				...stamp,
+				repository: parsed.repository,
+				path: parsed.path,
+				...(parsed.ref !== undefined ? { ref: parsed.ref } : {}),
+			});
 		},
 	};
 }

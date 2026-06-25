@@ -435,6 +435,10 @@ export function createFailClosedTelclaudeLiveMcpRelayClients(
 		scheduleCreate: fail,
 		scheduleList: fail,
 		scheduleCancel: fail,
+		githubListRepos: fail,
+		githubListRefs: fail,
+		githubGetTree: fail,
+		githubReadFile: fail,
 	};
 }
 

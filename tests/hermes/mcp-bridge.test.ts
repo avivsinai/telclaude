@@ -32,6 +32,10 @@ describe("Telclaude MCP bridge foundation", () => {
 				"tc_browse_act",
 				"tc_browse_act_prepare",
 				"tc_browse_act_execute",
+				"tc_github_list_repos",
+				"tc_github_list_refs",
+				"tc_github_get_tree",
+				"tc_github_read_file",
 			],
 			resources: [],
 			prompts: [],
@@ -595,6 +599,117 @@ describe("Telclaude MCP bridge foundation", () => {
 		expect(calls).toEqual([]);
 	});
 
+	it("keeps GitHub read tools denied without github.read and dispatches them with stamped authority", async () => {
+		const deniedCalls: unknown[] = [];
+		const deniedBridge = createTelclaudeMcpBridge(baseAuthority(), {
+			...baseDependencies(),
+			githubListRepos: async (request) => {
+				deniedCalls.push(request);
+				return { repositories: [] };
+			},
+			githubListRefs: async (request) => {
+				deniedCalls.push(request);
+				return { refs: [] };
+			},
+			githubGetTree: async (request) => {
+				deniedCalls.push(request);
+				return { entries: [] };
+			},
+			githubReadFile: async (request) => {
+				deniedCalls.push(request);
+				return { content: "" };
+			},
+		});
+
+		await expect(deniedBridge.tc_github_list_repos({})).rejects.toThrow(
+			"capability scope denied: github.read",
+		);
+		await expect(
+			deniedBridge.tc_github_list_refs({ repository: "avivsinai/telclaude" }),
+		).rejects.toThrow("capability scope denied: github.read");
+		await expect(
+			deniedBridge.tc_github_get_tree({ repository: "avivsinai/telclaude" }),
+		).rejects.toThrow("capability scope denied: github.read");
+		await expect(
+			deniedBridge.tc_github_read_file({
+				repository: "avivsinai/telclaude",
+				path: "README.md",
+			}),
+		).rejects.toThrow("capability scope denied: github.read");
+		expect(deniedCalls).toEqual([]);
+
+		const calls: Record<string, unknown[]> = {
+			listRepos: [],
+			listRefs: [],
+			getTree: [],
+			readFile: [],
+		};
+		const bridge = createTelclaudeMcpBridge(baseAuthority({ capabilityScopes: ["github.read"] }), {
+			...baseDependencies(),
+			githubListRepos: async (request) => {
+				calls.listRepos.push(request);
+				return { repositories: [] };
+			},
+			githubListRefs: async (request) => {
+				calls.listRefs.push(request);
+				return { branches: [], tags: [] };
+			},
+			githubGetTree: async (request) => {
+				calls.getTree.push(request);
+				return { entries: [] };
+			},
+			githubReadFile: async (request) => {
+				calls.readFile.push(request);
+				return { content: "hello" };
+			},
+		});
+
+		await expect(bridge.tc_github_list_repos({})).resolves.toEqual({ repositories: [] });
+		await expect(
+			bridge.tc_github_list_refs({ repository: "avivsinai/telclaude" }),
+		).resolves.toEqual({ branches: [], tags: [] });
+		await expect(
+			bridge.tc_github_get_tree({
+				repository: "avivsinai/telclaude",
+				ref: "main",
+				path: "src",
+			}),
+		).resolves.toEqual({ entries: [] });
+		await expect(
+			bridge.tc_github_read_file({
+				repository: "avivsinai/telclaude",
+				ref: "main",
+				path: "README.md",
+				capabilityScopes: ["github.read"],
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field: capabilityScopes");
+		await expect(
+			bridge.tc_github_read_file({
+				repository: "avivsinai/telclaude",
+				ref: "main",
+				path: "README.md",
+			}),
+		).resolves.toEqual({ content: "hello" });
+
+		const stamp = {
+			actorId: "operator",
+			profileId: "ops",
+			domain: "private",
+			memorySource: "telegram:ops",
+			writableNamespace: "private:ops",
+			endpointId: "endpoint-private",
+			networkNamespace: "netns-private",
+		};
+		expect(calls).toEqual({
+			listRepos: [{ ...stamp }],
+			listRefs: [{ ...stamp, repository: "avivsinai/telclaude" }],
+			getTree: [{ ...stamp, repository: "avivsinai/telclaude", ref: "main", path: "src" }],
+			readFile: [
+				{ ...stamp, repository: "avivsinai/telclaude", ref: "main", path: "README.md" },
+			],
+		});
+	});
+
 	it("denies every browser-act tool when the authority lacks the browse.act scope", async () => {
 		const calls: unknown[] = [];
 		const capture = async (request: unknown) => {
@@ -838,5 +953,9 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		scheduleCreate: async () => ({ jobId: "cron-1" }),
 		scheduleList: async () => ({ jobs: [] }),
 		scheduleCancel: async () => ({ jobId: "cron-1", cancelled: true }),
+		githubListRepos: async () => ({ repositories: [] }),
+		githubListRefs: async () => ({ branches: [], tags: [] }),
+		githubGetTree: async () => ({ entries: [] }),
+		githubReadFile: async () => ({ content: "" }),
 	};
 }

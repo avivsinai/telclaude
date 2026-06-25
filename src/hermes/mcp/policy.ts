@@ -20,6 +20,10 @@ export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_browse_act",
 	"tc_browse_act_prepare",
 	"tc_browse_act_execute",
+	"tc_github_list_repos",
+	"tc_github_list_refs",
+	"tc_github_get_tree",
+	"tc_github_read_file",
 ] as const;
 
 export type TelclaudeMcpToolName = (typeof TELCLAUDE_MCP_TOOL_NAMES)[number];
@@ -47,6 +51,12 @@ export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
 	tc_browse_act: "browse.act",
 	tc_browse_act_prepare: "browse.act",
 	tc_browse_act_execute: "browse.act",
+	// Read-only GitHub repository access via the relay-owned App installation token.
+	// One scope for the whole read family; fail-closed without it.
+	tc_github_list_repos: "github.read",
+	tc_github_list_refs: "github.read",
+	tc_github_get_tree: "github.read",
+	tc_github_read_file: "github.read",
 } as const satisfies Partial<Record<TelclaudeMcpToolName, string>>;
 
 export type TelclaudeMcpCapabilityScope =

@@ -42,6 +42,10 @@ export const TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE = [
 	"imageGenerate",
 	"tts",
 	"skillRequest",
+	"githubListRepos",
+	"githubListRefs",
+	"githubGetTree",
+	"githubReadFile",
 	"sideEffectLedger",
 ] as const;
 

@@ -121,6 +121,7 @@ export type ContentSource =
 	| "web-fetch"
 	| "web-search"
 	| "web-browse"
+	| "github"
 	| "user-forwarded"
 	| "unknown";
 
@@ -144,6 +145,7 @@ const SOURCE_LABELS: Record<ContentSource, string> = {
 	"web-fetch": "WEB CONTENT",
 	"web-search": "WEB SEARCH RESULTS",
 	"web-browse": "BROWSED WEB PAGE",
+	github: "GITHUB REPOSITORY CONTENT",
 	"user-forwarded": "FORWARDED CONTENT",
 	unknown: "EXTERNAL CONTENT",
 };

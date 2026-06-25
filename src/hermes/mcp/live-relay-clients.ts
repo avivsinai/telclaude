@@ -29,6 +29,12 @@ import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
 import { redactSecrets } from "../../security/output-filter.js";
 import { assertSafeWebEgress } from "../../security/web-egress-preflight.js";
+import {
+	githubGetTree,
+	githubListRefs,
+	githubListRepos,
+	githubReadFile,
+} from "../../services/github-repo-read.js";
 import { generateImage } from "../../services/image-generation.js";
 import {
 	consumeRateLimit,
@@ -69,6 +75,10 @@ import type {
 	TelclaudeMcpBrowserActPrepareRequest,
 	TelclaudeMcpBrowserActRequest,
 	TelclaudeMcpDomain,
+	TelclaudeMcpGithubGetTreeRequest,
+	TelclaudeMcpGithubListRefsRequest,
+	TelclaudeMcpGithubListReposRequest,
+	TelclaudeMcpGithubReadFileRequest,
 	TelclaudeMcpImageGenerateRequest,
 	TelclaudeMcpMemorySearchRequest,
 	TelclaudeMcpOutboundPrepareRequest,
@@ -189,6 +199,15 @@ const SKILL_REQUEST_RATE_LIMIT: FeatureRateLimitConfig = {
 	maxPerDayPerUser: 20,
 };
 
+/** Authenticated private-repo traversal can pull a lot of context into the model;
+ * keep it bounded but generous for a single operator browsing their own repos. */
+const GITHUB_READ_RATE_LIMIT: FeatureRateLimitConfig = {
+	maxPerHourPerUser: 120,
+	maxPerDayPerUser: 600,
+};
+/** Cap on wrapped GitHub payload chars; the service already byte-caps file reads. */
+const GITHUB_WRAP_MAX_CHARS = 200_000;
+
 export class TelclaudeLiveMcpToolNotConfiguredError extends Error {
 	readonly code = "mcp_tool_not_configured";
 
@@ -276,6 +295,10 @@ export type TelclaudeMcpCapabilityClients = Pick<
 	| "scheduleCreate"
 	| "scheduleList"
 	| "scheduleCancel"
+	| "githubListRepos"
+	| "githubListRefs"
+	| "githubGetTree"
+	| "githubReadFile"
 >;
 
 /**
@@ -321,6 +344,18 @@ export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcp
 		},
 		async scheduleCancel() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_schedule_cancel");
+		},
+		async githubListRepos() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_github_list_repos");
+		},
+		async githubListRefs() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_github_list_refs");
+		},
+		async githubGetTree() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_github_get_tree");
+		},
+		async githubReadFile() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_github_read_file");
 		},
 	};
 }
@@ -645,6 +680,122 @@ export function createTelclaudeLiveMcpRelayClients(
 					serviceId: "tc_web_search",
 					includeRiskAssessment: true,
 				}),
+			};
+		},
+
+		async githubListRepos(request: TelclaudeMcpGithubListReposRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("github_read", request.actorId, GITHUB_READ_RATE_LIMIT);
+			consumeRateLimit("github_read", request.actorId);
+			const result = await githubListRepos();
+			await auditFromRequest(request, "github.list_repos", {
+				totalCount: result.totalCount,
+				returned: result.repositories.length,
+				truncated: result.truncated,
+			});
+			return {
+				totalCount: result.totalCount,
+				truncated: result.truncated,
+				repositories: wrapExternalContent(JSON.stringify(result.repositories, null, 2), {
+					source: "github",
+					serviceId: "tc_github_list_repos",
+					includeRiskAssessment: true,
+					maxLength: GITHUB_WRAP_MAX_CHARS,
+				}),
+			};
+		},
+
+		async githubListRefs(request: TelclaudeMcpGithubListRefsRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("github_read", request.actorId, GITHUB_READ_RATE_LIMIT);
+			consumeRateLimit("github_read", request.actorId);
+			const result = await githubListRefs({ repository: request.repository });
+			await auditFromRequest(request, "github.list_refs", {
+				repo: redactSecrets(result.repo),
+				branches: result.branches.length,
+				tags: result.tags.length,
+				truncated: result.truncated,
+			});
+			return {
+				repo: result.repo,
+				truncated: result.truncated,
+				refs: wrapExternalContent(
+					JSON.stringify({ branches: result.branches, tags: result.tags }, null, 2),
+					{
+						source: "github",
+						serviceId: "tc_github_list_refs",
+						includeRiskAssessment: true,
+						maxLength: GITHUB_WRAP_MAX_CHARS,
+					},
+				),
+			};
+		},
+
+		async githubGetTree(request: TelclaudeMcpGithubGetTreeRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("github_read", request.actorId, GITHUB_READ_RATE_LIMIT);
+			consumeRateLimit("github_read", request.actorId);
+			const result = await githubGetTree({
+				repository: request.repository,
+				...(request.ref !== undefined ? { ref: request.ref } : {}),
+				...(request.path !== undefined ? { path: request.path } : {}),
+			});
+			await auditFromRequest(request, "github.get_tree", {
+				repo: redactSecrets(result.repo),
+				ref: redactSecrets(result.ref),
+				path: redactSecrets(result.path),
+				entries: result.entries.length,
+				truncated: result.truncated,
+			});
+			return {
+				repo: result.repo,
+				ref: result.ref,
+				path: result.path,
+				truncated: result.truncated,
+				entries: wrapExternalContent(JSON.stringify(result.entries, null, 2), {
+					source: "github",
+					serviceId: "tc_github_get_tree",
+					includeRiskAssessment: true,
+					maxLength: GITHUB_WRAP_MAX_CHARS,
+				}),
+			};
+		},
+
+		async githubReadFile(request: TelclaudeMcpGithubReadFileRequest) {
+			assertAuthorityMemoryBoundary(request);
+			enforceRateLimit("github_read", request.actorId, GITHUB_READ_RATE_LIMIT);
+			consumeRateLimit("github_read", request.actorId);
+			const result = await githubReadFile({
+				repository: request.repository,
+				path: request.path,
+				...(request.ref !== undefined ? { ref: request.ref } : {}),
+			});
+			await auditFromRequest(request, "github.read_file", {
+				repo: redactSecrets(result.repo),
+				ref: redactSecrets(result.ref),
+				path: redactSecrets(result.path),
+				size: result.size,
+				binary: result.binary,
+				contentOmitted: result.contentOmitted,
+			});
+			return {
+				repo: result.repo,
+				ref: result.ref,
+				path: result.path,
+				size: result.size,
+				sha: result.sha,
+				binary: result.binary,
+				contentOmitted: result.contentOmitted,
+				...(result.omittedReason ? { omittedReason: result.omittedReason } : {}),
+				content:
+					result.content !== undefined
+						? wrapExternalContent(redactSecrets(result.content), {
+								source: "github",
+								serviceId: "tc_github_read_file",
+								includeRiskAssessment: true,
+								maxLength: GITHUB_WRAP_MAX_CHARS,
+							})
+						: null,
 			};
 		},
 

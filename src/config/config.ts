@@ -145,6 +145,12 @@ const HermesCapabilityScopeSchema = z.enum([
 	// ("no browse.act, no act"), so without this enum entry the scope could not be granted
 	// at all and the interactive-write tools would be permanently unreachable.
 	"browse.act",
+	// Authenticated GitHub repository reads (tc_github_*). Another RECOGNIZED but opt-in
+	// scope, intentionally absent from the private-runtime defaults below: reading private
+	// repo contents through the GitHub App installation token must be granted explicitly.
+	// policy.ts maps tc_github_* -> github.read and fails closed, so without this enum entry
+	// the scope could not be granted and the repo-read tools would be permanently unreachable.
+	"github.read",
 ]);
 const HermesOutboundChannelSchema = z.enum(["whatsapp", "email", "agentmail", "social"]);
 

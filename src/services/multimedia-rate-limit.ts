@@ -22,6 +22,7 @@ export type MultimediaFeature =
 	| "web_fetch"
 	| "web_search"
 	| "web_browse"
+	| "github_read"
 	| "skill_request"
 	| `${string}_post`
 	| `${string}_reply`

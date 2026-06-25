@@ -121,7 +121,7 @@ describe("config defaults", () => {
 				hermes: {
 					privateRuntime: {
 						providerScopes: ["google", "bank"],
-						capabilityScopes: ["web.search", "web.fetch", "browse.use"],
+						capabilityScopes: ["web.search", "web.fetch", "browse.use", "github.read"],
 						outboundChannels: [],
 					},
 				},
@@ -134,6 +134,7 @@ describe("config defaults", () => {
 			"web.search",
 			"web.fetch",
 			"browse.use",
+			"github.read",
 		]);
 		expect(cfg.hermes.privateRuntime.outboundChannels).toEqual([]);
 	});
