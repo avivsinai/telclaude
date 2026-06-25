@@ -105,6 +105,19 @@ describe("Telclaude live MCP relay-side server", () => {
 						required: ["id", "category", "content"],
 					}),
 				}),
+				expect.objectContaining({
+					name: "tc_github_read_file",
+					description: expect.stringContaining("github.read"),
+					inputSchema: expect.objectContaining({
+						type: "object",
+						required: ["repository", "path"],
+						properties: expect.objectContaining({
+							repository: expect.objectContaining({ type: "string" }),
+							path: expect.objectContaining({ type: "string" }),
+							ref: expect.objectContaining({ type: "string" }),
+						}),
+					}),
+				}),
 			]),
 		);
 
