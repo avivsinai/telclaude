@@ -395,6 +395,14 @@ mcp_servers:
         - tc_schedule_create
         - tc_schedule_list
         - tc_schedule_cancel
+        - tc_browse
+        - tc_browse_act
+        - tc_browse_act_prepare
+        - tc_browse_act_execute
+        - tc_github_list_repos
+        - tc_github_list_refs
+        - tc_github_get_tree
+        - tc_github_read_file
       exclude: []
       resources: false
       prompts: false

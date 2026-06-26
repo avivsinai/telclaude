@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { TELCLAUDE_MCP_TOOL_NAMES } from "../../src/hermes/mcp/policy.js";
 import { verifyOpenAiCodexPeerBoundProxyToken } from "../../src/relay/openai-codex-proxy.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
@@ -143,6 +144,24 @@ describe("hermes-contained-entrypoint.sh catalog config merge", () => {
 		expect(script.indexOf('SKILLS_EXTERNAL_DIRS_BLOCK="')).toBeLessThan(
 			script.indexOf(`cat > "\${HERMES_HOME}/config.yaml"`),
 		);
+	});
+});
+
+describe("hermes-contained-entrypoint.sh served-MCP tool include parity", () => {
+	it("exposes EXACTLY the relay-served tool surface (no drift behind policy)", () => {
+		const script = fs.readFileSync(entrypointPath, "utf8");
+		const includeStart = script.indexOf("      include:");
+		const excludeStart = script.indexOf("      exclude:");
+		expect(includeStart).toBeGreaterThan(-1);
+		expect(excludeStart).toBeGreaterThan(includeStart);
+		const includeBlock = script.slice(includeStart, excludeStart);
+		const included = [...includeBlock.matchAll(/^ {8}- (tc_[a-z_]+)$/gm)].map((m) => m[1]);
+		// tools.include is visibility, not authority: the model only sees what is
+		// listed here. It must equal the full relay-served surface — no fewer (a
+		// missing tool is invisible to the model and the agent falls back to a wrong
+		// path, e.g. the tc_github_*/tc_browse* gap that hid those tools) and no more
+		// (an unknown name would be stale). Set-equality guards drift both ways.
+		expect([...included].sort()).toEqual([...TELCLAUDE_MCP_TOOL_NAMES].sort());
 	});
 });
 
