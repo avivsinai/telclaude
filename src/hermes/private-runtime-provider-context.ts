@@ -1,5 +1,10 @@
 import type { PermissionTier, TelclaudeConfig } from "../config/config.js";
 import type { EffectiveOperatorProfile } from "../config/profiles.js";
+import {
+	formatGrantedProviderActionCatalog,
+	type ProviderActionCatalog,
+} from "../providers/provider-action-catalog.js";
+import { getCachedProviderActionCatalog } from "../providers/provider-skill.js";
 import type { TelclaudeMcpCapabilityScope } from "./mcp/bridge.js";
 
 export type HermesPrivateRuntimeProviderContext = {
@@ -32,6 +37,7 @@ export function buildHermesPrivateRuntimeProviderContext(
 		"providerScopes" | "capabilityScopes" | "outboundChannels"
 	>,
 	tier?: PermissionTier,
+	actionCatalog: ProviderActionCatalog | null = getCachedProviderActionCatalog(),
 ): HermesPrivateRuntimeProviderContext {
 	const providerScopes = uniqueSorted(
 		profile?.providerScopes ?? config.hermes?.privateRuntime?.providerScopes,
@@ -45,31 +51,38 @@ export function buildHermesPrivateRuntimeProviderContext(
 	const outboundChannels = uniqueSorted(
 		profile?.outboundChannels ?? config.hermes?.privateRuntime?.outboundChannels,
 	);
+	// The valid-action catalog is what stops the agent from guessing action ids
+	// (list_capabilities, get_medications, ...) that the sidecar rejects as 404s.
+	// Empty scopes -> empty block, so no separate guard is needed here.
+	const actionCatalogAppend = formatGrantedProviderActionCatalog(providerScopes, actionCatalog);
+	const runtimeBlock =
+		providerScopes.length > 0
+			? [
+					"<hermes-provider-runtime>",
+					"Provider access is relay-owned. Do not call provider hostnames, provider URLs, curl, WebFetch, or telclaude provider CLI commands.",
+					"This supersedes any legacy external-provider or provider-query instructions in the surrounding context.",
+					"Use only the served MCP provider tools: tc_provider_read for reads, tc_provider_prepare_write for proposed writes, and tc_provider_execute_write after operator approval.",
+					`Granted provider scopes: ${providerScopes.join(", ")}.`,
+					capabilityScopes.length > 0
+						? `Granted capability scopes: ${capabilityScopes.join(", ")}.`
+						: "No web, media, or skill-request capability scopes are granted for this turn.",
+					"</hermes-provider-runtime>",
+				].join("\n")
+			: [
+					"<hermes-provider-runtime>",
+					"No provider scopes are granted for this Hermes private-runtime turn. Do not attempt provider reads or writes.",
+					capabilityScopes.length > 0
+						? `Granted capability scopes: ${capabilityScopes.join(", ")}.`
+						: "No web, media, or skill-request capability scopes are granted for this turn.",
+					"</hermes-provider-runtime>",
+				].join("\n");
 	return {
 		providerScopes,
 		capabilityScopes,
 		outboundChannels,
-		systemPromptAppend:
-			providerScopes.length > 0
-				? [
-						"<hermes-provider-runtime>",
-						"Provider access is relay-owned. Do not call provider hostnames, provider URLs, curl, WebFetch, or telclaude provider CLI commands.",
-						"This supersedes any legacy external-provider or provider-query instructions in the surrounding context.",
-						"Use only the served MCP provider tools: tc_provider_read for reads, tc_provider_prepare_write for proposed writes, and tc_provider_execute_write after operator approval.",
-						`Granted provider scopes: ${providerScopes.join(", ")}.`,
-						capabilityScopes.length > 0
-							? `Granted capability scopes: ${capabilityScopes.join(", ")}.`
-							: "No web, media, or skill-request capability scopes are granted for this turn.",
-						"</hermes-provider-runtime>",
-					].join("\n")
-				: [
-						"<hermes-provider-runtime>",
-						"No provider scopes are granted for this Hermes private-runtime turn. Do not attempt provider reads or writes.",
-						capabilityScopes.length > 0
-							? `Granted capability scopes: ${capabilityScopes.join(", ")}.`
-							: "No web, media, or skill-request capability scopes are granted for this turn.",
-						"</hermes-provider-runtime>",
-					].join("\n"),
+		systemPromptAppend: actionCatalogAppend
+			? `${runtimeBlock}\n${actionCatalogAppend}`
+			: runtimeBlock,
 	};
 }
 

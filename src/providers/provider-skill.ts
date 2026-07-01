@@ -4,6 +4,11 @@ import { getSkillRoot, SkillRootUnavailableError } from "../commands/skill-path.
 import type { ExternalProviderConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
+import {
+	type CatalogAction,
+	isSafeProviderIdentifier,
+	type ProviderActionCatalog,
+} from "./provider-action-catalog.js";
 import { validateProviderBaseUrl } from "./provider-validation.js";
 
 const logger = getChildLogger({ module: "provider-skill" });
@@ -19,6 +24,7 @@ type ActionDoc = {
 	description?: string;
 	method?: string;
 	mode?: string;
+	type?: string;
 	requiresAuth?: boolean;
 	params?: Record<
 		string,
@@ -102,6 +108,7 @@ function normalizeActions(value: unknown): ActionDoc[] {
 							coerceDescription(record.label),
 						method: coerceDescription(record.method) ?? coerceDescription(record.httpMethod),
 						mode: coerceDescription(record.mode),
+						type: coerceDescription(record.type),
 						requiresAuth:
 							typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
 						params,
@@ -130,6 +137,7 @@ function normalizeActions(value: unknown): ActionDoc[] {
 					? (coerceDescription(record.method) ?? coerceDescription(record.httpMethod))
 					: undefined,
 				mode: record ? coerceDescription(record.mode) : undefined,
+				type: record ? coerceDescription(record.type) : undefined,
 				requiresAuth:
 					record && typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
 				params,
@@ -401,6 +409,11 @@ let cachedProviderSummary: string | null = null;
 // Hermes cannot fetch schema directly (firewall blocks provider access).
 let cachedSchemaMarkdown: string | null = null;
 
+// Structured providerId -> serviceId -> action ids, derived from the same schema
+// fetch. Injected (scope-filtered) into the Hermes private-runtime prompt so the
+// contained agent calls real tc_provider_read action ids instead of guessing.
+let cachedProviderActionCatalog: ProviderActionCatalog | null = null;
+
 /**
  * Returns a brief summary of configured providers, or null if none.
  * Injected into systemPromptAppend so the model always knows about available providers.
@@ -417,9 +430,50 @@ export function getCachedSchemaMarkdown(): string | null {
 	return cachedSchemaMarkdown;
 }
 
+/**
+ * Returns the structured provider action catalog, or null if not yet fetched.
+ * Consumed by the Hermes private-runtime provider context to teach the agent the
+ * exact tc_provider_read action ids each granted scope exposes.
+ */
+export function getCachedProviderActionCatalog(): ProviderActionCatalog | null {
+	return cachedProviderActionCatalog;
+}
+
+// An action is a side-effecting write if the sidecar schema marks it as such:
+// google tags writes `type: "action"` (reads are `type: "read"`); the israeli
+// sidecar tags writes `mode: "write"` (reads are `mode: "read"` or `"api"`).
+function isWriteAction(action: ActionDoc): boolean {
+	return action.type?.toLowerCase() === "action" || action.mode?.toLowerCase() === "write";
+}
+
+export function buildProviderActionCatalog(results: ProviderSchemaResult[]): ProviderActionCatalog {
+	const catalog: ProviderActionCatalog = {};
+	for (const result of results) {
+		if (!result.schema || result.error) continue;
+		const serviceActions: Record<string, CatalogAction[]> = {};
+		for (const service of extractServiceDocs(result.schema)) {
+			if (!isSafeProviderIdentifier(service.id)) continue;
+			const byId = new Map<string, CatalogAction>();
+			for (const action of service.actions) {
+				const id = action.id?.trim();
+				// Drop ids that cannot be placed in the prompt or called verbatim; a
+				// non-identifier action is not a real callable blueprint action.
+				if (!id || !isSafeProviderIdentifier(id)) continue;
+				if (!byId.has(id)) byId.set(id, { id, write: isWriteAction(action) });
+			}
+			if (byId.size > 0) {
+				serviceActions[service.id] = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+			}
+		}
+		if (Object.keys(serviceActions).length > 0) catalog[result.provider.id] = serviceActions;
+	}
+	return catalog;
+}
+
 export async function clearProviderSkillState(): Promise<void> {
 	cachedProviderSummary = null;
 	cachedSchemaMarkdown = null;
+	cachedProviderActionCatalog = null;
 
 	let skillLocation: SkillLocation;
 	try {
@@ -478,6 +532,7 @@ export async function refreshExternalProviderSkill(
 	const anySucceeded = results.some((r) => r.schema && !r.error);
 	if (anySucceeded) {
 		cachedSchemaMarkdown = section;
+		cachedProviderActionCatalog = buildProviderActionCatalog(results);
 	} else {
 		logger.warn("all provider schema fetches failed; not updating cached schema");
 	}

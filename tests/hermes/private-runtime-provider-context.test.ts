@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { buildHermesPrivateRuntimeProviderContext } from "../../src/hermes/private-runtime-provider-context.js";
+import type { ProviderActionCatalog } from "../../src/providers/provider-action-catalog.js";
+
+const ACTION_CATALOG: ProviderActionCatalog = {
+	"israel-services": {
+		clalit: [
+			{ id: "appointments", write: false },
+			{ id: "lab_results", write: false },
+			{ id: "prescriptions", write: false },
+			{ id: "prescription_renewal", write: true },
+		],
+		poalim: [
+			{ id: "accounts", write: false },
+			{ id: "balance", write: false },
+		],
+	},
+	google: {
+		gmail: [
+			{ id: "read_message", write: false },
+			{ id: "search", write: false },
+		],
+	},
+};
 
 describe("Hermes private runtime provider context", () => {
 	it("fails closed when no provider scopes are configured", () => {
@@ -87,6 +109,59 @@ describe("Hermes private runtime provider context", () => {
 		// caller that forgets to thread `tier` cannot silently grant browse.act.
 		const noTier = buildHermesPrivateRuntimeProviderContext(config, grant);
 		expect(noTier.capabilityScopes).toEqual(["browse.use"]);
+	});
+
+	it("injects the granted-scope action catalog so the agent stops guessing action ids", () => {
+		const context = buildHermesPrivateRuntimeProviderContext(
+			{
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["clalit", "bank", "google", "government"],
+						capabilityScopes: [],
+						outboundChannels: [],
+					},
+				},
+			},
+			undefined,
+			"WRITE_LOCAL",
+			ACTION_CATALOG,
+		);
+
+		expect(context.systemPromptAppend).toContain("</hermes-provider-runtime>");
+		expect(context.systemPromptAppend).toContain("<hermes-provider-actions>");
+		expect(context.systemPromptAppend).toContain(
+			'- service "clalit": appointments, lab_results, prescriptions',
+		);
+		// bank alias -> poalim actions, presented under the agent-facing "bank" service.
+		expect(context.systemPromptAppend).toContain('- service "bank": accounts, balance');
+		expect(context.systemPromptAppend).toContain('- service "gmail": read_message, search');
+		// The clalit write is routed to the two-phase prepare-write path, not read.
+		expect(context.systemPromptAppend).toContain("tc_provider_prepare_write");
+		expect(context.systemPromptAppend).toMatch(
+			/Writes[\s\S]*- service "clalit": prescription_renewal/,
+		);
+		// Stale/unconfigured government grant must not sprout invented actions.
+		expect(context.systemPromptAppend).not.toContain('service "government"');
+	});
+
+	it("omits the action catalog block when no schema catalog is available", () => {
+		const context = buildHermesPrivateRuntimeProviderContext(
+			{
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["clalit"],
+						capabilityScopes: [],
+						outboundChannels: [],
+					},
+				},
+			},
+			undefined,
+			"WRITE_LOCAL",
+			null,
+		);
+
+		expect(context.systemPromptAppend).toContain("Granted provider scopes: clalit");
+		expect(context.systemPromptAppend).not.toContain("<hermes-provider-actions>");
 	});
 
 	it("lets explicit profile scopes override global private-runtime scopes", () => {

@@ -12,6 +12,7 @@ import path from "node:path";
 
 import { type ExternalProviderConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { CANONICAL_PROVIDER_SERVICE_ALIASES } from "../providers/provider-action-catalog.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { createAttachmentRef } from "../storage/attachment-refs.js";
 import { buildAttachmentFilename, ensureDocumentsDir } from "./attachment-helpers.js";
@@ -23,9 +24,6 @@ const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024; // 20MB
 const DEFAULT_PROXY_TIMEOUT_MS = 30_000;
 const PROVIDER_CHALLENGE_PENDING_ERROR =
 	"Provider challenge pending; check the relay-rendered operator prompt.";
-const CANONICAL_PROVIDER_SERVICE_ALIASES: Record<string, readonly string[]> = {
-	bank: ["poalim", "massad"],
-};
 const MODEL_VISIBLE_SECRET_RESPONSE_FIELDS = new Set([
 	"interacturl",
 	"novncurl",
