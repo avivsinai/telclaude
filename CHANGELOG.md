@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-01
+
+### Added
+
+- **Authenticated GitHub repo reads (`tc_github_*`)** — Relay-native, read-only GitHub repository surface for the contained Hermes private persona: `tc_github_list_repos`, `tc_github_list_refs`, `tc_github_get_tree`, `tc_github_read_file`, backed by the existing GitHub App installation token (never the git proxy, never an external provider). New opt-in `github.read` capability scope (fail-closed without an explicit grant); owner/repo/ref/path validated at the boundary via typed Octokit (no shell git); result counts and file bytes capped; binary, oversized, or non-base64 content fails closed to metadata. The served-MCP surface grows to 25 tools.
+
+### Fixed
+
+- **Private-runtime provider action catalog** — The contained Hermes agent knew its granted provider scopes but never the concrete action ids, so it guessed action names the sidecar rejected as invalid-action 404s — silently breaking Clalit and other provider reads. The relay now injects a scope-filtered action catalog (real `tc_provider_read` / `tc_provider_prepare_write` ids, read vs. write split, provider-derived ids validated against a strict identifier grammar before reaching the prompt) into the private-runtime system prompt, sourced from the cached provider `/v1/schema`.
+- **Contained-runtime tool include-list drift** — The contained entrypoint's `mcp_servers.telclaudeRelay.tools.include` had fallen behind relay policy (`tc_browse`, `tc_browse_act*`, and `tc_github_*` were served and scoped but not visible in `tools/list`), so the agent fell back to wrong paths. Synced the include-list to the full served surface (visibility only; the authority/scope layer still gates each tool) and added a parity test to prevent silent drift.
+
+### Changed
+
+- **Docs** — Refreshed the served-MCP tool count (18 → 25) and the capability-scope enumerations (`browse.act`, `github.read`) across `docs/architecture.md`, `CLAUDE.md`, and `.claude/CLAUDE.md`.
+
 ## [0.7.2] - 2026-06-22
 
 ### Security
@@ -376,7 +391,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/avivsinai/telclaude/compare/v0.7.2...v0.8.0
 [0.6.2]: https://github.com/avivsinai/telclaude/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/avivsinai/telclaude/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/avivsinai/telclaude/compare/v0.5.5...v0.6.0
