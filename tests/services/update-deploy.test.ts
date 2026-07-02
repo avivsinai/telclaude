@@ -65,6 +65,10 @@ describe("update deploy service", () => {
 			code: "not_configured",
 			message: "GitHub App is not configured. Run telclaude secrets setup-github-app.",
 		});
+		expect(getOctokitMock).toHaveBeenCalledWith({
+			repository: "avivsinai/telclaude",
+			permissions: { contents: "read" },
+		});
 		expect(getCommitMock).not.toHaveBeenCalled();
 	});
 
@@ -76,6 +80,10 @@ describe("update deploy service", () => {
 
 		const result = await collectUpdateStatus();
 
+		expect(getOctokitMock).toHaveBeenCalledWith({
+			repository: "avivsinai/telclaude",
+			permissions: { contents: "read" },
+		});
 		expect(getCommitMock).toHaveBeenCalledWith({
 			owner: "avivsinai",
 			repo: "telclaude",
@@ -109,6 +117,10 @@ describe("update deploy service", () => {
 
 		const result = await dispatchMainDeploy();
 
+		expect(getOctokitMock).toHaveBeenCalledWith({
+			repository: "avivsinai/telclaude",
+			permissions: { actions: "write" },
+		});
 		expect(createWorkflowDispatchMock).toHaveBeenCalledWith({
 			owner: "avivsinai",
 			repo: "telclaude",

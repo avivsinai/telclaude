@@ -8,6 +8,7 @@ export const TELCLAUDE_REPOSITORY_OWNER = "avivsinai";
 export const TELCLAUDE_REPOSITORY_NAME = "telclaude";
 export const TELCLAUDE_MAIN_REF = "main";
 export const TELCLAUDE_CI_WORKFLOW_ID = "ci.yml";
+const TELCLAUDE_REPOSITORY = `${TELCLAUDE_REPOSITORY_OWNER}/${TELCLAUDE_REPOSITORY_NAME}`;
 export const TELCLAUDE_ACTIONS_WORKFLOW_URL = `https://github.com/${TELCLAUDE_REPOSITORY_OWNER}/${TELCLAUDE_REPOSITORY_NAME}/actions/workflows/${TELCLAUDE_CI_WORKFLOW_ID}`;
 
 type UpdateErrorCode = "not_configured" | "forbidden" | "upstream_error";
@@ -98,7 +99,10 @@ function isNewDispatchRun(
 
 export async function collectUpdateStatus(): Promise<UpdateStatusResult> {
 	const runtime = runtimeSnapshot();
-	const octokit = await getOctokit();
+	const octokit = await getOctokit({
+		repository: TELCLAUDE_REPOSITORY,
+		permissions: { contents: "read" },
+	});
 	if (!octokit) {
 		return {
 			ok: false,
@@ -161,7 +165,10 @@ export async function collectUpdateStatus(): Promise<UpdateStatusResult> {
 }
 
 export async function dispatchMainDeploy(): Promise<UpdateDeployResult> {
-	const octokit = await getOctokit();
+	const octokit = await getOctokit({
+		repository: TELCLAUDE_REPOSITORY,
+		permissions: { actions: "write" },
+	});
 	if (!octokit) {
 		return {
 			ok: false,

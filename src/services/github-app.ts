@@ -13,7 +13,7 @@
 
 import { readFileSync } from "node:fs";
 
-import { createAppAuth } from "@octokit/auth-app";
+import { createAppAuth, type InstallationAuthOptions } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 
 import { getChildLogger } from "../logging.js";
@@ -49,12 +49,20 @@ export interface InstallationTokenInfo {
 }
 
 export type GitHubInstallationContentsPermission = "read" | "write";
+export type GitHubInstallationActionsPermission = "read" | "write";
+
+export interface InstallationTokenPermissions {
+	contents?: GitHubInstallationContentsPermission;
+	actions?: GitHubInstallationActionsPermission;
+}
 
 export interface InstallationTokenScope {
 	/** Full repository name: owner/repo. Omit for the legacy installation-wide token. */
 	repository?: string;
 	/** Narrow the installation token to GitHub Contents read/write when possible. */
 	contentsPermission?: GitHubInstallationContentsPermission;
+	/** Narrow the installation token to the exact GitHub App permissions needed. */
+	permissions?: InstallationTokenPermissions;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -149,9 +157,44 @@ function getRepositoryNameForToken(repository: string | undefined): string | nul
 
 function installationTokenCacheKey(
 	repositoryName: string | undefined,
-	contentsPermission: GitHubInstallationContentsPermission | undefined,
+	permissions: InstallationTokenPermissions | undefined,
 ): string {
-	return `${repositoryName ?? "*"}:${contentsPermission ?? "*"}`;
+	const permissionKey =
+		permissions && Object.keys(permissions).length > 0
+			? Object.entries(permissions)
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([permission, access]) => `${permission}:${access}`)
+					.join(",")
+			: "*";
+	return `${repositoryName ?? "*"}:${permissionKey}`;
+}
+
+function normalizeInstallationTokenPermissions(
+	scope: InstallationTokenScope,
+): InstallationTokenPermissions | null | undefined {
+	const contentsPermission = scope.permissions?.contents ?? scope.contentsPermission;
+	if (
+		scope.permissions?.contents &&
+		scope.contentsPermission &&
+		scope.permissions.contents !== scope.contentsPermission
+	) {
+		return null;
+	}
+
+	const permissions: InstallationTokenPermissions = {};
+	if (contentsPermission) permissions.contents = contentsPermission;
+	if (scope.permissions?.actions) permissions.actions = scope.permissions.actions;
+	return Object.keys(permissions).length > 0 ? permissions : undefined;
+}
+
+function toOctokitInstallationPermissions(
+	permissions: InstallationTokenPermissions | undefined,
+): Record<string, string> | undefined {
+	if (!permissions) return undefined;
+	const authPermissions: Record<string, string> = {};
+	if (permissions.contents) authPermissions.contents = permissions.contents;
+	if (permissions.actions) authPermissions.actions = permissions.actions;
+	return authPermissions;
 }
 
 /**
@@ -177,7 +220,16 @@ export async function getInstallationTokenInfo(
 		return null;
 	}
 
-	const cacheKey = installationTokenCacheKey(repositoryName, scope.contentsPermission);
+	const permissions = normalizeInstallationTokenPermissions(scope);
+	if (permissions === null) {
+		logger.warn(
+			{ repository: scope.repository },
+			"conflicting github installation token permission scopes",
+		);
+		return null;
+	}
+
+	const cacheKey = installationTokenCacheKey(repositoryName, permissions);
 
 	// Check if cached token is still valid (with 5 min buffer)
 	const cachedToken = cachedTokens.get(cacheKey);
@@ -188,7 +240,7 @@ export async function getInstallationTokenInfo(
 			logger.debug(
 				{
 					repository: scope.repository,
-					contentsPermission: scope.contentsPermission,
+					permissions,
 				},
 				"using cached installation token",
 			);
@@ -206,13 +258,14 @@ export async function getInstallationTokenInfo(
 			installationId: Number(config.installationId),
 		});
 
-		const authResult = await auth({
+		const authOptions: InstallationAuthOptions = {
 			type: "installation",
-			...(repositoryName ? { repositoryNames: [repositoryName] } : null),
-			...(scope.contentsPermission
-				? { permissions: { contents: scope.contentsPermission } }
-				: null),
-		});
+		};
+		if (repositoryName) authOptions.repositoryNames = [repositoryName];
+		const authPermissions = toOctokitInstallationPermissions(permissions);
+		if (authPermissions) authOptions.permissions = authPermissions;
+
+		const authResult = await auth(authOptions);
 		if (
 			typeof authResult.token !== "string" ||
 			!authResult.token ||
@@ -221,7 +274,7 @@ export async function getInstallationTokenInfo(
 			logger.warn(
 				{
 					repository: scope.repository,
-					contentsPermission: scope.contentsPermission,
+					permissions,
 				},
 				"github app auth returned an invalid installation token response",
 			);
@@ -232,7 +285,7 @@ export async function getInstallationTokenInfo(
 			logger.warn(
 				{
 					repository: scope.repository,
-					contentsPermission: scope.contentsPermission,
+					permissions,
 				},
 				"github app auth returned an invalid installation token expiry",
 			);
@@ -249,7 +302,7 @@ export async function getInstallationTokenInfo(
 			{
 				expiresAt: nextCachedToken.expiresAt.toISOString(),
 				repository: scope.repository,
-				contentsPermission: scope.contentsPermission,
+				permissions,
 			},
 			"generated new installation token",
 		);
@@ -271,8 +324,8 @@ export async function getInstallationToken(
 /**
  * Get an authenticated Octokit instance.
  */
-export async function getOctokit(): Promise<Octokit | null> {
-	const token = await getInstallationToken();
+export async function getOctokit(scope: InstallationTokenScope = {}): Promise<Octokit | null> {
+	const token = await getInstallationToken(scope);
 	if (!token) return null;
 
 	return new Octokit({ auth: token });
