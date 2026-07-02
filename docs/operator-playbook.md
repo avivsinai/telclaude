@@ -111,6 +111,14 @@ Codex is the delegated work-unit peer (`src/agent-runtime/codex-work-unit.ts`, `
 
 Defaults: read-only sandbox, no `--write` without FULL_ACCESS, blocked entirely for SOCIAL chats, `--cwd` confined to the workspace, model must be in `CODEX_EXECUTABLE_MODELS`. Results land as background-job cards; treat them as untrusted data per the skill instructions.
 
+### Update and deploy from Telegram
+
+Use `/update` to compare the running relay version and revision with GitHub `main`. Use `/update deploy` as an admin to mint a short confirmation token, then resend the exact confirmation command to dispatch the existing `ci.yml` workflow on `main`.
+
+The workflow still runs Verify before Deploy, keeps production deploy concurrency non-cancelling, and finishes with the live Hermes runtime gates. The relay may restart during Deploy; the startup banner is the source of truth for the active post-deploy revision.
+
+Operator setup: the GitHub App used by telclaude must have `Actions: write` on this repository. If dispatch is denied, run `gh workflow run ci.yml --ref main` from the control room as the manual fallback.
+
 At this level the operator stops starting most tasks manually — cron and webhooks push work into the chat, Codex absorbs bounded delegations, and Telegram is mostly a review surface.
 
 ## Control room vs runtime

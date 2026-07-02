@@ -100,6 +100,7 @@ import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	cancelBackgroundJobCommand,
 	handleLearnCommand,
+	handleUpdateCommand,
 	openCuratorInboxCard,
 	openModelPicker,
 	openProviderList,
@@ -916,6 +917,13 @@ async function dispatchTelegramControlCommand(
 			return true;
 		case "system:health":
 			await handleSystemHealthCommand(bot.api, msg);
+			return true;
+		// ── /update domain ─────────────────────────────────────────────
+		case "update":
+			await handleUpdateCommand(msg, { mode: "status", rawArgs: match.rawArgs });
+			return true;
+		case "update:deploy":
+			await handleUpdateCommand(msg, { mode: "deploy", rawArgs: match.rawArgs });
 			return true;
 		// ── /profile domain ────────────────────────────────────────────
 		case "profile":

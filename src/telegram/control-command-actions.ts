@@ -69,6 +69,11 @@ import {
 	stepUpMetadataForTOTPSession,
 } from "../security/totp-session.js";
 import {
+	collectUpdateStatus,
+	dispatchMainDeploy,
+	type UpdateStatusResult,
+} from "../services/update-deploy.js";
+import {
 	sendBackgroundJobCard,
 	sendBackgroundJobListCard,
 	sendCuratorInboxCard,
@@ -111,6 +116,7 @@ const PROVIDER_ENROLLMENT_TOKEN_BEARING_URL_PARAM_PATTERN =
 const PROVIDER_ENROLLMENT_INTERACTIVE_URL_PATH_PATTERN =
 	/(challenge|interactive|interact|novnc|vnc|browser)/i;
 const URL_SUBSTRING_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
+const UPDATE_CONFIRM_TTL_MS = 5 * 60 * 1000;
 
 export type CommandUiResult = {
 	callbackText: string;
@@ -157,6 +163,10 @@ function threadOptions(threadId?: number): ThreadOptions {
 }
 
 const LEARN_LIST_LIMIT = 10;
+const updateDeployConfirmations = new Map<
+	string,
+	{ token: string; expiresAtMs: number; createdAtMs: number }
+>();
 
 function truncateLearnContent(value: string): string {
 	const normalized = value.replace(/\s+/g, " ").trim();
@@ -253,6 +263,108 @@ export async function handleLearnCommand(
 	}
 
 	await msg.reply(`Learned ${entryId} for ${profileLabel}.`);
+}
+
+function updateConfirmationKey(msg: TelegramInboundMessage): string {
+	return `${msg.chatId}:${msg.messageThreadId ?? "root"}`;
+}
+
+function createUpdateConfirmToken(): string {
+	return `deploy-${crypto.randomBytes(3).toString("hex")}`;
+}
+
+function formatUpdateStatus(result: UpdateStatusResult): string {
+	const running = `Running v${result.runtime.version} @${result.runtime.revision}`;
+	if (!result.ok) {
+		return [
+			`${running}.`,
+			result.message,
+			result.code === "not_configured" ? "Fallback: gh workflow run ci.yml --ref main" : undefined,
+		]
+			.filter(Boolean)
+			.join("\n");
+	}
+	const main = `main @${result.mainShortSha}`;
+	const relation =
+		result.relation === "current"
+			? "up to date"
+			: result.relation === "behind"
+				? `${result.aheadBy ?? "some"} commit${result.aheadBy === 1 ? "" : "s"} behind`
+				: result.relation === "different"
+					? "different from main"
+					: "running revision unknown";
+	const deployHint =
+		result.relation === "current"
+			? "/update deploy can rebuild current main."
+			: "/update deploy to ship current main.";
+	return `${running} · ${main} — ${relation}.\n${deployHint}`;
+}
+
+export async function handleUpdateCommand(
+	msg: TelegramInboundMessage,
+	options: { mode: "status" | "deploy"; rawArgs: string },
+): Promise<void> {
+	const rawArgs = options.rawArgs.trim();
+
+	if (options.mode === "status") {
+		await msg.reply(formatUpdateStatus(await collectUpdateStatus()));
+		return;
+	}
+
+	if (!isAdmin(msg.chatId)) {
+		await msg.reply("Only admin can deploy updates.");
+		return;
+	}
+
+	const key = updateConfirmationKey(msg);
+	const now = Date.now();
+	const pending = updateDeployConfirmations.get(key);
+	const providedToken = rawArgs.split(/\s+/)[0]?.trim();
+
+	if (!providedToken) {
+		const status = await collectUpdateStatus();
+		if (!status.ok && status.code === "not_configured") {
+			await msg.reply(formatUpdateStatus(status));
+			return;
+		}
+		const token = createUpdateConfirmToken();
+		updateDeployConfirmations.set(key, {
+			token,
+			createdAtMs: now,
+			expiresAtMs: now + UPDATE_CONFIRM_TTL_MS,
+		});
+		await msg.reply(
+			[
+				formatUpdateStatus(status),
+				"",
+				"This deploys current main via the verify-gated CI workflow on the self-hosted deploy runner.",
+				"The relay may restart during deploy; the startup banner announces the new revision after reconnect.",
+				`To confirm within 5 minutes, send: /update deploy ${token}`,
+			].join("\n"),
+		);
+		return;
+	}
+
+	if (!pending || pending.token !== providedToken || pending.expiresAtMs < now) {
+		updateDeployConfirmations.delete(key);
+		await msg.reply("Deploy confirmation expired or invalid. Run /update deploy again.");
+		return;
+	}
+
+	updateDeployConfirmations.delete(key);
+	const result = await dispatchMainDeploy();
+	if (!result.ok) {
+		await msg.reply(result.message);
+		return;
+	}
+
+	await msg.reply(
+		[
+			`Deploy workflow dispatched: ${result.runUrl ?? result.workflowUrl}`,
+			"CI Verify gates Deploy, and Deploy runs the live Hermes runtime gates before completion.",
+			"Expect the relay to restart mid-deploy; the startup banner will report the active revision.",
+		].join("\n"),
+	);
 }
 
 function socialAskWizardScopeKey(scope: SocialAskWizardScope): string {

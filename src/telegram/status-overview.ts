@@ -8,6 +8,7 @@ import { listCronJobs } from "../cron/store.js";
 import { getChildLogger } from "../logging.js";
 import { listServices as listOAuthServices } from "../oauth/registry.js";
 import { checkProviderHealth, type HealthCheckResult } from "../providers/provider-health.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 import type { ListEntry } from "../vault-daemon/protocol.js";
 import type { RemediationKey } from "./remediation-commands.js";
@@ -311,6 +312,19 @@ export async function collectSystemHealth(
 	});
 
 	const items: HealthItem[] = [];
+
+	// ── Runtime version ──────────────────────────────────────────────
+	const runtime = buildRuntimeSnapshot(
+		collectedAtMs - Math.floor(process.uptime() * 1000),
+		collectedAtMs,
+	);
+	items.push({
+		id: "runtime:version",
+		label: "Runtime",
+		status: runtime.revision === "unknown" ? "unknown" : "ok",
+		detail: `v${runtime.version} @${runtime.revision}`,
+		observedAtMs: collectedAtMs,
+	});
 
 	// ── Model / tier ──────────────────────────────────────────────────
 	const defaultTier = cfg.security?.permissions?.defaultTier ?? "READ_ONLY";
