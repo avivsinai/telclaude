@@ -36,6 +36,8 @@ export type TelegramCommandId =
 	| "system:sessions"
 	| "system:cron"
 	| "system:health"
+	| "update"
+	| "update:deploy"
 	| "profile"
 	| "profile:list"
 	| "profile:show"
@@ -365,6 +367,34 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/system cron"],
 		keywords: ["cron", "schedule", "scheduled jobs", "heartbeat schedule", "next run"],
 		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	// ── /update ──────────────────────────────────────────────────────
+	{
+		id: "update",
+		name: "update",
+		domain: "update",
+		domainDefault: true,
+		category: "System",
+		description: "Compare the running relay version and revision against GitHub main.",
+		usage: "/update [deploy]",
+		examples: ["/update", "/update deploy"],
+		keywords: ["update", "deploy", "version", "revision", "main", "ship"],
+		readOnly: true,
+		rateLimited: true,
+		menuDescription: "Check update status",
+	},
+	{
+		id: "update:deploy",
+		name: "update",
+		domain: "update",
+		subcommand: "deploy",
+		category: "System",
+		description: "Admin-confirmed deploy of current main via the verify-gated CI workflow.",
+		usage: "/update deploy [confirmation-token]",
+		examples: ["/update deploy", "/update deploy deploy-a1b2c3"],
+		keywords: ["deploy", "workflow dispatch", "actions", "ship main"],
 		rateLimited: true,
 		hideFromCatalog: true,
 	},
@@ -949,9 +979,17 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "system",
 		title: "System Introspection",
 		summary:
-			"Use /system for runtime and security state, /system sessions for recent chat sessions, /system cron for scheduled jobs.",
-		keywords: ["system", "status", "sessions", "cron", "health", "diagnostics"],
-		commands: ["system", "system:sessions", "system:cron"],
+			"Use /system for runtime and security state, /system sessions for recent chat sessions, /system cron for scheduled jobs, and /update to compare or deploy current main.",
+		keywords: ["system", "status", "sessions", "cron", "health", "diagnostics", "update"],
+		commands: ["system", "system:sessions", "system:cron", "system:health", "update"],
+	},
+	{
+		id: "update",
+		title: "Update And Deploy",
+		summary:
+			"/update checks the running version and revision against GitHub main. /update deploy asks for admin confirmation, then dispatches the existing CI deploy workflow for current main.",
+		keywords: ["update", "deploy", "version", "revision", "workflow dispatch", "github actions"],
+		commands: ["update", "update:deploy"],
 	},
 	{
 		id: "social",
@@ -1443,6 +1481,7 @@ export function formatTelegramHelpOverview(): string {
 		"  /me — Identity, link/unlink",
 		"  /auth — 2FA setup and management",
 		"  /learn — Save and manage memory facts",
+		"  /update — Check or deploy current main",
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
@@ -1585,6 +1624,7 @@ export function getTelegramMenuCommands(
 		{ command: "me", description: "Identity management" },
 		{ command: "auth", description: "Two-factor authentication" },
 		{ command: "system", description: "System introspection" },
+		{ command: "update", description: "Check update status" },
 		{ command: "profile", description: "Operator profile" },
 		{ command: "learn", description: "Save memory facts" },
 		{ command: "sethome", description: "Home delivery target" },

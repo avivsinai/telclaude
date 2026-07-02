@@ -43,6 +43,11 @@ describe("telegram control command registry", () => {
 			);
 			expect(matchTelegramControlCommand("/learn list")?.command.id).toBe("learn:list");
 			expect(matchTelegramControlCommand("/learn forget mem-123")?.command.id).toBe("learn:forget");
+			expect(matchTelegramControlCommand("/update")?.command.id).toBe("update");
+			expect(matchTelegramControlCommand("/update deploy")?.command.id).toBe("update:deploy");
+			expect(matchTelegramControlCommand("/update deploy deploy-a1b2c3")?.command.id).toBe(
+				"update:deploy",
+			);
 			expect(matchTelegramControlCommand("/social queue")?.command.id).toBe("social:queue");
 			expect(matchTelegramControlCommand("/social promote post_123")?.command.id).toBe(
 				"social:promote",
@@ -177,6 +182,7 @@ describe("telegram control command registry", () => {
 		expect(hasTelegramControlCommand("/system sessions")).toBe(true);
 		expect(hasTelegramControlCommand("/me")).toBe(true);
 		expect(hasTelegramControlCommand("/auth setup")).toBe(true);
+		expect(hasTelegramControlCommand("/update deploy")).toBe(true);
 		// Unknown (including removed legacy flat commands)
 		expect(hasTelegramControlCommand("/commands")).toBe(false);
 		expect(hasTelegramControlCommand("/status")).toBe(false);
@@ -206,6 +212,7 @@ describe("telegram control command registry", () => {
 				"me",
 				"auth",
 				"system",
+				"update",
 				"profile",
 				"learn",
 				"sethome",
@@ -306,6 +313,16 @@ describe("telegram control command registry", () => {
 			expect(formatTelegramHelp()).toContain("/learn");
 			expect(formatTelegramCommandCatalog()).toContain("/learn");
 			expect(getTelegramMenuCommands("private").map((entry) => entry.command)).toContain("learn");
+		});
+	});
+
+	describe("/update command help", () => {
+		it("surfaces update in help, catalog, and private menu", () => {
+			expect(formatTelegramHelp("update")).toContain("/update");
+			expect(formatTelegramHelp("update")).toContain("/update deploy");
+			expect(formatTelegramHelp()).toContain("/update");
+			expect(formatTelegramCommandCatalog()).toContain("/update");
+			expect(getTelegramMenuCommands("private").map((entry) => entry.command)).toContain("update");
 		});
 	});
 });

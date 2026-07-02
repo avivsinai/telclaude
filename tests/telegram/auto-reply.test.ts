@@ -32,6 +32,8 @@ const hasTOTPImpl = vi.hoisted(() => vi.fn(async () => ({ hasTOTP: false })));
 const verifyTOTPImpl = vi.hoisted(() => vi.fn(async () => false));
 const disableTOTPImpl = vi.hoisted(() => vi.fn(async () => false));
 const isTOTPDaemonAvailableImpl = vi.hoisted(() => vi.fn(async () => true));
+const collectUpdateStatusImpl = vi.hoisted(() => vi.fn());
+const dispatchMainDeployImpl = vi.hoisted(() => vi.fn());
 const loggerImpl = vi.hoisted(() => ({
 	info: vi.fn(),
 	warn: vi.fn(),
@@ -115,6 +117,11 @@ vi.mock("../../src/security/totp.js", () => ({
 	verifyTOTP: (...args: unknown[]) => verifyTOTPImpl(...args),
 	disableTOTP: (...args: unknown[]) => disableTOTPImpl(...args),
 	isTOTPDaemonAvailable: (...args: unknown[]) => isTOTPDaemonAvailableImpl(...args),
+}));
+
+vi.mock("../../src/services/update-deploy.js", () => ({
+	collectUpdateStatus: (...args: unknown[]) => collectUpdateStatusImpl(...args),
+	dispatchMainDeploy: (...args: unknown[]) => dispatchMainDeployImpl(...args),
 }));
 
 vi.mock("../../src/telegram/system-context.js", () => ({
@@ -797,6 +804,41 @@ describe("auto-reply control commands", () => {
 		);
 	}
 
+	function updateStatus(overrides: Record<string, unknown> = {}) {
+		return {
+			ok: true,
+			runtime: {
+				version: "1.2.3",
+				revision: "1111111",
+				startedAt: "2026-07-02T00:00:00.000Z",
+				uptimeMs: 1_000,
+				uptimeSeconds: 1,
+			},
+			mainSha: "2222222222222222222222222222222222222222",
+			mainShortSha: "2222222",
+			relation: "behind",
+			aheadBy: 2,
+			workflowUrl: "https://github.com/avivsinai/telclaude/actions/workflows/ci.yml",
+			...overrides,
+		};
+	}
+
+	async function dispatchControl(body: string): Promise<void> {
+		const match = matchTelegramControlCommand(body);
+		if (!match) throw new Error(`expected control command match for ${body}`);
+		await autoReplyTest.dispatchTelegramControlCommand(
+			match as never,
+			{
+				bot: { api: { sendMessage: vi.fn(async () => ({ message_id: 1 })) } },
+				msg: { ...makeMsg(), body, senderId: 555 },
+				cfg: { security: { permissions: { users: { "123": { tier: "WRITE_LOCAL" } } } } },
+				auditLogger: { log: vi.fn(async () => {}) },
+				recentlySent: new Set<string>(),
+				requestId: `req-${body}`,
+			} as never,
+		);
+	}
+
 	beforeEach(() => {
 		controlTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-control-"));
 		process.env.TELCLAUDE_DATA_DIR = controlTempDir;
@@ -809,6 +851,14 @@ describe("auto-reply control commands", () => {
 		disableTOTPImpl.mockResolvedValue(false);
 		isTOTPDaemonAvailableImpl.mockReset();
 		isTOTPDaemonAvailableImpl.mockResolvedValue(true);
+		collectUpdateStatusImpl.mockReset();
+		collectUpdateStatusImpl.mockResolvedValue(updateStatus());
+		dispatchMainDeployImpl.mockReset();
+		dispatchMainDeployImpl.mockResolvedValue({
+			ok: true,
+			workflowUrl: "https://github.com/avivsinai/telclaude/actions/workflows/ci.yml",
+			runUrl: "https://github.com/avivsinai/telclaude/actions/runs/123",
+		});
 	});
 
 	afterEach(() => {
@@ -819,6 +869,8 @@ describe("auto-reply control commands", () => {
 		verifyTOTPImpl.mockReset();
 		disableTOTPImpl.mockReset();
 		isTOTPDaemonAvailableImpl.mockReset();
+		collectUpdateStatusImpl.mockReset();
+		dispatchMainDeployImpl.mockReset();
 		loggerImpl.info.mockReset();
 		loggerImpl.warn.mockReset();
 		loggerImpl.error.mockReset();
@@ -977,10 +1029,10 @@ describe("auto-reply control commands", () => {
 	it("answers unknown slash commands before they can reach Hermes", async () => {
 		seedAdmin();
 
-		await handleControlInbound("/update");
+		await handleControlInbound("/reboot");
 
 		expect(executeHermesQueryImpl).not.toHaveBeenCalled();
-		expect(replies[0]).toContain("Unknown command: /update");
+		expect(replies[0]).toContain("Unknown command: /reboot");
 		expect(replies[0]).toContain("/help commands");
 	});
 
@@ -1021,6 +1073,76 @@ describe("auto-reply control commands", () => {
 		expect(executeHermesQueryImpl).not.toHaveBeenCalled();
 		expect(replies[0]).toContain("Control plane:");
 		expect(replies[0]).toContain("/help commands");
+	});
+
+	it("reports /update status without entering Hermes", async () => {
+		await dispatchControl("/update");
+
+		expect(executeHermesQueryImpl).not.toHaveBeenCalled();
+		expect(collectUpdateStatusImpl).toHaveBeenCalledTimes(1);
+		expect(replies.at(-1)).toContain("Running v1.2.3 @1111111 · main @2222222 — 2 commits behind.");
+		expect(replies.at(-1)).toContain("/update deploy to ship current main.");
+	});
+
+	it("admin-gates /update deploy", async () => {
+		await dispatchControl("/update deploy");
+
+		expect(dispatchMainDeployImpl).not.toHaveBeenCalled();
+		expect(replies.at(-1)).toBe("Only admin can deploy updates.");
+	});
+
+	it("confirms and dispatches /update deploy", async () => {
+		seedAdmin();
+
+		await dispatchControl("/update deploy");
+		const pendingReply = replies.at(-1) ?? "";
+		const token = pendingReply.match(/\/update deploy (deploy-[a-f0-9]+)/)?.[1];
+		expect(token).toBeTruthy();
+		expect(dispatchMainDeployImpl).not.toHaveBeenCalled();
+
+		await dispatchControl(`/update deploy ${token}`);
+
+		expect(dispatchMainDeployImpl).toHaveBeenCalledTimes(1);
+		expect(replies.at(-1)).toContain("Deploy workflow dispatched:");
+		expect(replies.at(-1)).toContain("https://github.com/avivsinai/telclaude/actions/runs/123");
+		expect(replies.at(-1)).toContain("live Hermes runtime gates");
+	});
+
+	it("surfaces GitHub App Actions permission failures from /update deploy", async () => {
+		seedAdmin();
+		dispatchMainDeployImpl.mockResolvedValueOnce({
+			ok: false,
+			code: "forbidden",
+			message:
+				"GitHub App permission denied. Ask the operator to grant Actions: write. Fallback: gh workflow run ci.yml --ref main",
+			workflowUrl: "https://github.com/avivsinai/telclaude/actions/workflows/ci.yml",
+		});
+
+		await dispatchControl("/update deploy");
+		const token = (replies.at(-1) ?? "").match(/\/update deploy (deploy-[a-f0-9]+)/)?.[1];
+		expect(token).toBeTruthy();
+		await dispatchControl(`/update deploy ${token}`);
+
+		expect(replies.at(-1)).toContain("Actions: write");
+		expect(replies.at(-1)).toContain("gh workflow run ci.yml --ref main");
+	});
+
+	it("handles missing GitHub App config before minting a deploy confirmation", async () => {
+		seedAdmin();
+		collectUpdateStatusImpl.mockResolvedValueOnce(
+			updateStatus({
+				ok: false,
+				code: "not_configured",
+				message: "GitHub App is not configured. Run telclaude secrets setup-github-app.",
+			}),
+		);
+
+		await dispatchControl("/update deploy");
+
+		expect(dispatchMainDeployImpl).not.toHaveBeenCalled();
+		expect(replies.at(-1)).toContain("GitHub App is not configured");
+		expect(replies.at(-1)).toContain("Fallback: gh workflow run ci.yml --ref main");
+		expect(replies.at(-1)).not.toContain("To confirm");
 	});
 
 	it("rate limits bare /start help replies", async () => {

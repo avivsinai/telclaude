@@ -134,7 +134,8 @@ The `hermes` group runs the steady-state no-fork and containment proofs. Most su
 | `/help [topic]` | Contextual help, topic list |
 | `/me [link\|unlink]` | Identity management |
 | `/auth [setup\|verify\|logout\|disable\|skip]` | 2FA management |
-| `/system [sessions\|cron]` | System introspection |
+| `/system [sessions\|cron\|health]` | System introspection |
+| `/update [deploy]` | Check running revision against GitHub main and dispatch the verify-gated deploy workflow |
 | `/profile [list\|switch <id>\|reset]` | Operator profile selection for the chat |
 | `/learn <fact>` / `/learn list [category]` / `/learn forget <id>` | Save and manage profile-scoped semantic memory facts |
 | `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
