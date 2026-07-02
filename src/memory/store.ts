@@ -342,6 +342,27 @@ export function deleteEntry(id: string): boolean {
 	return result.changes > 0;
 }
 
+export function deleteEntryForSource(input: {
+	id: string;
+	source: MemorySource;
+	chatId?: string;
+}): boolean {
+	const sourceError = validateMemorySource(input.source);
+	if (sourceError) {
+		throw new Error(sourceError);
+	}
+	const id = input.id.trim();
+	if (!id) return false;
+	const chatId = input.chatId?.trim();
+	const db = getDb();
+	const result = chatId
+		? db
+				.prepare("DELETE FROM memory_entries WHERE id = ? AND source = ? AND chat_id = ?")
+				.run(id, input.source, chatId)
+		: db.prepare("DELETE FROM memory_entries WHERE id = ? AND source = ?").run(id, input.source);
+	return result.changes > 0;
+}
+
 /**
  * Mark a memory entry as posted (used for proactive social posting).
  * This prevents the same idea from being posted multiple times.

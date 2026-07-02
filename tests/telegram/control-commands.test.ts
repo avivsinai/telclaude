@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
 	formatTelegramCommandCatalog,
 	formatTelegramHelp,
+	formatUnknownTelegramCommandReply,
 	getTelegramMenuCommands,
 	hasTelegramControlCommand,
 	listTelegramControlCommands,
 	matchTelegramControlCommand,
+	parseTelegramBotCommandToken,
 } from "../../src/telegram/control-commands.js";
 
 describe("telegram control command registry", () => {
@@ -36,6 +38,11 @@ describe("telegram control command registry", () => {
 				"profile:switch",
 			);
 			expect(matchTelegramControlCommand("/model reset")?.command.id).toBe("model:reset");
+			expect(matchTelegramControlCommand("/learn Aviv likes direct answers")?.command.id).toBe(
+				"learn",
+			);
+			expect(matchTelegramControlCommand("/learn list")?.command.id).toBe("learn:list");
+			expect(matchTelegramControlCommand("/learn forget mem-123")?.command.id).toBe("learn:forget");
 			expect(matchTelegramControlCommand("/social queue")?.command.id).toBe("social:queue");
 			expect(matchTelegramControlCommand("/social promote post_123")?.command.id).toBe(
 				"social:promote",
@@ -99,6 +106,10 @@ describe("telegram control command registry", () => {
 			const multiWord = matchTelegramControlCommand("/help reset session");
 			expect(multiWord?.command.id).toBe("help");
 			expect(multiWord?.rawArgs).toBe("reset session");
+
+			const learn = matchTelegramControlCommand("/learn Aviv prefers terse status updates");
+			expect(learn?.command.id).toBe("learn");
+			expect(learn?.rawArgs).toBe("Aviv prefers terse status updates");
 		});
 
 		it("routes bare domain to default", () => {
@@ -172,6 +183,12 @@ describe("telegram control command registry", () => {
 		expect(hasTelegramControlCommand("/nope")).toBe(false);
 	});
 
+	it("formats unknown command suggestions without catching slash paths", () => {
+		expect(formatUnknownTelegramCommandReply("systm")).toContain("Did you mean /system?");
+		expect(formatUnknownTelegramCommandReply("definitelyunknown")).toContain("Use /help commands");
+		expect(parseTelegramBotCommandToken("/etc/hosts")).toBeNull();
+	});
+
 	it("formats topic help for natural-language queries", () => {
 		const help = formatTelegramHelp("reset session");
 
@@ -190,6 +207,7 @@ describe("telegram control command registry", () => {
 				"auth",
 				"system",
 				"profile",
+				"learn",
 				"sethome",
 				"social",
 				"skills",
@@ -279,6 +297,15 @@ describe("telegram control command registry", () => {
 			expect(formatTelegramHelp("curator")).toContain("Curator");
 			expect(formatTelegramHelp()).toContain("/curator");
 			expect(formatTelegramCommandCatalog()).toContain("/curator");
+		});
+	});
+
+	describe("/learn command help", () => {
+		it("surfaces learn in help, catalog, and private menu", () => {
+			expect(formatTelegramHelp("learn")).toContain("/learn");
+			expect(formatTelegramHelp()).toContain("/learn");
+			expect(formatTelegramCommandCatalog()).toContain("/learn");
+			expect(getTelegramMenuCommands("private").map((entry) => entry.command)).toContain("learn");
 		});
 	});
 });

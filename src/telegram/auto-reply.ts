@@ -99,6 +99,7 @@ import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	cancelBackgroundJobCommand,
+	handleLearnCommand,
 	openCuratorInboxCard,
 	openModelPicker,
 	openProviderList,
@@ -128,9 +129,11 @@ import {
 import {
 	formatTelegramCommandCatalog,
 	formatTelegramHelp,
+	formatUnknownTelegramCommandReply,
 	isKnownDomainCommand,
 	isTelegramAuthExemptCommand,
 	matchTelegramControlCommand,
+	parseTelegramBotCommandToken,
 	type TelegramCommandMatch,
 } from "./control-commands.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
@@ -924,6 +927,16 @@ async function dispatchTelegramControlCommand(
 			return true;
 		case "profile:switch":
 			await handleProfileSwitchCommand(msg, match.args[0]?.trim(), cfg);
+			return true;
+		// ── /learn domain ──────────────────────────────────────────────
+		case "learn":
+			await handleLearnCommand(msg, cfg, { mode: "write", rawArgs: match.rawArgs });
+			return true;
+		case "learn:list":
+			await handleLearnCommand(msg, cfg, { mode: "list", rawArgs: match.rawArgs });
+			return true;
+		case "learn:forget":
+			await handleLearnCommand(msg, cfg, { mode: "forget", rawArgs: match.rawArgs });
 			return true;
 		// ── /social domain ─────────────────────────────────────────────
 		case "social":
@@ -2406,6 +2419,15 @@ async function handleInboundMessage(
 	const trimmedBody = resolveCommandBody(msg).trim();
 	const commandMatchOpts = botUsername ? { botUsername } : undefined;
 	const controlCommandMatch = matchTelegramControlCommand(trimmedBody, commandMatchOpts);
+	const botCommandToken = parseTelegramBotCommandToken(trimmedBody, commandMatchOpts);
+
+	if (!controlCommandMatch && botCommandToken?.addressedToOtherBot) {
+		logger.debug(
+			{ chatId: msg.chatId, commandToken: botCommandToken.commandToken },
+			"ignoring command addressed to another bot",
+		);
+		return;
+	}
 
 	// Commands exempt from auth gate (needed for TOTP setup)
 	const isAuthExemptCommand = isTelegramAuthExemptCommand(trimmedBody, commandMatchOpts);
@@ -2511,10 +2533,40 @@ async function handleInboundMessage(
 		return;
 	}
 
+	const consumeUnmatchedCommandReplyBudget = (reason: string, commandToken?: string): boolean => {
+		if (checkControlCommandRateLimit(userId)) {
+			return true;
+		}
+		logger.debug(
+			{ userId, chatId: msg.chatId, commandToken, reason },
+			"unmatched control command reply rate limited",
+		);
+		return false;
+	};
+
 	// Unknown subcommand for a known domain (e.g. "/system crno") — show usage
 	if (!controlCommandMatch && isKnownDomainCommand(trimmedBody)) {
 		const domain = trimmedBody.slice(1).split(/[\s@]/)[0]?.toLowerCase();
+		if (!consumeUnmatchedCommandReplyBudget("known_domain_unknown_subcommand", domain)) {
+			return;
+		}
 		await msg.reply(`Unknown subcommand. Try /help ${domain} or /${domain} for the default view.`);
+		return;
+	}
+
+	if (!controlCommandMatch && botCommandToken?.commandToken === "start") {
+		if (!consumeUnmatchedCommandReplyBudget("bare_start", botCommandToken.commandToken)) {
+			return;
+		}
+		await handleHelpCommand(msg, "");
+		return;
+	}
+
+	if (!controlCommandMatch && botCommandToken) {
+		if (!consumeUnmatchedCommandReplyBudget("unknown_command", botCommandToken.commandToken)) {
+			return;
+		}
+		await msg.reply(formatUnknownTelegramCommandReply(botCommandToken.commandToken));
 		return;
 	}
 

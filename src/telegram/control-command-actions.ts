@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import type { Api } from "grammy";
 import { validateCodexModel } from "../agent-runtime/codex-work-unit.js";
@@ -38,6 +39,11 @@ import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config
 import { runCuratorScan } from "../curator/actions.js";
 import { clearHermesSessionMapping } from "../hermes/session-map.js";
 import { getChildLogger } from "../logging.js";
+import { handleMemoryPropose } from "../memory/rpc.js";
+import { telegramMemorySource } from "../memory/source.js";
+import { deleteEntryForSource, getEntries } from "../memory/store.js";
+import type { MemoryCategory, MemoryEntry } from "../memory/types.js";
+import { isValidCategory } from "../memory/validation.js";
 import {
 	getProviderCatalogEntry,
 	listProviderCatalogEntries,
@@ -94,6 +100,7 @@ import type {
 } from "./cards/types.js";
 import { CardKind } from "./cards/types.js";
 import { collectSystemHealth } from "./status-overview.js";
+import type { TelegramInboundMessage } from "./types.js";
 import { createTypingControllerFromCallback } from "./typing.js";
 import { createWizardPrompter, WizardCancelledError, WizardTimeoutError } from "./wizard/index.js";
 
@@ -147,6 +154,105 @@ function providerWizardScopeKey(scope: ProviderWizardScope): string {
 
 function threadOptions(threadId?: number): ThreadOptions {
 	return threadId === undefined ? {} : { message_thread_id: threadId };
+}
+
+const LEARN_LIST_LIMIT = 10;
+
+function truncateLearnContent(value: string): string {
+	const normalized = value.replace(/\s+/g, " ").trim();
+	return normalized.length <= 140 ? normalized : `${normalized.slice(0, 139).trimEnd()}…`;
+}
+
+function resolveLearnContext(msg: TelegramInboundMessage, cfg: TelclaudeConfig) {
+	const activeProfile = resolveChatProfile(msg.chatId, cfg).profile;
+	return {
+		profile: activeProfile,
+		source: telegramMemorySource(activeProfile.id),
+		chatId: String(msg.chatId),
+		userId: String(msg.senderId ?? msg.chatId),
+	};
+}
+
+function formatLearnEntry(entry: MemoryEntry): string {
+	return `- ${entry.id} [${entry.category}] ${truncateLearnContent(entry.content)}`;
+}
+
+function formatLearnList(entries: MemoryEntry[], profileLabel: string): string {
+	if (entries.length === 0) {
+		return [`No learns stored for ${profileLabel}.`, "", "Use /learn <fact> to save one."].join(
+			"\n",
+		);
+	}
+	return [`Recent learns for ${profileLabel}:`, "", ...entries.map(formatLearnEntry)].join("\n");
+}
+
+function formatLearnWriteFailure(status: number, error: string): string {
+	if (status === 400) {
+		return [
+			"Could not learn that: learns must be plain facts, not instructions/secrets.",
+			`Reason: ${error}`,
+		].join("\n");
+	}
+	return `Could not learn that: ${error}`;
+}
+
+export async function handleLearnCommand(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+	options: { mode: "write" | "list" | "forget"; rawArgs: string },
+): Promise<void> {
+	const { profile, source, chatId, userId } = resolveLearnContext(msg, cfg);
+	const profileLabel = `${profile.label} (${profile.id})`;
+	const rawArgs = options.rawArgs.trim();
+
+	if (options.mode === "list" || (options.mode === "write" && rawArgs.length === 0)) {
+		const category = rawArgs || undefined;
+		if (category && !isValidCategory(category)) {
+			await msg.reply(
+				"Unknown memory category. Use one of: profile, interests, threads, posts, meta.",
+			);
+			return;
+		}
+		const entries = getEntries({
+			categories: category ? [category as MemoryCategory] : undefined,
+			sources: [source],
+			chatId,
+			limit: LEARN_LIST_LIMIT,
+			order: "desc",
+		});
+		await msg.reply(formatLearnList(entries, profileLabel));
+		return;
+	}
+
+	if (options.mode === "forget") {
+		const entryId = rawArgs.split(/\s+/)[0]?.trim();
+		if (!entryId) {
+			await msg.reply("Usage: /learn forget <entry-id>");
+			return;
+		}
+		const deleted = deleteEntryForSource({ id: entryId, source, chatId });
+		await msg.reply(
+			deleted ? `Forgot ${entryId}.` : `No learn found for ${entryId} in the active profile.`,
+		);
+		return;
+	}
+
+	const entryId = `mem-${crypto.randomUUID().slice(0, 12)}`;
+	const result = handleMemoryPropose(
+		{
+			entries: [{ id: entryId, category: "meta", content: rawArgs }],
+			userId,
+			chatId,
+		},
+		{ source, userId },
+	);
+
+	if (!result.ok) {
+		await msg.reply(formatLearnWriteFailure(result.status, result.error));
+		return;
+	}
+
+	await msg.reply(`Learned ${entryId} for ${profileLabel}.`);
 }
 
 function socialAskWizardScopeKey(scope: SocialAskWizardScope): string {
