@@ -60,6 +60,20 @@ describe("github app installation tokens", () => {
 		});
 	});
 
+	it("requests a repository-scoped actions token for workflow dispatch", async () => {
+		const info = await getInstallationTokenInfo({
+			repository: "avivsinai/telclaude",
+			permissions: { actions: "write" },
+		});
+
+		expect(info?.token).toBe("installation-token");
+		expect(authFnMock).toHaveBeenCalledWith({
+			type: "installation",
+			repositoryNames: ["telclaude"],
+			permissions: { actions: "write" },
+		});
+	});
+
 	it("caches tokens separately by repository and requested contents permission", async () => {
 		authFnMock
 			.mockResolvedValueOnce({
@@ -91,6 +105,49 @@ describe("github app installation tokens", () => {
 			type: "installation",
 			repositoryNames: ["telclaude"],
 			permissions: { contents: "write" },
+		});
+	});
+
+	it("caches tokens separately by requested permission set", async () => {
+		authFnMock
+			.mockResolvedValueOnce({
+				token: "contents-token",
+				expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+			})
+			.mockResolvedValueOnce({
+				token: "actions-token",
+				expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+			});
+
+		await expect(
+			getInstallationToken({
+				repository: "avivsinai/telclaude",
+				permissions: { contents: "read" },
+			}),
+		).resolves.toBe("contents-token");
+		await expect(
+			getInstallationToken({
+				repository: "avivsinai/telclaude",
+				permissions: { actions: "write" },
+			}),
+		).resolves.toBe("actions-token");
+		await expect(
+			getInstallationToken({
+				repository: "avivsinai/telclaude",
+				permissions: { actions: "write" },
+			}),
+		).resolves.toBe("actions-token");
+
+		expect(authFnMock).toHaveBeenCalledTimes(2);
+		expect(authFnMock).toHaveBeenNthCalledWith(1, {
+			type: "installation",
+			repositoryNames: ["telclaude"],
+			permissions: { contents: "read" },
+		});
+		expect(authFnMock).toHaveBeenNthCalledWith(2, {
+			type: "installation",
+			repositoryNames: ["telclaude"],
+			permissions: { actions: "write" },
 		});
 	});
 
