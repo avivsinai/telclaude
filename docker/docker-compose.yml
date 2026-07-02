@@ -549,9 +549,10 @@ volumes:
   # Main relay data: SQLite DB, sessions, identity links, approvals
   telclaude-data:
     name: telclaude-data
+    external: true
 
   # ┌─────────────────────────────────────────────────────────────────────────────┐
-  # │ CRITICAL SECRETS - External volumes (protected from accidental deletion)   │
+  # │ PERSISTENT EXTERNAL VOLUMES                                                │
   # │ These must be pre-created: docker volume create <name>                      │
   # │ `docker compose down -v` CANNOT delete external volumes                     │
   # └─────────────────────────────────────────────────────────────────────────────┘
@@ -606,18 +607,22 @@ volumes:
   # Shared media outbox - persistent for generated content
   media-outbox:
     name: telclaude-media-outbox
+    external: true
 
   # WhatsApp bridge session state (QR/browser auth lives outside agent runtime)
   whatsapp-bridge-data:
     name: telclaude-whatsapp-bridge-data
+    external: true
 
   # Google services data (JTI replay store)
   google-data:
     name: telclaude-google-data
+    external: true
 
   # Social shared memory (relay RW)
   social-memory:
     name: telclaude-social-memory
+    external: true
 
   # Shared operator-managed skill catalog (active + draft) across all Hermes personas.
   telclaude-skill-catalog:

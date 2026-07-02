@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Telclaude Volume Setup
 #
-# Creates external Docker volumes for secrets storage.
+# Creates external Docker volumes for persistent Telclaude data.
 # Run this ONCE before first `docker compose up`.
 #
 # These volumes are marked as 'external' in docker-compose.yml, which means:
@@ -14,44 +14,52 @@ set -euo pipefail
 
 echo "Creating external volumes for Telclaude..."
 
-# Claude Code auth profile (OAuth tokens)
-if docker volume inspect telclaude-claude-auth >/dev/null 2>&1; then
-    echo "✓ telclaude-claude-auth already exists"
-else
-    docker volume create telclaude-claude-auth
-    echo "✓ Created telclaude-claude-auth"
-fi
+ensure_volume() {
+    local name="$1"
+    if docker volume inspect "$name" >/dev/null 2>&1; then
+        echo "✓ $name already exists"
+    else
+        docker volume create "$name" >/dev/null
+        echo "✓ Created $name"
+    fi
+}
 
-# Shared skill catalog (active + draft skills for private + social agents)
-if docker volume inspect telclaude-skill-catalog >/dev/null 2>&1; then
-    echo "✓ telclaude-skill-catalog already exists"
-else
-    docker volume create telclaude-skill-catalog
-    echo "✓ Created telclaude-skill-catalog"
-fi
+# Relay data: SQLite DB, sessions, identity links, approvals
+ensure_volume "telclaude-data"
+
+# Claude Code auth profile (OAuth tokens)
+ensure_volume "telclaude-claude-auth"
+
+# Shared skill catalogs
+ensure_volume "telclaude-skill-catalog"
+ensure_volume "telclaude-hermes-skill-catalog"
+ensure_volume "telclaude-hermes-social-skill-catalog"
+
+# Sidecar and persona state
+ensure_volume "telclaude-google-data"
+ensure_volume "telclaude-social-memory"
+ensure_volume "telclaude-media-outbox"
+ensure_volume "telclaude-whatsapp-bridge-data"
 
 # TOTP secrets (encrypted 2FA seeds) - CRITICAL
-if docker volume inspect telclaude-totp-data >/dev/null 2>&1; then
-    echo "✓ telclaude-totp-data already exists"
-else
-    docker volume create telclaude-totp-data
-    echo "✓ Created telclaude-totp-data"
-fi
+ensure_volume "telclaude-totp-data"
 
 # Vault credentials (encrypted API keys, OAuth tokens) - CRITICAL
-if docker volume inspect telclaude-vault-data >/dev/null 2>&1; then
-    echo "✓ telclaude-vault-data already exists"
-else
-    docker volume create telclaude-vault-data
-    echo "✓ Created telclaude-vault-data"
-fi
+ensure_volume "telclaude-vault-data"
 
 echo ""
 echo "Volume setup complete!"
 echo ""
 echo "⚠️  IMPORTANT: Back up these volumes regularly:"
+echo "   - telclaude-data: Relay SQLite DB, sessions, identity links, approvals"
 echo "   - telclaude-claude-auth: Claude OAuth tokens"
 echo "   - telclaude-skill-catalog: Shared installed + draft skills"
+echo "   - telclaude-hermes-skill-catalog: Private Hermes installed + draft skills"
+echo "   - telclaude-hermes-social-skill-catalog: Social Hermes installed + draft skills"
+echo "   - telclaude-google-data: Google sidecar replay store"
+echo "   - telclaude-social-memory: Social persona memory"
+echo "   - telclaude-media-outbox: Generated media awaiting delivery"
+echo "   - telclaude-whatsapp-bridge-data: WhatsApp bridge session state"
 echo "   - telclaude-totp-data: Encrypted 2FA secrets (CANNOT be recovered if lost)"
 echo "   - telclaude-vault-data: Encrypted credentials (CANNOT be recovered if lost)"
 echo ""

@@ -223,6 +223,8 @@ volumes:
   # Private Hermes catalog: relay writes, tc-hermes-contained consumes read-only.
   telclaude-hermes-skill-catalog:
     name: telclaude-hermes-skill-catalog
+    external: true
   # Social Hermes catalog: separate volume so private/operator skills cannot bleed into social.
   telclaude-hermes-social-skill-catalog:
     name: telclaude-hermes-social-skill-catalog
+    external: true
