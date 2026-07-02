@@ -10,6 +10,7 @@ type TelegramCommandCategory =
 	| "Background"
 	| "Model"
 	| "Profile"
+	| "Memory"
 	| "Providers"
 	| "Curator";
 
@@ -39,6 +40,9 @@ export type TelegramCommandId =
 	| "profile:list"
 	| "profile:show"
 	| "profile:switch"
+	| "learn"
+	| "learn:list"
+	| "learn:forget"
 	| "social"
 	| "social:queue"
 	| "social:promote"
@@ -124,6 +128,13 @@ export type TelegramHelpMatch =
 			kind: "topic";
 			topic: TelegramHelpTopic;
 	  };
+
+export type TelegramBotCommandToken = {
+	commandToken: string;
+	rawToken: string;
+	explicitTarget?: string;
+	addressedToOtherBot: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // Command definitions — hierarchical
@@ -410,6 +421,52 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		usage: "/profile switch <id>",
 		examples: ["/profile switch engineer", "/profile switch default"],
 		keywords: ["profile switch", "switch persona", "operator profile"],
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	// ── /learn ────────────────────────────────────────────────────────
+	{
+		id: "learn",
+		name: "learn",
+		domain: "learn",
+		domainDefault: true,
+		acceptsFreeformArgs: true,
+		category: "Memory",
+		description: "Store a plain fact in this chat's active profile memory.",
+		usage: "/learn <fact>",
+		examples: [
+			"/learn Aviv prefers terse status updates",
+			"/learn list",
+			"/learn forget mem-abc123",
+		],
+		keywords: ["learn", "remember", "memory", "fact", "preference"],
+		rateLimited: true,
+		menuDescription: "Save memory facts",
+	},
+	{
+		id: "learn:list",
+		name: "learn",
+		domain: "learn",
+		subcommand: "list",
+		category: "Memory",
+		description: "List recent learned facts for this chat's active profile.",
+		usage: "/learn list [category]",
+		examples: ["/learn list", "/learn list meta"],
+		keywords: ["learn list", "memory list", "recent learns"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "learn:forget",
+		name: "learn",
+		domain: "learn",
+		subcommand: "forget",
+		category: "Memory",
+		description: "Delete one learned fact from this chat's active profile memory.",
+		usage: "/learn forget <entry-id>",
+		examples: ["/learn forget mem-abc123"],
+		keywords: ["learn forget", "forget memory", "delete memory"],
 		rateLimited: true,
 		hideFromCatalog: true,
 	},
@@ -1026,6 +1083,7 @@ const CATALOG_CATEGORY_ORDER: TelegramCommandCategory[] = [
 	"Background",
 	"Curator",
 	"Model",
+	"Memory",
 	"Providers",
 ];
 
@@ -1046,6 +1104,32 @@ function normalizeLookup(value: string): string {
 function tokenize(value: string): string[] {
 	const normalized = normalizeLookup(value);
 	return normalized ? normalized.split(" ") : [];
+}
+
+function editDistance(a: string, b: string): number {
+	if (a === b) return 0;
+	if (a.length === 0) return b.length;
+	if (b.length === 0) return a.length;
+
+	const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+	const current = Array.from({ length: b.length + 1 }, () => 0);
+
+	for (let i = 1; i <= a.length; i++) {
+		current[0] = i;
+		for (let j = 1; j <= b.length; j++) {
+			const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+			current[j] = Math.min(
+				current[j - 1] + 1,
+				previous[j] + 1,
+				previous[j - 1] + substitutionCost,
+			);
+		}
+		for (let j = 0; j <= b.length; j++) {
+			previous[j] = current[j];
+		}
+	}
+
+	return previous[b.length];
 }
 
 function scoreLookup(query: string, terms: string[]): number {
@@ -1108,6 +1192,38 @@ function formatCommandDetail(command: TelegramControlCommandDefinition): string 
 		}
 	}
 	return lines.join("\n");
+}
+
+function formatPrimaryCommandTrigger(command: TelegramControlCommandDefinition): string {
+	if (command.domain && command.subcommand) {
+		return `/${command.domain} ${command.subcommand}`;
+	}
+	return `/${command.name}`;
+}
+
+function findUnknownCommandSuggestion(
+	commandToken: string,
+): TelegramControlCommandDefinition | null {
+	const normalized = normalizeLookup(commandToken);
+	if (!normalized) return null;
+
+	const candidates = TELEGRAM_CONTROL_COMMANDS.filter(
+		(command) => command.domainDefault || !command.domain,
+	);
+	const scored = candidates
+		.map((command) => {
+			const terms = [command.name, ...(command.aliases ?? []), ...(command.keywords ?? [])];
+			const lookupScore = scoreLookup(normalized, terms);
+			const bestDistance = Math.min(
+				...terms.map((term) => editDistance(normalized, normalizeLookup(term))),
+			);
+			const typoScore = bestDistance <= 2 ? 80 - bestDistance * 10 : 0;
+			return { command, score: Math.max(lookupScore, typoScore) };
+		})
+		.sort((a, b) => b.score - a.score);
+
+	const best = scored[0];
+	return best && best.score >= 40 ? best.command : null;
 }
 
 function formatTopicDetail(topic: TelegramHelpTopic): string {
@@ -1274,6 +1390,37 @@ export function isKnownDomainCommand(body: string): boolean {
 	return DOMAIN_COMMANDS.has(token);
 }
 
+export function parseTelegramBotCommandToken(
+	body: string,
+	options?: { botUsername?: string },
+): TelegramBotCommandToken | null {
+	const trimmed = body.trim();
+	const match = /^\/([a-z0-9_]+)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(trimmed);
+	if (!match) return null;
+
+	const commandToken = match[1].toLowerCase();
+	const explicitTarget = match[2]?.toLowerCase();
+	const botUsername = options?.botUsername?.toLowerCase();
+	const addressedToOtherBot = explicitTarget !== undefined && explicitTarget !== botUsername;
+
+	return {
+		commandToken,
+		rawToken: match[0],
+		...(explicitTarget ? { explicitTarget } : {}),
+		addressedToOtherBot,
+	};
+}
+
+export function formatUnknownTelegramCommandReply(commandToken: string): string {
+	const suggestion = findUnknownCommandSuggestion(commandToken);
+	const lines = [`Unknown command: /${commandToken}`];
+	if (suggestion) {
+		lines.push("", `Did you mean ${formatPrimaryCommandTrigger(suggestion)}?`);
+	}
+	lines.push("", "Use /help commands to browse the command catalog.");
+	return lines.join("\n");
+}
+
 export function isTelegramAuthExemptCommand(
 	body: string,
 	options?: { botUsername?: string },
@@ -1295,6 +1442,7 @@ export function formatTelegramHelpOverview(): string {
 		"  /sethome — Deliver scheduled replies here",
 		"  /me — Identity, link/unlink",
 		"  /auth — 2FA setup and management",
+		"  /learn — Save and manage memory facts",
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
@@ -1438,6 +1586,7 @@ export function getTelegramMenuCommands(
 		{ command: "auth", description: "Two-factor authentication" },
 		{ command: "system", description: "System introspection" },
 		{ command: "profile", description: "Operator profile" },
+		{ command: "learn", description: "Save memory facts" },
 		{ command: "sethome", description: "Home delivery target" },
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },

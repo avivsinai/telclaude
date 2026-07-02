@@ -136,6 +136,7 @@ The `hermes` group runs the steady-state no-fork and containment proofs. Most su
 | `/auth [setup\|verify\|logout\|disable\|skip]` | 2FA management |
 | `/system [sessions\|cron]` | System introspection |
 | `/profile [list\|switch <id>\|reset]` | Operator profile selection for the chat |
+| `/learn <fact>` / `/learn list [category]` / `/learn forget <id>` | Save and manage profile-scoped semantic memory facts |
 | `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
 | `/skills [drafts\|promote <name>\|reload]` | Skill management |
 | `/curator` | Review automation suggestions |
