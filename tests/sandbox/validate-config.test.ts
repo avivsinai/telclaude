@@ -156,6 +156,71 @@ TELCLAUDE_LOG_LEVEL=info
 		]);
 	});
 
+	it("keeps persistent Docker volumes external with explicit host names", () => {
+		const expectedVolumesByCompose = new Map<string, Record<string, string>>([
+			[
+				"docker/docker-compose.yml",
+				{
+					"telclaude-data": "telclaude-data",
+					"google-data": "telclaude-google-data",
+					"media-outbox": "telclaude-media-outbox",
+					"whatsapp-bridge-data": "telclaude-whatsapp-bridge-data",
+					"social-memory": "telclaude-social-memory",
+				},
+			],
+			[
+				"docker/docker-compose.deploy.yml",
+				{
+					"telclaude-data": "telclaude-data",
+					"media-outbox": "telclaude-media-outbox",
+					"whatsapp-bridge-data": "telclaude-whatsapp-bridge-data",
+					"social-memory": "telclaude-social-memory",
+				},
+			],
+			[
+				"docker/docker-compose.hermes.yml",
+				{
+					"telclaude-hermes-skill-catalog": "telclaude-hermes-skill-catalog",
+					"telclaude-hermes-social-skill-catalog": "telclaude-hermes-social-skill-catalog",
+				},
+			],
+		]);
+
+		for (const [relativePath, expectedVolumes] of expectedVolumesByCompose) {
+			const compose = fs.readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+
+			for (const [volumeKey, hostName] of Object.entries(expectedVolumes)) {
+				const block = topLevelChildBlock(compose, "volumes", volumeKey);
+				expect(block, `${relativePath} ${volumeKey}`).toContain(`name: ${hostName}`);
+				expect(block, `${relativePath} ${volumeKey}`).toContain("external: true");
+			}
+		}
+	});
+
+	it("pre-creates every external persistent volume before compose up", () => {
+		const setupVolumes = fs.readFileSync(
+			path.resolve(process.cwd(), "docker/setup-volumes.sh"),
+			"utf8",
+		);
+		const ensuredVolumeNames = [...setupVolumes.matchAll(/^ensure_volume "([^"]+)"/gm)].map(
+			(match) => match[1],
+		);
+
+		expect(ensuredVolumeNames).toEqual([
+			"telclaude-data",
+			"telclaude-claude-auth",
+			"telclaude-skill-catalog",
+			"telclaude-hermes-skill-catalog",
+			"telclaude-hermes-social-skill-catalog",
+			"telclaude-google-data",
+			"telclaude-social-memory",
+			"telclaude-media-outbox",
+			"telclaude-whatsapp-bridge-data",
+			"telclaude-totp-data",
+			"telclaude-vault-data",
+		]);
+	});
+
 	it("keeps the Hermes compose overlay raw-provider-secretless and contained", () => {
 		const composePath = path.resolve(process.cwd(), "docker/docker-compose.hermes.yml");
 		const compose = fs.readFileSync(composePath, "utf8");
@@ -589,6 +654,34 @@ function serviceBlock(compose: string, serviceName: string): string {
 		}
 	}
 	return lines.slice(start, end).join("\n");
+}
+
+function topLevelChildBlock(document: string, sectionName: string, childName: string): string {
+	const lines = document.split(/\r?\n/);
+	const sectionStart = lines.indexOf(`${sectionName}:`);
+	if (sectionStart < 0) throw new Error(`Missing top-level section ${sectionName}`);
+	let sectionEnd = lines.length;
+	for (let index = sectionStart + 1; index < lines.length; index += 1) {
+		if (/^[A-Za-z0-9_-]+:\s*$/.test(lines[index] ?? "")) {
+			sectionEnd = index;
+			break;
+		}
+	}
+
+	const childStart = lines
+		.slice(sectionStart + 1, sectionEnd)
+		.findIndex((line) => line === `  ${childName}:`);
+	if (childStart < 0) throw new Error(`Missing ${sectionName}.${childName}`);
+
+	const absoluteChildStart = sectionStart + 1 + childStart;
+	let childEnd = sectionEnd;
+	for (let index = absoluteChildStart + 1; index < sectionEnd; index += 1) {
+		if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(lines[index] ?? "")) {
+			childEnd = index;
+			break;
+		}
+	}
+	return lines.slice(absoluteChildStart, childEnd).join("\n");
 }
 
 function listValues(block: string, key: string): string[] {

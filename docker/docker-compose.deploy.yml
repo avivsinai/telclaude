@@ -380,9 +380,10 @@ volumes:
   # Main relay data: SQLite DB, sessions, identity links, approvals
   telclaude-data:
     name: telclaude-data
+    external: true
 
   # ┌─────────────────────────────────────────────────────────────────────────────┐
-  # │ CRITICAL SECRETS - External volumes (protected from accidental deletion)   │
+  # │ PERSISTENT EXTERNAL VOLUMES                                                │
   # └─────────────────────────────────────────────────────────────────────────────┘
 
   # Claude auth profile (OAuth tokens) - relay only
@@ -428,10 +429,12 @@ volumes:
 
   media-outbox:
     name: telclaude-media-outbox
+    external: true
 
   # WhatsApp bridge session state (QR/browser auth lives outside agent runtime)
   whatsapp-bridge-data:
     name: telclaude-whatsapp-bridge-data
+    external: true
 
   # Shared operator-managed skill catalog (active + draft) across all Hermes personas.
   telclaude-skill-catalog:
@@ -441,6 +444,7 @@ volumes:
   # Social shared memory (relay RW)
   social-memory:
     name: telclaude-social-memory
+    external: true
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks
