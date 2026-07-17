@@ -30,6 +30,9 @@ export type ResolvedWhatsAppHouseholdBinding = {
 	readonly replyAddress: string;
 	readonly expectedConversationKey: string;
 	readonly displayName: string;
+	readonly providerConsent?: NonNullable<
+		OperatorProfileConfig["whatsappHouseholdBindings"]
+	>[number]["providerConsent"];
 	readonly profile: EffectiveOperatorProfile;
 };
 
@@ -124,8 +127,26 @@ export function resolveWhatsAppHouseholdBinding(
 			replyAddress,
 			expectedConversationKey,
 			displayName: binding.displayName,
+			...(binding.providerConsent ? { providerConsent: { ...binding.providerConsent } } : {}),
 			profile,
 		};
+	}
+	return null;
+}
+
+export function resolveWhatsAppHouseholdBindingById(
+	bindingId: string,
+	cfg: TelclaudeConfig,
+): ResolvedWhatsAppHouseholdBinding | null {
+	const normalized = bindingId.trim();
+	if (!normalized) return null;
+	for (const profile of listOperatorProfiles(cfg)) {
+		if (profile.implicit) continue;
+		const binding = profile.whatsappHouseholdBindings?.find(
+			(candidate) => candidate.bindingId === normalized,
+		);
+		if (!binding) continue;
+		return resolveWhatsAppHouseholdBinding(binding.address, cfg);
 	}
 	return null;
 }

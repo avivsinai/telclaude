@@ -12,6 +12,7 @@ import type {
 } from "./whatsapp-inbound-cl1.js";
 
 export const WHATSAPP_PROVIDER_CHALLENGE_COPY = Object.freeze({
+	challenge_sent: "שלחנו עכשיו קוד אימות ב-SMS. שלחי כאן רק את הספרות מההודעה.",
 	challenge_type_digits: "תכתבי את המספרים בהודעה",
 	challenge_invalid_format: "שלחי רק את קוד האימות בן 4 עד 8 הספרות.",
 	challenge_success_repeat_request: "האימות הושלם. עכשיו שלחי שוב את הבקשה המקורית.",
@@ -32,7 +33,7 @@ export type WhatsAppProviderChallengeControlSender = (input: {
 export type WhatsAppProviderChallengeResponder = (input: {
 	readonly claim: PendingProviderChallengeClaim;
 	readonly code: string;
-}) => Promise<{ readonly status: "success" | "rejected" | "error" }>;
+}) => Promise<{ readonly status: "success" | "rejected" | "expired" | "error" }>;
 
 export type WhatsAppProviderChallengeInterceptResult =
 	| { readonly handled: false }
@@ -95,18 +96,22 @@ export function createWhatsAppProviderChallengeInterceptor(options: {
 			);
 		}
 
-		let status: "success" | "rejected" | "error" = "error";
+		let status: "success" | "rejected" | "expired" | "error" = "error";
 		try {
 			({ status } = await options.respondToChallenge({ claim: claimed.claim, code: otp }));
 		} catch {
 			// The one-shot claim stays spent; provider errors never re-arm or expose secrets.
 		}
-		return sendTemplate(
-			options.sendControl,
-			identity,
-			status === "success" ? "challenge_success_repeat_request" : "challenge_failed_restart",
-		);
+		return sendTemplate(options.sendControl, identity, outcomeTemplate(status));
 	};
+}
+
+function outcomeTemplate(
+	status: "success" | "rejected" | "expired" | "error",
+): WhatsAppProviderChallengeTemplateId {
+	if (status === "success") return "challenge_success_repeat_request";
+	if (status === "expired") return "challenge_expired_restart";
+	return "challenge_failed_restart";
 }
 
 export function parseWhatsAppOtp(text: string | undefined): string | null {

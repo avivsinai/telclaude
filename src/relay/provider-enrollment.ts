@@ -1,4 +1,6 @@
+import type { TelclaudeConfig } from "../config/config.js";
 import { type ExternalProviderConfig, loadConfig } from "../config/config.js";
+import { resolveWhatsAppHouseholdBindingById } from "../config/profiles.js";
 import { getChildLogger } from "../logging.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { buildRequiredProviderSidecarRelayAuthHeaders } from "./provider-sidecar-auth.js";
@@ -44,6 +46,26 @@ export type ProviderEnrollmentPollResult =
 	| { status: "failed"; error: string }
 	| { status: "expired" }
 	| { status: "error"; error: string };
+
+export function resolveHouseholdProviderEnrollmentSubject(input: {
+	readonly service: string;
+	readonly bindingId: string;
+	readonly config: TelclaudeConfig;
+}): string | null {
+	if (input.service.trim() !== "clalit") return null;
+	const binding = resolveWhatsAppHouseholdBindingById(input.bindingId, input.config);
+	const consent = binding?.providerConsent;
+	if (
+		!binding ||
+		!consent ||
+		consent.service !== "clalit" ||
+		consent.state !== "granted" ||
+		consent.revokedAt
+	) {
+		return null;
+	}
+	return binding.subjectUserId;
+}
 
 type ProviderResolution = {
 	provider: ExternalProviderConfig;
@@ -147,6 +169,7 @@ async function fetchEnrollmentSidecar(
 			method: request.method,
 			path: requestPath,
 			rawBody: request.body,
+			actorUserId: request.actorUserId,
 		})),
 	};
 

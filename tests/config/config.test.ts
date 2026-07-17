@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -316,6 +317,86 @@ describe("config defaults", () => {
 			}),
 		);
 		expect(() => loadConfig()).toThrow(/duplicate.*whatsapp|whatsapp.*duplicate/i);
+	});
+
+	it("accepts only content-free provider consent bound to the normalized channel", () => {
+		setConfigPath(configPath());
+		const address = "whatsapp:+15551234567";
+		const receipt = {
+			service: "clalit",
+			state: "granted",
+			ceremonyVersion: "phase0.v1",
+			ceremonyHash: `sha256:${"a".repeat(64)}`,
+			verifiedChannelHash: `sha256:${crypto.createHash("sha256").update(address).digest("hex")}`,
+			categories: {
+				otpRelay: true,
+				subjectOwnership: true,
+				retentionDisclosure: true,
+				emergencyUnderstanding: true,
+			},
+			recordedAt: "2026-07-17T09:00:00.000Z",
+			operatorId: "operator:phase0-admin",
+		};
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					address,
+					replyAddress: address,
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+					providerConsent: receipt,
+				},
+			],
+		};
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		expect(loadConfig().profiles[0]?.whatsappHouseholdBindings?.[0]?.providerConsent).toEqual(
+			receipt,
+		);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{
+						...profile,
+						whatsappHouseholdBindings: [
+							{
+								...profile.whatsappHouseholdBindings[0],
+								providerConsent: { ...receipt, verifiedChannelHash: `sha256:${"b".repeat(64)}` },
+							},
+						],
+					},
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/channel.*hash|hash.*channel/i);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{
+						...profile,
+						whatsappHouseholdBindings: [
+							{
+								...profile.whatsappHouseholdBindings[0],
+								providerConsent: { ...receipt, phone: "+15551234567" },
+							},
+						],
+					},
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow();
 	});
 
 	it("rejects reserved, duplicate, and unsafe operator profiles", () => {

@@ -82,6 +82,20 @@ describe("WhatsApp provider challenge interceptor", () => {
 		expect(fixture.registry.peekForInbound(fixture.binding)).toEqual({ status: "none" });
 	});
 
+	it("renders provider-side expiry distinctly after spending the claim", async () => {
+		const fixture = challengeFixture({ responseStatus: "expired" });
+		fixture.arm();
+
+		expect(
+			await fixture.intercept({
+				event: inbound({ text: "246810" }),
+				identity: fixture.identity,
+				conversation: fixture.conversation,
+			}),
+		).toEqual({ handled: true, templateId: "challenge_expired_restart" });
+		expect(fixture.registry.peekForInbound(fixture.binding)).toEqual({ status: "none" });
+	});
+
 	it("isolates a wrong household while preserving the intended parent's challenge", async () => {
 		const fixture = challengeFixture();
 		fixture.arm();
@@ -185,7 +199,7 @@ function challengeFixture(
 	options: {
 		readonly nowMs?: () => number;
 		readonly sidecarExpiresAtMs?: number;
-		readonly responseStatus?: "success" | "rejected" | "error";
+		readonly responseStatus?: "success" | "rejected" | "expired" | "error";
 	} = {},
 ) {
 	const nowMs = options.nowMs ?? (() => 100_000);

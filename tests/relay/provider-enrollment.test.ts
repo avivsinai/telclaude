@@ -26,6 +26,7 @@ vi.mock("../../src/providers/provider-validation.js", () => ({
 
 import {
 	pollProviderSessionEnrollment,
+	resolveHouseholdProviderEnrollmentSubject,
 	startProviderSessionEnrollment,
 } from "../../src/relay/provider-enrollment.js";
 
@@ -93,6 +94,10 @@ describe("provider enrollment relay client", () => {
 			.createHmac("sha256", process.env[PROVIDER_SIDECAR_HMAC_SECRET_ENV] ?? "")
 			.update(canonical)
 			.digest("base64url");
+		const expectedActorSignature = crypto
+			.createHmac("sha256", process.env[PROVIDER_SIDECAR_HMAC_SECRET_ENV] ?? "")
+			.update(`${canonical}\nACTOR\n453371121`)
+			.digest("base64url");
 
 		expect(fetchMock).toHaveBeenCalledWith(
 			"https://israel-services.test/v1/credentials/enroll-session",
@@ -104,6 +109,7 @@ describe("provider enrollment relay client", () => {
 		expect(headers["x-actor-user-id"]).toBe("453371121");
 		expect(headers["x-relay-key-id"]).toBe("v1");
 		expect(headers["x-relay-signature"]).toBe(expectedSignature);
+		expect(headers["x-relay-actor-signature"]).toBe(expectedActorSignature);
 	});
 
 	it("polls enrollment status with an empty-body HMAC", async () => {
@@ -153,5 +159,68 @@ describe("provider enrollment relay client", () => {
 
 		expect(init?.body).toBeUndefined();
 		expect(headers["x-relay-signature"]).toBe(expectedSignature);
+	});
+
+	it("resolves an explicit household subject only from a current consented binding", () => {
+		const binding = {
+			bindingId: "parent-a",
+			address: "whatsapp:+15551234567",
+			replyAddress: "whatsapp:+15551234567",
+			displayName: "Parent A",
+			subjectUserId: "household:parent-a",
+			providerConsent: {
+				service: "clalit",
+				state: "granted",
+				ceremonyVersion: "phase0.v1",
+				ceremonyHash: `sha256:${"a".repeat(64)}`,
+				verifiedChannelHash: `sha256:${crypto
+					.createHash("sha256")
+					.update("whatsapp:+15551234567")
+					.digest("hex")}`,
+				categories: {
+					otpRelay: true,
+					subjectOwnership: true,
+					retentionDisclosure: true,
+					emergencyUnderstanding: true,
+				},
+				recordedAt: "2026-07-17T09:00:00.000Z",
+				operatorId: "operator:phase0-admin",
+			},
+		};
+		const config = {
+			profiles: [
+				{
+					id: "parent-a",
+					label: "Parent A",
+					allowedSkills: [],
+					providerScopes: ["clalit"],
+					capabilityScopes: ["schedule.read", "schedule.write"],
+					outboundChannels: ["whatsapp"],
+					whatsappHouseholdBindings: [binding],
+				},
+			],
+		} as never;
+
+		expect(
+			resolveHouseholdProviderEnrollmentSubject({
+				service: "clalit",
+				bindingId: "parent-a",
+				config,
+			}),
+		).toBe("household:parent-a");
+		expect(
+			resolveHouseholdProviderEnrollmentSubject({
+				service: "poalim",
+				bindingId: "parent-a",
+				config,
+			}),
+		).toBeNull();
+		expect(
+			resolveHouseholdProviderEnrollmentSubject({
+				service: "clalit",
+				bindingId: "missing",
+				config,
+			}),
+		).toBeNull();
 	});
 });

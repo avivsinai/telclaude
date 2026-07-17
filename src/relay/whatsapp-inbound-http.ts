@@ -67,6 +67,14 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
 };
 
+let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | undefined;
+
+export function setDefaultWhatsAppInboundBridgeOptions(
+	options: WhatsAppInboundBridgeHttpOptions | null,
+): void {
+	defaultWhatsAppInboundBridgeOptions = options ?? undefined;
+}
+
 type WhatsAppInboundBridgeHttpFailure = {
 	readonly ok: false;
 	readonly status: number;
@@ -200,6 +208,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 			readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
 	  }
 	| WhatsAppInboundBridgeHttpFailure {
+	options ??= defaultWhatsAppInboundBridgeOptions;
 	const env = process.env;
 	const signatureSecret = requiredOption(
 		options?.signatureSecret ?? env[TELCLAUDE_WHATSAPP_INBOUND_SECRET_ENV],

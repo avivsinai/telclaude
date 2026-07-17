@@ -300,6 +300,7 @@ export async function proxyProviderRequest(
 			method: fetchMethod,
 			path: providerRequestPath,
 			rawBody: outgoingBody ?? "",
+			actorUserId: userId,
 		}),
 	);
 
