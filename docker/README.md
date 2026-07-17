@@ -396,6 +396,13 @@ TELCLAUDE_HERMES_MCP_RELAY_TOKEN="$(openssl rand -base64 48 | tr '+/' '-_' | tr 
 docker compose -f docker-compose.yml -f docker-compose.hermes.yml --profile whatsapp up -d --build
 ```
 
+For a long-running deployment, set `COMPOSE_PROFILES=whatsapp` in the local
+Compose `.env`. This keeps ordinary `up` and `down --remove-orphans` commands
+aware of the profile-gated bridge. A one-off bridge-free command can explicitly
+set `COMPOSE_PROFILES=`. The production workflow builds the bridge under its
+local tag, resolves the resulting `sha256:...` image ID, deploys that exact ID,
+and fails if the running container reports a different image.
+
 Set `TELCLAUDE_NETWORK_MODE=permissive` for relay-served arbitrary public fetch.
 Set `TELCLAUDE_BRAVE_SEARCH_API_KEY` or the host keychain Brave secret for
 `tc_web_search`. Generate `TELCLAUDE_WHATSAPP_BRIDGE_SECRET` with

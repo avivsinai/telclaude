@@ -217,11 +217,13 @@ jobs:
           hermes_live_mcp_admin_enabled=1
           hermes_live_mcp_additional_binds="${hermes_social_relay_ip}@telclaude-hermes-social"
           hermes_live_mcp_allowed_peers="${hermes_contained_ip},${hermes_social_ip}"
+          compose_profiles='whatsapp'
           required_internal_hosts='telclaude,google-services,tc-hermes-contained,tc-hermes-social,tc-browser'
           internal_hosts="$(normalize_internal_hosts "$internal_hosts" "$required_internal_hosts")"
           printf 'TELCLAUDE_INTERNAL_HOSTS=%s\n' "$internal_hosts" >> "$GITHUB_ENV"
-          shell_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_INTERNAL_HOSTS|TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_BROWSER_(CONTEXT_TOKEN_SECRET|COOKIE_STORE_KEY|CATASTROPHIC_DOMAINS|SUBNET|RELAY_IP|IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
-          compose_key_pattern='^(export[[:space:]]+)?(TELCLAUDE_INTERNAL_HOSTS|TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_BROWSER_(CONTEXT_TOKEN_SECRET|COOKIE_STORE_KEY|CATASTROPHIC_DOMAINS|SUBNET|RELAY_IP|IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
+          printf 'COMPOSE_PROFILES=%s\n' "$compose_profiles" >> "$GITHUB_ENV"
+          shell_key_pattern='^(export[[:space:]]+)?(COMPOSE_PROFILES|TELCLAUDE_INTERNAL_HOSTS|TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_BROWSER_(CONTEXT_TOKEN_SECRET|COOKIE_STORE_KEY|CATASTROPHIC_DOMAINS|SUBNET|RELAY_IP|IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PRIVATE_KEY|AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY|RELAY_PUBLIC_KEY))='
+          compose_key_pattern='^(export[[:space:]]+)?(COMPOSE_PROFILES|TELCLAUDE_INTERNAL_HOSTS|TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN|RELAY_SUBNET|SOCIAL_RELAY_SUBNET|RELAY_IP|SOCIAL_RELAY_IP|CONTAINED_IP|SOCIAL_IP|LIVE_MCP_ENABLED|LIVE_MCP_ADMIN_ENABLED|LIVE_MCP_HOST|LIVE_MCP_ADDITIONAL_BINDS|LIVE_MCP_ALLOWED_PEERS|SERVED_MCP_OFF_DOMAIN_PEER_IP)|TELCLAUDE_BROWSER_(CONTEXT_TOKEN_SECRET|COOKIE_STORE_KEY|CATASTROPHIC_DOMAINS|SUBNET|RELAY_IP|IP)|TELCLAUDE_WHATSAPP_(BRIDGE_SECRET|INBOUND_SECRET)|TELCLAUDE_ISRAEL_SIDECAR_HMAC_(KEY|VAULT_TARGET)|OPERATOR_RPC_(AGENT_PUBLIC_KEY|RELAY_PRIVATE_KEY))='
           grep -Ev "$shell_key_pattern" "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
@@ -249,6 +251,7 @@ jobs:
             printf 'export TELCLAUDE_BROWSER_IP=%s\n' "$browser_ip"
             printf 'export TELCLAUDE_WHATSAPP_BRIDGE_SECRET=%q\n' "$whatsapp_bridge_secret"
             printf 'export TELCLAUDE_WHATSAPP_INBOUND_SECRET=%q\n' "$whatsapp_inbound_secret"
+            printf 'export COMPOSE_PROFILES=%q\n' "$compose_profiles"
             [ -z "$israel_sidecar_hmac_key" ] || printf 'export TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY=%q\n' "$israel_sidecar_hmac_key"
             [ -z "$israel_sidecar_hmac_vault_target" ] || printf 'export TELCLAUDE_ISRAEL_SIDECAR_HMAC_VAULT_TARGET=%q\n' "$israel_sidecar_hmac_vault_target"
             printf 'export OPERATOR_RPC_AGENT_PRIVATE_KEY=%q\n' "$operator_agent_private_key"
@@ -283,6 +286,7 @@ jobs:
             printf 'TELCLAUDE_BROWSER_IP=%s\n' "$browser_ip"
             printf 'TELCLAUDE_WHATSAPP_BRIDGE_SECRET=%s\n' "$whatsapp_bridge_secret"
             printf 'TELCLAUDE_WHATSAPP_INBOUND_SECRET=%s\n' "$whatsapp_inbound_secret"
+            printf 'COMPOSE_PROFILES=%s\n' "$compose_profiles"
             [ -z "$israel_sidecar_hmac_key" ] || printf 'TELCLAUDE_ISRAEL_SIDECAR_HMAC_KEY=%s\n' "$israel_sidecar_hmac_key"
             [ -z "$israel_sidecar_hmac_vault_target" ] || printf 'TELCLAUDE_ISRAEL_SIDECAR_HMAC_VAULT_TARGET=%s\n' "$israel_sidecar_hmac_vault_target"
             printf 'OPERATOR_RPC_AGENT_PUBLIC_KEY=%s\n' "$operator_agent_public_key"
@@ -448,6 +452,9 @@ jobs:
           # checks TELCLAUDE_REVISION first, so this runtime value is authoritative
           # and immune to the Docker layer cache that left the baked .revision stale.
           export TELCLAUDE_REVISION="${GITHUB_SHA:0:7}"
+          # CI owns this local tag. Do not let a stale operator override make the
+          # build inspect or deploy an older bridge image from the Compose .env.
+          export TELCLAUDE_WHATSAPP_BRIDGE_IMAGE=telclaude-whatsapp-bridge:latest
           if ! TELCLAUDE_BUILD_BROWSER=1 ./docker/build.sh; then
             echo "Initial Docker build failed; pruning BuildKit cache and retrying once"
             docker builder prune -af || true
@@ -457,6 +464,17 @@ jobs:
           cd docker
           compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml)
           compose_profiles=(--profile whatsapp)
+          whatsapp_bridge_build_ref="$(
+            docker compose "${compose_files[@]}" "${compose_profiles[@]}" config --format json |
+              node -e 'const fs = require("node:fs"); const config = JSON.parse(fs.readFileSync(0, "utf8")); const image = config.services?.["whatsapp-bridge"]?.image; if (typeof image !== "string" || image.length === 0) process.exit(1); process.stdout.write(image);'
+          )"
+          whatsapp_bridge_image_id="$(docker image inspect --format '{{.Id}}' "$whatsapp_bridge_build_ref")"
+          if ! printf '%s\n' "$whatsapp_bridge_image_id" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "WhatsApp bridge image ID is invalid: $whatsapp_bridge_image_id" >&2
+            exit 1
+          fi
+          export TELCLAUDE_WHATSAPP_BRIDGE_IMAGE="$whatsapp_bridge_image_id"
+          echo "whatsapp_bridge_image_pin=$whatsapp_bridge_image_id source=$whatsapp_bridge_build_ref"
           redact_deploy_logs() {
             sed -E \
               -e 's/(B[e]arer )[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
@@ -510,6 +528,12 @@ jobs:
           docker restart telclaude >/dev/null
           wait_for_container_ready telclaude 180
           docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480
+          running_whatsapp_bridge_image_id="$(docker inspect --format '{{.Image}}' telclaude-whatsapp-bridge)"
+          if [ "$running_whatsapp_bridge_image_id" != "$whatsapp_bridge_image_id" ]; then
+            echo "WhatsApp bridge image proof failed: expected $whatsapp_bridge_image_id, running $running_whatsapp_bridge_image_id" >&2
+            exit 1
+          fi
+          echo "whatsapp_bridge_image_proof=ok image_id=$running_whatsapp_bridge_image_id"
 
       - name: Verify live Hermes runtime gates
         run: |

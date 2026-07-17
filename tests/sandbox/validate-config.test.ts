@@ -511,6 +511,11 @@ TELCLAUDE_LOG_LEVEL=info
 		] as const;
 		const shellPattern = step.match(/shell_key_pattern='([^']+)'/)?.[1] ?? "";
 		const composePattern = step.match(/compose_key_pattern='([^']+)'/)?.[1] ?? "";
+		expect(step).toContain("compose_profiles='whatsapp'");
+		expect(shellPattern).toContain("COMPOSE_PROFILES");
+		expect(composePattern).toContain("COMPOSE_PROFILES");
+		expect(step).toContain('printf \'export COMPOSE_PROFILES=%q\\n\' "$compose_profiles"');
+		expect(step).toContain('printf \'COMPOSE_PROFILES=%s\\n\' "$compose_profiles"');
 
 		for (const [key, variable] of required) {
 			const suffix = key.replace("TELCLAUDE_HERMES_", "");
@@ -550,6 +555,14 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(hookStep).toContain("compose_profiles=(--profile whatsapp)");
 		expect(hookStep).toContain("telclaude-whatsapp-bridge");
 		expect(hookStep).toContain('docker compose "${compose_files[@]}" "${compose_profiles[@]}" ps');
+		expect(deployStep).toContain(
+			"export TELCLAUDE_WHATSAPP_BRIDGE_IMAGE=telclaude-whatsapp-bridge:latest",
+		);
+		expect(
+			deployStep.indexOf(
+				"export TELCLAUDE_WHATSAPP_BRIDGE_IMAGE=telclaude-whatsapp-bridge:latest",
+			),
+		).toBeLessThan(deployStep.indexOf("./docker/build.sh"));
 		expect(deployStep).toContain("compose_profiles=(--profile whatsapp)");
 		expect(deployStep).toContain("telclaude-whatsapp-bridge");
 		expect(deployStep).toContain(
@@ -558,6 +571,22 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(deployStep).toContain(
 			'docker compose "${compose_files[@]}" "${compose_profiles[@]}" up -d --remove-orphans --wait --wait-timeout 480',
 		);
+		expect(deployStep).toContain('whatsapp_bridge_build_ref="$(');
+		expect(deployStep).toContain("config --format json");
+		expect(deployStep).toContain(
+			'docker image inspect --format \'{{.Id}}\' "$whatsapp_bridge_build_ref"',
+		);
+		expect(deployStep).toContain(
+			'export TELCLAUDE_WHATSAPP_BRIDGE_IMAGE="$whatsapp_bridge_image_id"',
+		);
+		expect(deployStep).toContain(
+			'running_whatsapp_bridge_image_id="$(docker inspect --format \'{{.Image}}\' telclaude-whatsapp-bridge)"',
+		);
+		expect(deployStep).toContain(
+			'if [ "$running_whatsapp_bridge_image_id" != "$whatsapp_bridge_image_id" ]; then',
+		);
+		expect(deployStep).toContain("WhatsApp bridge image proof failed");
+		expect(deployStep).toContain("whatsapp_bridge_image_proof=ok");
 	});
 
 	it("repairs William reminder capability scopes before deploy", () => {
