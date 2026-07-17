@@ -24,8 +24,25 @@ export interface SecretPattern {
 	pattern: RegExp;
 	severity: "critical" | "high";
 	description: string;
+	/** Optional semantic validator for regex candidates (for example, checksums). */
+	validate?: (match: string) => boolean;
+	/** Never retain prefix/suffix characters in FilterMatch.redactedMatch. */
+	redactMatchCompletely?: boolean;
 	/** If true, this is a CORE pattern that cannot be removed */
 	core?: boolean;
+}
+
+function isChecksumValidIsraeliId(value: string): boolean {
+	if (!/^[0-9]{9}$/.test(value) || value === "000000000") {
+		return false;
+	}
+
+	const checksum = [...value].reduce((sum, digit, index) => {
+		const product = Number(digit) * (index % 2 === 0 ? 1 : 2);
+		return sum + (product > 9 ? product - 9 : product);
+	}, 0);
+
+	return checksum % 10 === 0;
 }
 
 /**
@@ -92,6 +109,25 @@ export const CORE_SECRET_PATTERNS: SecretPattern[] = [
 		pattern: /\b[A-Z2-7]{32,}\b/,
 		severity: "critical",
 		description: "TOTP seed - would allow 2FA bypass",
+		core: true,
+	},
+	{
+		name: "otp_code",
+		// Short numeric codes are sensitive only when anchored to explicit OTP/code context.
+		pattern:
+			/(?:(?<![A-Za-z])(?:otp|code)(?![A-Za-z])|(?<!\p{L})[בלשומכ]?ש?ה?קוד(?!\p{L}))\D{0,10}[0-9]{4,8}(?![0-9])/iu,
+		severity: "high",
+		description: "Provider OTP code - short-lived authentication secret",
+		redactMatchCompletely: true,
+		core: true,
+	},
+	{
+		name: "israeli_id",
+		pattern: /(?<![0-9])[0-9]{9}(?![0-9])/,
+		severity: "high",
+		description: "Checksum-valid Israeli identity number",
+		validate: isChecksumValidIsraeliId,
+		redactMatchCompletely: true,
 		core: true,
 	},
 
@@ -218,11 +254,20 @@ const COMPILED_GLOBAL_PATTERNS: RegExp[] = SECRET_PATTERNS.map(({ pattern }) => 
 	return new RegExp(pattern.source, flags);
 });
 
+function isAcceptedSecretMatch(secretPattern: SecretPattern, match: string): boolean {
+	if (secretPattern.validate && !secretPattern.validate(match)) {
+		return false;
+	}
+
+	// Avoid flagging low-entropy base32-looking prose as a TOTP seed.
+	return secretPattern.name !== "totp_seed" || calculateEntropy(match) >= TOTP_ENTROPY_THRESHOLD;
+}
+
 export interface FilterMatch {
 	pattern: string;
 	severity: "critical" | "high";
 	description: string;
-	/** Redacted match for safe logging (first 4 + last 4 chars) */
+	/** Redacted match for safe logging; sensitive patterns may suppress all characters. */
 	redactedMatch: string;
 }
 
@@ -256,17 +301,13 @@ export function redactSecrets(text: string): string {
 	let result = text;
 
 	for (let i = 0; i < SECRET_PATTERNS.length; i++) {
-		const { name } = SECRET_PATTERNS[i];
+		const secretPattern = SECRET_PATTERNS[i];
+		const { name } = secretPattern;
 		const regex = COMPILED_GLOBAL_PATTERNS[i];
 		regex.lastIndex = 0;
-		if (name === "totp_seed") {
-			// Avoid redacting low-entropy base32-looking text (reduces false positives)
-			result = result.replace(regex, (m) =>
-				calculateEntropy(m) >= TOTP_ENTROPY_THRESHOLD ? `[REDACTED:${name}]` : m,
-			);
-		} else {
-			result = result.replace(regex, `[REDACTED:${name}]`);
-		}
+		result = result.replace(regex, (match) =>
+			isAcceptedSecretMatch(secretPattern, match) ? `[REDACTED:${name}]` : match,
+		);
 	}
 
 	return result;
@@ -280,20 +321,20 @@ function scanPlainText(text: string): FilterMatch[] {
 	const matches: FilterMatch[] = [];
 
 	for (let i = 0; i < SECRET_PATTERNS.length; i++) {
-		const { name, severity, description } = SECRET_PATTERNS[i];
+		const secretPattern = SECRET_PATTERNS[i];
+		const { name, severity, description } = secretPattern;
 		const regex = COMPILED_GLOBAL_PATTERNS[i];
 		regex.lastIndex = 0;
 
 		for (let match = regex.exec(text); match !== null; match = regex.exec(text)) {
-			// Reduce false positives for base32-like TOTP seeds by checking entropy
-			if (name === "totp_seed" && calculateEntropy(match[0]) < TOTP_ENTROPY_THRESHOLD) {
+			if (!isAcceptedSecretMatch(secretPattern, match[0])) {
 				continue;
 			}
 			matches.push({
 				pattern: name,
 				severity,
 				description,
-				redactedMatch: redact(match[0]),
+				redactedMatch: secretPattern.redactMatchCompletely ? "[REDACTED]" : redact(match[0]),
 			});
 
 			// Prevent infinite loop for zero-length matches
