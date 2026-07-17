@@ -1,0 +1,1008 @@
+import crypto from "node:crypto";
+import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import { getDb } from "../storage/db.js";
+import { validateJerusalemOneShotSchedule } from "./time.js";
+import type {
+	HouseholdReminder,
+	HouseholdReminderAuthority,
+	HouseholdReminderBinding,
+	HouseholdReminderConsentReceipt,
+	HouseholdReminderFire,
+	HouseholdReminderOneShotSchedule,
+	HouseholdReminderProposal,
+	HouseholdReminderProposalAction,
+	HouseholdReminderSource,
+	Sha256Ref,
+} from "./types.js";
+
+const DEFAULT_PROPOSAL_TTL_MS = 10 * 60 * 1_000;
+const SHA256_REF_RE = /^sha256:[a-f0-9]{64}$/;
+
+type ReminderPayload = {
+	readonly text: string;
+	readonly label?: string;
+	readonly source: HouseholdReminderSource;
+	readonly schedule: HouseholdReminderOneShotSchedule;
+	readonly contentHash: Sha256Ref;
+	readonly scheduleHash: Sha256Ref;
+};
+
+type ReminderRow = {
+	id: string;
+	revision: number;
+	actor_id: string;
+	subject_user_id: string;
+	profile_id: string;
+	binding_id: string;
+	conversation_id: string;
+	sender_principal_hash: string;
+	recipient_principal_hash: string;
+	binding_fingerprint: string;
+	consent_hash: string;
+	text: string;
+	label: string | null;
+	locale: "he-IL";
+	source_kind: "parent" | "clalit-appointment";
+	source_observation_hash: string | null;
+	time_zone: "Asia/Jerusalem";
+	local_date_time: string;
+	resolved_at_ms: number;
+	resolved_at: string;
+	offset_minutes: number;
+	content_hash: string;
+	schedule_hash: string;
+	status: HouseholdReminder["status"];
+	confirmed_at_ms: number | null;
+	created_at_ms: number;
+	updated_at_ms: number;
+};
+
+type ProposalRow = {
+	ref: string;
+	action: HouseholdReminderProposalAction;
+	reminder_id: string;
+	base_revision: number;
+	proposed_revision: number;
+	actor_id: string;
+	subject_user_id: string;
+	profile_id: string;
+	binding_id: string;
+	conversation_id: string;
+	sender_principal_hash: string;
+	recipient_principal_hash: string;
+	binding_fingerprint: string;
+	consent_hash: string;
+	proposal_hash: string;
+	proposed_payload_json: string | null;
+	status: HouseholdReminderProposal["status"];
+	created_at_ms: number;
+	expires_at_ms: number;
+};
+
+type FireRow = {
+	fire_id: string;
+	reminder_id: string;
+	revision: number;
+	scheduled_for_ms: number;
+	state: HouseholdReminderFire["state"];
+	attempt_count: number;
+	lease_expires_at_ms: number | null;
+	outbound_ref: string | null;
+	edge_prepared_hash: string | null;
+	idempotency_key: string | null;
+	whatsapp_message_id: string | null;
+	receipt_status: string | null;
+	platform_message_id_hash: string | null;
+	failure_class: string | null;
+	created_at_ms: number;
+	updated_at_ms: number;
+};
+
+export type HouseholdReminderProposalResolution =
+	| { readonly ok: true; readonly reminder: HouseholdReminder }
+	| {
+			readonly ok: false;
+			readonly code:
+				| "proposal_not_found"
+				| "proposal_expired"
+				| "binding_changed"
+				| "consent_changed"
+				| "invalid_state";
+	  };
+
+export function householdReminderBindingFingerprint(binding: HouseholdReminderBinding): Sha256Ref {
+	const normalized = normalizeBinding(binding);
+	return canonicalSha256({
+		domain: "telclaude.household-reminder-binding.v1",
+		...normalized,
+	});
+}
+
+export function householdReminderConsentHash(consent: HouseholdReminderConsentReceipt): Sha256Ref {
+	return canonicalSha256({
+		domain: "telclaude.household-reminder-consent.v1",
+		...normalizeConsent(consent),
+	});
+}
+
+export function prepareHouseholdReminderCreate(input: {
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly text: string;
+	readonly label?: string;
+	readonly source: HouseholdReminderSource;
+	readonly schedule: HouseholdReminderOneShotSchedule;
+	readonly nowMs?: number;
+	readonly proposalTtlMs?: number;
+}): { readonly reminder: HouseholdReminder; readonly proposal: HouseholdReminderProposal } {
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const nowMs = normalizeNow(input.nowMs);
+	const payload = normalizePayload({ ...input, nowMs });
+	const reminderId = `reminder-${crypto.randomUUID()}`;
+	const bindingFingerprint = householdReminderBindingFingerprint(binding);
+	const proposal = makeProposal({
+		action: "create",
+		reminderId,
+		baseRevision: 1,
+		proposedRevision: 1,
+		authority,
+		binding,
+		bindingFingerprint,
+		consentHash,
+		payload,
+		nowMs,
+		proposalTtlMs: input.proposalTtlMs,
+	});
+
+	const db = getDb();
+	db.transaction(() => {
+		insertReminder({
+			id: reminderId,
+			revision: 1,
+			authority,
+			binding,
+			bindingFingerprint,
+			consentHash,
+			payload,
+			status: "pending_confirmation",
+			createdAtMs: nowMs,
+			updatedAtMs: nowMs,
+		});
+		insertProposal(proposal, payload);
+	})();
+
+	return {
+		reminder: requireReminder(reminderId, 1),
+		proposal,
+	};
+}
+
+export function prepareHouseholdReminderUpdate(input: {
+	readonly reminderId: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly text: string;
+	readonly label?: string;
+	readonly schedule: HouseholdReminderOneShotSchedule;
+	readonly nowMs?: number;
+	readonly proposalTtlMs?: number;
+}): { readonly reminder: HouseholdReminder; readonly proposal: HouseholdReminderProposal } {
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const current = getHouseholdReminderForAuthority(input.reminderId, authority);
+	if (current?.status !== "scheduled") throw new Error("household reminder not found");
+	assertCurrentBinding(current, binding);
+	const nowMs = normalizeNow(input.nowMs);
+	const payload = normalizePayload({
+		text: input.text,
+		label: input.label,
+		source: current.source,
+		schedule: input.schedule,
+		nowMs,
+	});
+	const proposal = makeProposal({
+		action: "update",
+		reminderId: current.id,
+		baseRevision: current.revision,
+		proposedRevision: current.revision + 1,
+		authority,
+		binding,
+		bindingFingerprint: current.bindingFingerprint,
+		consentHash,
+		payload,
+		nowMs,
+		proposalTtlMs: input.proposalTtlMs,
+	});
+
+	getDb().transaction(() => {
+		insertProposal(proposal, payload);
+		if (
+			!setReminderStatus(current.id, current.revision, "scheduled", "paused_confirmation", nowMs)
+		) {
+			throw new Error("household reminder changed while preparing update");
+		}
+	})();
+	return { reminder: requireReminder(current.id, current.revision), proposal };
+}
+
+export function prepareHouseholdReminderCancellation(input: {
+	readonly reminderId: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly nowMs?: number;
+	readonly proposalTtlMs?: number;
+}): { readonly reminder: HouseholdReminder; readonly proposal: HouseholdReminderProposal } {
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const current = getHouseholdReminderForAuthority(input.reminderId, authority);
+	if (current?.status !== "scheduled") throw new Error("household reminder not found");
+	assertCurrentBinding(current, binding);
+	const nowMs = normalizeNow(input.nowMs);
+	const proposal = makeProposal({
+		action: "cancel",
+		reminderId: current.id,
+		baseRevision: current.revision,
+		proposedRevision: current.revision,
+		authority,
+		binding,
+		bindingFingerprint: current.bindingFingerprint,
+		consentHash,
+		payload: null,
+		nowMs,
+		proposalTtlMs: input.proposalTtlMs,
+	});
+
+	getDb().transaction(() => {
+		insertProposal(proposal, null);
+		if (
+			!setReminderStatus(current.id, current.revision, "scheduled", "paused_confirmation", nowMs)
+		) {
+			throw new Error("household reminder changed while preparing cancellation");
+		}
+	})();
+	return { reminder: requireReminder(current.id, current.revision), proposal };
+}
+
+export function confirmHouseholdReminderProposal(input: {
+	readonly proposalRef: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly nowMs?: number;
+}): HouseholdReminderProposalResolution {
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const nowMs = normalizeNow(input.nowMs);
+	const db = getDb();
+	return db.transaction(() => {
+		const row = findPendingProposal(input.proposalRef, authority);
+		if (!row) return { ok: false as const, code: "proposal_not_found" as const };
+		const verifiedProposal = verifyProposalPayload(row);
+		if (!verifiedProposal.ok) return { ok: false as const, code: "invalid_state" as const };
+		if (
+			verifiedProposal.payload &&
+			!isScheduleWithinWindow(verifiedProposal.payload.schedule, nowMs)
+		) {
+			return { ok: false as const, code: "invalid_state" as const };
+		}
+		if (householdReminderBindingFingerprint(binding) !== row.binding_fingerprint) {
+			return { ok: false as const, code: "binding_changed" as const };
+		}
+		if (consentHash !== row.consent_hash) {
+			return { ok: false as const, code: "consent_changed" as const };
+		}
+		if (row.expires_at_ms < nowMs) {
+			if (!expireProposal(row, nowMs)) {
+				return { ok: false as const, code: "invalid_state" as const };
+			}
+			return { ok: false as const, code: "proposal_expired" as const };
+		}
+
+		let reminder: HouseholdReminder;
+		if (row.action === "create") {
+			const current = getReminderRevision(row.reminder_id, row.base_revision);
+			if (
+				!current ||
+				!verifiedProposal.payload ||
+				current.contentHash !== verifiedProposal.payload.contentHash ||
+				current.scheduleHash !== verifiedProposal.payload.scheduleHash ||
+				current.bindingFingerprint !== row.binding_fingerprint ||
+				current.consentHash !== row.consent_hash ||
+				!setReminderStatus(
+					row.reminder_id,
+					row.base_revision,
+					"pending_confirmation",
+					"scheduled",
+					nowMs,
+					nowMs,
+				)
+			) {
+				return { ok: false as const, code: "invalid_state" as const };
+			}
+			reminder = requireReminder(row.reminder_id, row.base_revision);
+		} else if (row.action === "update") {
+			const current = getReminderRevision(row.reminder_id, row.base_revision);
+			const payload = verifiedProposal.payload;
+			if (
+				!current ||
+				!payload ||
+				!setReminderStatus(
+					row.reminder_id,
+					row.base_revision,
+					"paused_confirmation",
+					"superseded",
+					nowMs,
+				)
+			) {
+				return { ok: false as const, code: "invalid_state" as const };
+			}
+			insertReminder({
+				id: current.id,
+				revision: row.proposed_revision,
+				authority: current.authority,
+				binding: current.binding,
+				bindingFingerprint: current.bindingFingerprint,
+				consentHash: row.consent_hash as Sha256Ref,
+				payload,
+				status: "scheduled",
+				confirmedAtMs: nowMs,
+				createdAtMs: current.createdAtMs,
+				updatedAtMs: nowMs,
+			});
+			reminder = requireReminder(row.reminder_id, row.proposed_revision);
+		} else {
+			if (
+				!setReminderStatus(
+					row.reminder_id,
+					row.base_revision,
+					"paused_confirmation",
+					"cancelled",
+					nowMs,
+				)
+			) {
+				return { ok: false as const, code: "invalid_state" as const };
+			}
+			reminder = requireReminder(row.reminder_id, row.base_revision);
+		}
+		resolveProposal(row.ref, "confirmed", nowMs);
+		return { ok: true as const, reminder };
+	})();
+}
+
+export function rejectHouseholdReminderProposal(input: {
+	readonly proposalRef: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly nowMs?: number;
+}): HouseholdReminderProposalResolution {
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const nowMs = normalizeNow(input.nowMs);
+	return getDb().transaction(() => {
+		const row = findPendingProposal(input.proposalRef, authority);
+		if (!row) return { ok: false as const, code: "proposal_not_found" as const };
+		if (!verifyProposalPayload(row).ok) {
+			return { ok: false as const, code: "invalid_state" as const };
+		}
+		if (householdReminderBindingFingerprint(binding) !== row.binding_fingerprint) {
+			return { ok: false as const, code: "binding_changed" as const };
+		}
+		if (consentHash !== row.consent_hash) {
+			return { ok: false as const, code: "consent_changed" as const };
+		}
+		if (row.expires_at_ms < nowMs) {
+			if (!expireProposal(row, nowMs)) {
+				return { ok: false as const, code: "invalid_state" as const };
+			}
+			return { ok: false as const, code: "proposal_expired" as const };
+		}
+		const restoredStatus = row.action === "create" ? "cancelled" : "scheduled";
+		const expectedStatus = row.action === "create" ? "pending_confirmation" : "paused_confirmation";
+		if (
+			!setReminderStatus(row.reminder_id, row.base_revision, expectedStatus, restoredStatus, nowMs)
+		) {
+			return { ok: false as const, code: "invalid_state" as const };
+		}
+		resolveProposal(row.ref, "rejected", nowMs);
+		return {
+			ok: true as const,
+			reminder: requireReminder(row.reminder_id, row.base_revision),
+		};
+	})();
+}
+
+export function getHouseholdReminderForAuthority(
+	reminderId: string,
+	authorityInput: HouseholdReminderAuthority,
+): HouseholdReminder | null {
+	const authority = normalizeAuthority(authorityInput);
+	const row = getDb()
+		.prepare(
+			`SELECT * FROM household_reminders
+			 WHERE id = ? AND actor_id = ? AND subject_user_id = ? AND profile_id = ?
+			 ORDER BY revision DESC LIMIT 1`,
+		)
+		.get(
+			nonEmpty(reminderId, "reminderId"),
+			authority.actorId,
+			authority.subjectUserId,
+			authority.profileId,
+		) as ReminderRow | undefined;
+	return row ? rowToReminder(row) : null;
+}
+
+export function listHouseholdReminders(
+	authorityInput: HouseholdReminderAuthority,
+): HouseholdReminder[] {
+	const authority = normalizeAuthority(authorityInput);
+	const rows = getDb()
+		.prepare(
+			`SELECT r.*
+			 FROM household_reminders r
+			 JOIN (
+				 SELECT id, MAX(revision) AS revision
+				 FROM household_reminders
+				 WHERE actor_id = ? AND subject_user_id = ? AND profile_id = ?
+				 GROUP BY id
+			 ) latest ON latest.id = r.id AND latest.revision = r.revision
+			 ORDER BY r.created_at_ms DESC`,
+		)
+		.all(authority.actorId, authority.subjectUserId, authority.profileId) as ReminderRow[];
+	return rows.map(rowToReminder);
+}
+
+export function claimHouseholdReminderFire(input: {
+	readonly reminderId: string;
+	readonly revision: number;
+	readonly scheduledForMs: number;
+	readonly nowMs?: number;
+}): { readonly created: boolean; readonly fire: HouseholdReminderFire } {
+	const reminderId = nonEmpty(input.reminderId, "reminderId");
+	const revision = positiveInt(input.revision, "revision");
+	const scheduledForMs = timestamp(input.scheduledForMs, "scheduledForMs");
+	const nowMs = normalizeNow(input.nowMs);
+	const db = getDb();
+	return db.transaction(() => {
+		const reminder = getReminderRevision(reminderId, revision);
+		if (reminder?.status !== "scheduled" || reminder.schedule.resolvedAtMs !== scheduledForMs) {
+			throw new Error("household reminder occurrence is not schedulable");
+		}
+		const fireId = `reminder-fire-${canonicalSha256({
+			domain: "telclaude.household-reminder-fire.v1",
+			reminderId,
+			revision,
+			scheduledForMs,
+		}).slice("sha256:".length, "sha256:".length + 32)}`;
+		const result = db
+			.prepare(
+				`INSERT OR IGNORE INTO household_reminder_fires (
+				 fire_id, reminder_id, revision, scheduled_for_ms, state,
+				 attempt_count, created_at_ms, updated_at_ms
+				) VALUES (?, ?, ?, ?, 'claimed', 1, ?, ?)`,
+			)
+			.run(fireId, reminderId, revision, scheduledForMs, nowMs, nowMs);
+		const row = db
+			.prepare(
+				`SELECT * FROM household_reminder_fires
+				 WHERE reminder_id = ? AND revision = ? AND scheduled_for_ms = ?`,
+			)
+			.get(reminderId, revision, scheduledForMs) as FireRow;
+		return { created: result.changes === 1, fire: rowToFire(row) };
+	})();
+}
+
+function makeProposal(input: {
+	action: HouseholdReminderProposalAction;
+	reminderId: string;
+	baseRevision: number;
+	proposedRevision: number;
+	authority: HouseholdReminderAuthority;
+	binding: HouseholdReminderBinding;
+	bindingFingerprint: Sha256Ref;
+	consentHash: Sha256Ref;
+	payload: ReminderPayload | null;
+	nowMs: number;
+	proposalTtlMs?: number;
+}): HouseholdReminderProposal {
+	const ttlMs = positiveInt(input.proposalTtlMs ?? DEFAULT_PROPOSAL_TTL_MS, "proposalTtlMs");
+	const proposalHash = canonicalSha256({
+		domain: "telclaude.household-reminder-proposal.v1",
+		action: input.action,
+		reminderId: input.reminderId,
+		baseRevision: input.baseRevision,
+		proposedRevision: input.proposedRevision,
+		authority: input.authority,
+		bindingFingerprint: input.bindingFingerprint,
+		consentHash: input.consentHash,
+		payload: input.payload,
+	});
+	return {
+		ref: `reminder-proposal-${crypto.randomUUID()}`,
+		action: input.action,
+		reminderId: input.reminderId,
+		baseRevision: input.baseRevision,
+		proposedRevision: input.proposedRevision,
+		authority: input.authority,
+		binding: input.binding,
+		bindingFingerprint: input.bindingFingerprint,
+		consentHash: input.consentHash,
+		proposalHash,
+		status: "pending",
+		createdAtMs: input.nowMs,
+		expiresAtMs: input.nowMs + ttlMs,
+	};
+}
+
+function insertProposal(
+	proposal: HouseholdReminderProposal,
+	payload: ReminderPayload | null,
+): void {
+	const pending = getDb()
+		.prepare(
+			"SELECT 1 FROM household_reminder_proposals WHERE conversation_id = ? AND status = 'pending'",
+		)
+		.get(proposal.binding.conversationId);
+	if (pending) throw new Error("household reminder confirmation is already pending");
+	getDb()
+		.prepare(
+			`INSERT INTO household_reminder_proposals (
+			 ref, action, reminder_id, base_revision, proposed_revision,
+			 actor_id, subject_user_id, profile_id,
+			 binding_id, conversation_id, sender_principal_hash, recipient_principal_hash,
+			 binding_fingerprint, consent_hash, proposal_hash, proposed_payload_json,
+			 status, created_at_ms, expires_at_ms
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+		)
+		.run(
+			proposal.ref,
+			proposal.action,
+			proposal.reminderId,
+			proposal.baseRevision,
+			proposal.proposedRevision,
+			proposal.authority.actorId,
+			proposal.authority.subjectUserId,
+			proposal.authority.profileId,
+			proposal.binding.bindingId,
+			proposal.binding.conversationId,
+			proposal.binding.senderPrincipalHash,
+			proposal.binding.recipientPrincipalHash,
+			proposal.bindingFingerprint,
+			proposal.consentHash,
+			proposal.proposalHash,
+			payload ? JSON.stringify(sortKeysDeep(payload)) : null,
+			proposal.createdAtMs,
+			proposal.expiresAtMs,
+		);
+}
+
+function insertReminder(input: {
+	id: string;
+	revision: number;
+	authority: HouseholdReminderAuthority;
+	binding: HouseholdReminderBinding;
+	bindingFingerprint: Sha256Ref;
+	consentHash: Sha256Ref;
+	payload: ReminderPayload;
+	status: HouseholdReminder["status"];
+	confirmedAtMs?: number;
+	createdAtMs: number;
+	updatedAtMs: number;
+}): void {
+	getDb()
+		.prepare(
+			`INSERT INTO household_reminders (
+			 id, revision, actor_id, subject_user_id, profile_id,
+			 binding_id, conversation_id, sender_principal_hash, recipient_principal_hash,
+			 binding_fingerprint, consent_hash, text, label, locale, source_kind, source_observation_hash,
+			 time_zone, local_date_time, resolved_at_ms, resolved_at, offset_minutes,
+			 content_hash, schedule_hash, status, confirmed_at_ms, created_at_ms, updated_at_ms
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'he-IL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.run(
+			input.id,
+			input.revision,
+			input.authority.actorId,
+			input.authority.subjectUserId,
+			input.authority.profileId,
+			input.binding.bindingId,
+			input.binding.conversationId,
+			input.binding.senderPrincipalHash,
+			input.binding.recipientPrincipalHash,
+			input.bindingFingerprint,
+			input.consentHash,
+			input.payload.text,
+			input.payload.label ?? null,
+			input.payload.source.kind,
+			input.payload.source.kind === "clalit-appointment"
+				? input.payload.source.observationHash
+				: null,
+			input.payload.schedule.timeZone,
+			input.payload.schedule.localDateTime,
+			input.payload.schedule.resolvedAtMs,
+			input.payload.schedule.resolvedAt,
+			input.payload.schedule.offsetMinutes,
+			input.payload.contentHash,
+			input.payload.scheduleHash,
+			input.status,
+			input.confirmedAtMs ?? null,
+			input.createdAtMs,
+			input.updatedAtMs,
+		);
+}
+
+function normalizePayload(input: {
+	text: string;
+	label?: string;
+	source: HouseholdReminderSource;
+	schedule: HouseholdReminderOneShotSchedule;
+	nowMs?: number;
+}): ReminderPayload {
+	const text = normalizeReminderText(input.text);
+	const label = input.label ? normalizeLabel(input.label) : undefined;
+	const source = normalizeSource(input.source);
+	const schedule = normalizeSchedule(input.schedule, input.nowMs);
+	return {
+		text,
+		...(label ? { label } : {}),
+		source,
+		schedule,
+		contentHash: canonicalSha256({
+			domain: "telclaude.household-reminder-content.v1",
+			text,
+			label: label ?? null,
+			source,
+		}),
+		scheduleHash: canonicalSha256({
+			domain: "telclaude.household-reminder-schedule.v1",
+			...schedule,
+		}),
+	};
+}
+
+export function normalizeReminderText(value: string): string {
+	const normalized = value
+		.normalize("NFC")
+		.replace(/\r\n?/g, "\n")
+		.split("")
+		.filter((character) => {
+			const codePoint = character.codePointAt(0) ?? 0;
+			return codePoint === 9 || codePoint === 10 || (codePoint >= 32 && codePoint !== 127);
+		})
+		.join("")
+		.split("\n")
+		.map((line) => line.replace(/[\t ]+/g, " ").trim())
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+	if (!normalized) throw new Error("household reminder text is required");
+	if (normalized.length > 500) throw new Error("household reminder text exceeds 500 characters");
+	return normalized;
+}
+
+function normalizeLabel(value: string): string {
+	const label = value.normalize("NFC").replace(/\s+/g, " ").trim();
+	if (!label || label.length > 80) throw new Error("household reminder label is invalid");
+	return label;
+}
+
+function normalizeSource(source: HouseholdReminderSource): HouseholdReminderSource {
+	if (source.kind === "parent") return { kind: "parent" };
+	return { kind: "clalit-appointment", observationHash: sha256Ref(source.observationHash) };
+}
+
+function normalizeSchedule(
+	schedule: HouseholdReminderOneShotSchedule,
+	nowMs?: number,
+): HouseholdReminderOneShotSchedule {
+	validateJerusalemOneShotSchedule(schedule, nowMs === undefined ? {} : { nowMs });
+	const resolvedAtMs = timestamp(schedule.resolvedAtMs, "resolvedAtMs");
+	return {
+		timeZone: "Asia/Jerusalem",
+		localDateTime: nonEmpty(schedule.localDateTime, "localDateTime"),
+		resolvedAtMs,
+		resolvedAt: schedule.resolvedAt,
+		offsetMinutes: schedule.offsetMinutes,
+	};
+}
+
+function normalizeAuthority(authority: HouseholdReminderAuthority): HouseholdReminderAuthority {
+	return {
+		actorId: nonEmpty(authority.actorId, "actorId"),
+		subjectUserId: nonEmpty(authority.subjectUserId, "subjectUserId"),
+		profileId: nonEmpty(authority.profileId, "profileId"),
+	};
+}
+
+function normalizeContext(input: {
+	authority: HouseholdReminderAuthority;
+	binding: HouseholdReminderBinding;
+	consent: HouseholdReminderConsentReceipt;
+}): {
+	authority: HouseholdReminderAuthority;
+	binding: HouseholdReminderBinding;
+	consentHash: Sha256Ref;
+} {
+	const authority = normalizeAuthority(input.authority);
+	const binding = normalizeBinding(input.binding);
+	const consent = normalizeConsent(input.consent);
+	if (consent.verifiedChannelHash !== binding.senderPrincipalHash) {
+		throw new Error("household reminder consent does not match the bound channel");
+	}
+	return {
+		authority,
+		binding,
+		consentHash: householdReminderConsentHash(consent),
+	};
+}
+
+function normalizeBinding(binding: HouseholdReminderBinding): HouseholdReminderBinding {
+	const senderPrincipalHash = sha256Ref(binding.senderPrincipalHash);
+	const recipientPrincipalHash = sha256Ref(binding.recipientPrincipalHash);
+	if (senderPrincipalHash !== recipientPrincipalHash) {
+		throw new Error("household reminder binding recipient must match the bound sender");
+	}
+	return {
+		bindingId: nonEmpty(binding.bindingId, "bindingId"),
+		conversationId: nonEmpty(binding.conversationId, "conversationId"),
+		senderPrincipalHash,
+		recipientPrincipalHash,
+	};
+}
+
+function rowToReminder(row: ReminderRow): HouseholdReminder {
+	return {
+		id: row.id,
+		revision: row.revision,
+		authority: {
+			actorId: row.actor_id,
+			subjectUserId: row.subject_user_id,
+			profileId: row.profile_id,
+		},
+		binding: {
+			bindingId: row.binding_id,
+			conversationId: row.conversation_id,
+			senderPrincipalHash: sha256Ref(row.sender_principal_hash),
+			recipientPrincipalHash: sha256Ref(row.recipient_principal_hash),
+		},
+		bindingFingerprint: sha256Ref(row.binding_fingerprint),
+		consentHash: sha256Ref(row.consent_hash),
+		text: row.text,
+		...(row.label ? { label: row.label } : {}),
+		locale: row.locale,
+		source:
+			row.source_kind === "parent"
+				? { kind: "parent" }
+				: {
+						kind: "clalit-appointment",
+						observationHash: sha256Ref(row.source_observation_hash ?? ""),
+					},
+		schedule: {
+			timeZone: row.time_zone,
+			localDateTime: row.local_date_time,
+			resolvedAtMs: row.resolved_at_ms,
+			resolvedAt: row.resolved_at,
+			offsetMinutes: row.offset_minutes,
+		},
+		contentHash: sha256Ref(row.content_hash),
+		scheduleHash: sha256Ref(row.schedule_hash),
+		status: row.status,
+		...(row.confirmed_at_ms === null ? {} : { confirmedAtMs: row.confirmed_at_ms }),
+		createdAtMs: row.created_at_ms,
+		updatedAtMs: row.updated_at_ms,
+	};
+}
+
+function rowToFire(row: FireRow): HouseholdReminderFire {
+	return {
+		fireId: row.fire_id,
+		reminderId: row.reminder_id,
+		revision: row.revision,
+		scheduledForMs: row.scheduled_for_ms,
+		state: row.state,
+		attemptCount: row.attempt_count,
+		...(row.lease_expires_at_ms === null ? {} : { leaseExpiresAtMs: row.lease_expires_at_ms }),
+		...(row.outbound_ref ? { outboundRef: row.outbound_ref } : {}),
+		...(row.edge_prepared_hash ? { edgePreparedHash: row.edge_prepared_hash } : {}),
+		...(row.idempotency_key ? { idempotencyKey: row.idempotency_key } : {}),
+		...(row.whatsapp_message_id ? { whatsappMessageId: row.whatsapp_message_id } : {}),
+		...(row.receipt_status ? { receiptStatus: row.receipt_status } : {}),
+		...(row.platform_message_id_hash
+			? { platformMessageIdHash: sha256Ref(row.platform_message_id_hash) }
+			: {}),
+		...(row.failure_class ? { failureClass: row.failure_class } : {}),
+		createdAtMs: row.created_at_ms,
+		updatedAtMs: row.updated_at_ms,
+	};
+}
+
+function findPendingProposal(
+	proposalRef: string,
+	authority: HouseholdReminderAuthority,
+): ProposalRow | null {
+	return (
+		(getDb()
+			.prepare(
+				`SELECT * FROM household_reminder_proposals
+				 WHERE ref = ? AND actor_id = ? AND subject_user_id = ? AND profile_id = ?
+				 AND status = 'pending'`,
+			)
+			.get(
+				nonEmpty(proposalRef, "proposalRef"),
+				authority.actorId,
+				authority.subjectUserId,
+				authority.profileId,
+			) as ProposalRow | undefined) ?? null
+	);
+}
+
+function getReminderRevision(reminderId: string, revision: number): HouseholdReminder | null {
+	const row = getDb()
+		.prepare("SELECT * FROM household_reminders WHERE id = ? AND revision = ?")
+		.get(reminderId, revision) as ReminderRow | undefined;
+	return row ? rowToReminder(row) : null;
+}
+
+function requireReminder(reminderId: string, revision: number): HouseholdReminder {
+	const reminder = getReminderRevision(reminderId, revision);
+	if (!reminder) throw new Error("household reminder persistence failure");
+	return reminder;
+}
+
+function setReminderStatus(
+	reminderId: string,
+	revision: number,
+	expected: HouseholdReminder["status"],
+	next: HouseholdReminder["status"],
+	nowMs: number,
+	confirmedAtMs?: number,
+): boolean {
+	const result = getDb()
+		.prepare(
+			`UPDATE household_reminders
+			 SET status = ?, updated_at_ms = ?, confirmed_at_ms = COALESCE(?, confirmed_at_ms)
+			 WHERE id = ? AND revision = ? AND status = ?`,
+		)
+		.run(next, nowMs, confirmedAtMs ?? null, reminderId, revision, expected);
+	return result.changes === 1;
+}
+
+function resolveProposal(
+	ref: string,
+	status: "confirmed" | "rejected" | "expired",
+	nowMs: number,
+): void {
+	getDb()
+		.prepare(
+			`UPDATE household_reminder_proposals
+			 SET status = ?, resolved_at_ms = ? WHERE ref = ? AND status = 'pending'`,
+		)
+		.run(status, nowMs, ref);
+}
+
+function expireProposal(row: ProposalRow, nowMs: number): boolean {
+	const expected = row.action === "create" ? "pending_confirmation" : "paused_confirmation";
+	const next = row.action === "create" ? "cancelled" : "scheduled";
+	if (!setReminderStatus(row.reminder_id, row.base_revision, expected, next, nowMs)) return false;
+	resolveProposal(row.ref, "expired", nowMs);
+	return true;
+}
+
+function verifyProposalPayload(
+	row: ProposalRow,
+): { readonly ok: true; readonly payload: ReminderPayload | null } | { readonly ok: false } {
+	try {
+		const payload = row.proposed_payload_json
+			? normalizePayload(JSON.parse(row.proposed_payload_json) as ReminderPayload)
+			: null;
+		if ((row.action === "cancel") !== (payload === null)) return { ok: false };
+		const proposalHash = canonicalSha256({
+			domain: "telclaude.household-reminder-proposal.v1",
+			action: row.action,
+			reminderId: row.reminder_id,
+			baseRevision: row.base_revision,
+			proposedRevision: row.proposed_revision,
+			authority: {
+				actorId: row.actor_id,
+				subjectUserId: row.subject_user_id,
+				profileId: row.profile_id,
+			},
+			bindingFingerprint: row.binding_fingerprint,
+			consentHash: row.consent_hash,
+			payload,
+		});
+		return proposalHash === row.proposal_hash ? { ok: true, payload } : { ok: false };
+	} catch {
+		return { ok: false };
+	}
+}
+
+function isScheduleWithinWindow(
+	schedule: HouseholdReminderOneShotSchedule,
+	nowMs: number,
+): boolean {
+	try {
+		validateJerusalemOneShotSchedule(schedule, { nowMs });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function assertCurrentBinding(
+	reminder: HouseholdReminder,
+	binding: HouseholdReminderBinding,
+): void {
+	if (householdReminderBindingFingerprint(binding) !== reminder.bindingFingerprint) {
+		throw new Error("household reminder binding changed");
+	}
+}
+
+function normalizeConsent(
+	consent: HouseholdReminderConsentReceipt,
+): HouseholdReminderConsentReceipt {
+	if (consent.state !== "granted" || consent.ceremonyVersion !== "phase0.v1") {
+		throw new Error("household reminder consent is not granted");
+	}
+	if (
+		consent.categories.proactiveDelivery !== true ||
+		consent.categories.scheduleManagement !== true ||
+		consent.categories.retentionDisclosure !== true
+	) {
+		throw new Error("household reminder consent categories are incomplete");
+	}
+	const recordedAtMs = Date.parse(consent.recordedAt);
+	if (
+		!Number.isFinite(recordedAtMs) ||
+		new Date(recordedAtMs).toISOString() !== consent.recordedAt
+	) {
+		throw new Error("household reminder consent timestamp is invalid");
+	}
+	if (!/^operator:[a-z0-9-]{1,64}$/.test(consent.operatorId)) {
+		throw new Error("household reminder consent operator is invalid");
+	}
+	return {
+		state: "granted",
+		ceremonyVersion: "phase0.v1",
+		ceremonyHash: sha256Ref(consent.ceremonyHash),
+		verifiedChannelHash: sha256Ref(consent.verifiedChannelHash),
+		categories: {
+			proactiveDelivery: true,
+			scheduleManagement: true,
+			retentionDisclosure: true,
+		},
+		recordedAt: consent.recordedAt,
+		operatorId: consent.operatorId,
+	};
+}
+
+function canonicalSha256(value: unknown): Sha256Ref {
+	return `sha256:${crypto
+		.createHash("sha256")
+		.update(JSON.stringify(sortKeysDeep(value)))
+		.digest("hex")}`;
+}
+
+function sha256Ref(value: string): Sha256Ref {
+	if (!SHA256_REF_RE.test(value)) throw new Error("invalid sha256 reference");
+	return value as Sha256Ref;
+}
+
+function nonEmpty(value: string, field: string): string {
+	const normalized = value.trim();
+	if (!normalized) throw new Error(`${field} is required`);
+	return normalized;
+}
+
+function positiveInt(value: number, field: string): number {
+	if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${field} must be positive`);
+	return value;
+}
+
+function timestamp(value: number, field: string): number {
+	if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} is invalid`);
+	return value;
+}
+
+function normalizeNow(value: number | undefined): number {
+	return timestamp(value ?? Date.now(), "nowMs");
+}
