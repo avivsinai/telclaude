@@ -107,6 +107,47 @@
     }
   },
 
+  // Optional WhatsApp household profiles. Each principal has its own opaque
+  // binding and memory namespace. The binding is the Phase 0 pairing
+  // attestation, so protect config write access like credential administration.
+  // Provider ID/phone credentials belong in the vault, never in these fields.
+  "profiles": [
+    {
+      "id": "parent-a",
+      "label": "Parent A",
+      "allowedSkills": [],
+      "providerScopes": ["clalit"],
+      "capabilityScopes": ["schedule.read", "schedule.write"],
+      "outboundChannels": ["whatsapp"],
+      "whatsappHouseholdBindings": [
+        {
+          "bindingId": "parent-a",
+          "address": "whatsapp:+15550001001",
+          "replyAddress": "whatsapp:+15550001001",
+          "displayName": "Parent A",
+          "subjectUserId": "household:parent-a"
+        }
+      ]
+    },
+    {
+      "id": "parent-b",
+      "label": "Parent B",
+      "allowedSkills": [],
+      "providerScopes": ["clalit"],
+      "capabilityScopes": ["schedule.read", "schedule.write"],
+      "outboundChannels": ["whatsapp"],
+      "whatsappHouseholdBindings": [
+        {
+          "bindingId": "parent-b",
+          "address": "whatsapp:+15550001002",
+          "replyAddress": "whatsapp:+15550001002",
+          "displayName": "Parent B",
+          "subjectUserId": "household:parent-b"
+        }
+      ]
+    }
+  ],
+
   "inbound": {
     "reply": {
       "enabled": true

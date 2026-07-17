@@ -282,6 +282,46 @@ describe("Telclaude MCP authority registry", () => {
 		).toThrow("social MCP authority must use social memory source");
 	});
 
+	it("requires canonical subject-bound household memory authority", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const connection = baseConnection({ profileId: "parent-a" });
+		const householdAuthority = baseAuthority({
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			domain: "household",
+			memorySource: "household:parent-a",
+			writableNamespace: "household:parent-a",
+			turnConversationRef: `turn_${"a".repeat(32)}`,
+		});
+
+		expect(() => registry.register({ connection, authority: householdAuthority })).not.toThrow();
+		expect(() =>
+			registry.register({
+				connection,
+				authority: { ...householdAuthority, subjectUserId: undefined },
+			}),
+		).toThrow(/household.*subject/i);
+		expect(() =>
+			registry.register({
+				connection,
+				authority: { ...householdAuthority, memorySource: "telegram:parent-a" },
+			}),
+		).toThrow(/household.*memory/i);
+		expect(() =>
+			registry.register({
+				connection,
+				authority: { ...householdAuthority, writableNamespace: "household:parent-b" },
+			}),
+		).toThrow(/household.*namespace|namespace.*memory/i);
+		expect(() =>
+			registry.register({
+				connection,
+				authority: { ...householdAuthority, turnConversationRef: undefined },
+			}),
+		).toThrow(/household.*turn/i);
+	});
+
 	it("revokes all authorities for a completed connection", () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const connection = baseConnection();

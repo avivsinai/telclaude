@@ -11,6 +11,7 @@ import { getChildLogger } from "../../logging.js";
 import type { MemorySnapshotRequest } from "../../memory/rpc.js";
 import { handleMemoryPropose, handleMemorySnapshot } from "../../memory/rpc.js";
 import {
+	isHouseholdMemorySource,
 	isSocialMemorySource,
 	isTelegramMemorySource,
 	telegramMemorySource,
@@ -566,10 +567,17 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			const conversation = resolveOutboundConversation(conversationStore, request);
 			assertOutboundConversationScope(request, conversation);
-			const replyIntent = request.replyIntent ?? defaultReplyIntent(conversation);
+			const householdTurn =
+				request.domain === "household"
+					? resolveOutboundTurnAuthority(conversationStore, request, conversation)
+					: null;
+			const replyIntent = householdTurn
+				? resolveOutboundReplyIntent(request, conversation, householdTurn)
+				: (request.replyIntent ?? defaultReplyIntent(conversation));
 			assertTargetableReplyIntent(conversation, replyIntent);
 			const approverActorId = outboundApproverFor(outboundApproverActorId, request.actorId);
-			const turn = resolveOutboundTurnAuthority(conversationStore, request, conversation);
+			const turn =
+				householdTurn ?? resolveOutboundTurnAuthority(conversationStore, request, conversation);
 			const mediaRefs = await resolveOutboundMediaRefs(request.mediaRefs, {
 				request,
 				conversation,
@@ -1369,6 +1377,28 @@ function defaultReplyIntent(conversation: RelayConversation): RelayConversationR
 	return { kind: "thread", threadId: conversation.threadId };
 }
 
+function resolveOutboundReplyIntent(
+	request: TelclaudeMcpOutboundPrepareRequest,
+	conversation: RelayConversation,
+	turn: RelayConversationInboundTurn,
+): RelayConversationReplyIntent {
+	if (request.domain !== "household") {
+		return request.replyIntent ?? defaultReplyIntent(conversation);
+	}
+	const expected: RelayConversationReplyIntent = {
+		kind: "address",
+		addressRef: turn.senderPrincipalId,
+	};
+	if (
+		request.replyIntent &&
+		(request.replyIntent.kind !== "address" ||
+			request.replyIntent.addressRef !== expected.addressRef)
+	) {
+		throw new Error("household outbound reply intent must match the current sender address");
+	}
+	return expected;
+}
+
 async function defaultResolveOutboundMediaRefs(
 	refs: readonly string[],
 ): Promise<readonly EdgeAttachmentRef[]> {
@@ -1727,10 +1757,24 @@ function assertAuthorityMemoryBoundary(request: {
 	readonly domain: string;
 	readonly profileId: string;
 	readonly memorySource: string;
+	readonly subjectUserId?: string;
+	readonly writableNamespace: string;
 }): void {
 	if (request.domain === "social" || request.domain === "public") {
 		if (!isSocialMemorySource(request.memorySource)) {
 			throw new Error("live MCP social authority must use social memory source");
+		}
+		return;
+	}
+	if (request.domain === "household") {
+		if (!isHouseholdMemorySource(request.memorySource)) {
+			throw new Error("live MCP household authority must use household memory source");
+		}
+		if (request.subjectUserId !== request.memorySource) {
+			throw new Error("live MCP household subject must equal memory source");
+		}
+		if (request.writableNamespace !== request.memorySource) {
+			throw new Error("live MCP household namespace must equal memory source");
 		}
 		return;
 	}

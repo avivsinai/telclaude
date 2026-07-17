@@ -1,5 +1,9 @@
 import { getChildLogger } from "../logging.js";
-import { isTelegramMemorySource, type MemorySourceFamily } from "./source.js";
+import {
+	isHouseholdMemorySource,
+	isTelegramMemorySource,
+	type MemorySourceFamily,
+} from "./source.js";
 import {
 	createEntries,
 	createQuarantinedEntry,
@@ -103,7 +107,7 @@ function checkRateLimit(
 	count: number,
 ): MemoryRpcResult<void> {
 	pruneRateBuckets();
-	const limit = isTelegramMemorySource(source) ? 100 : 10;
+	const limit = isTelegramMemorySource(source) || isHouseholdMemorySource(source) ? 100 : 10;
 	const now = Date.now();
 	const windowStart = Math.floor(now / HOUR_MS) * HOUR_MS;
 	// M3: Use scope-constant key to prevent userId spoofing

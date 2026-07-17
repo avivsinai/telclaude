@@ -657,6 +657,13 @@ function sameTurnAuthority(
 	) {
 		return false;
 	}
+	if (
+		record.domain === "household" &&
+		(record.resolvedDestination.kind !== "address" ||
+			turn.senderPrincipalId !== record.resolvedDestination.addressRef)
+	) {
+		return false;
+	}
 	return true;
 }
 
@@ -815,6 +822,17 @@ async function liveOutboundConversationFailure(
 		return terminalFailure(
 			"outbound_recipient_not_targetable",
 			"outbound conversation has no reply-capable seat for the actor",
+			record,
+		);
+	}
+	if (
+		record.domain === "household" &&
+		(record.resolvedDestination.kind !== "address" ||
+			actorSeat.principalId !== record.resolvedDestination.addressRef)
+	) {
+		return terminalFailure(
+			"outbound_recipient_not_targetable",
+			"outbound household recipient no longer matches the live actor seat",
 			record,
 		);
 	}

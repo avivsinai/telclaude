@@ -56,6 +56,27 @@ describe("memory store", () => {
 		expect(socialEntry?._provenance.trust).toBe("untrusted");
 	});
 
+	it("keeps household binding sources trusted and exactly isolated", () => {
+		createEntries(
+			[{ id: "household-a", category: "profile", content: "parent A fact" }],
+			"household:parent-a",
+			1,
+		);
+		createEntries(
+			[{ id: "household-b", category: "profile", content: "parent B fact" }],
+			"household:parent-b",
+			2,
+		);
+
+		const parentA = getEntries({ sources: ["household:parent-a"] });
+		const parentB = getEntries({ sources: ["household:parent-b"] });
+		expect(parentA.map((entry) => entry.id)).toEqual(["household-a"]);
+		expect(parentB.map((entry) => entry.id)).toEqual(["household-b"]);
+		expect(parentA[0]?._provenance.trust).toBe("trusted");
+		expect(parentB[0]?._provenance.trust).toBe("trusted");
+		expect(getEntries({ sourceFamilies: ["household"] })).toHaveLength(2);
+	});
+
 	it("rejects bare legacy telegram source for new writes", () => {
 		expect(() =>
 			createEntries(

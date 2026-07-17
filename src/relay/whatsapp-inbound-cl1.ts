@@ -15,7 +15,10 @@ import {
 	relayConversationToConversationRef,
 } from "../hermes/relay-conversation-store.js";
 import { assessRisk, wrapExternalContent } from "../security/external-content.js";
+import { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 import type { AttachmentQuarantineStore } from "./attachment-quarantine-store.js";
+
+export { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 
 export const WHATSAPP_INBOUND_BRIDGE_SCHEMA_VERSION = "telclaude.edge.whatsapp.inbound.v1";
 export const DEFAULT_WHATSAPP_INBOUND_MAX_SKEW_MS = 5 * 60 * 1000;
@@ -47,10 +50,9 @@ export const WhatsAppInboundBridgeEventSchema = z
 
 export type WhatsAppInboundBridgeEvent = z.infer<typeof WhatsAppInboundBridgeEventSchema>;
 
-export type WhatsAppIdentityResolution = {
+type WhatsAppIdentityResolutionBase = {
 	readonly actorId: string;
 	readonly profileId: string;
-	readonly domain: "private";
 	readonly principalId: string;
 	readonly displayName?: string;
 	readonly identityAssurance: "strong_link";
@@ -58,6 +60,21 @@ export type WhatsAppIdentityResolution = {
 	readonly actorScopes: readonly ActorRef["scopes"][number][];
 	readonly humanPairingProvenance: true;
 };
+
+export type WhatsAppIdentityResolution =
+	| (WhatsAppIdentityResolutionBase & {
+			readonly domain: "private";
+	  })
+	| (WhatsAppIdentityResolutionBase & {
+			readonly domain: "household";
+			readonly bindingId: string;
+			readonly subjectUserId: string;
+			readonly memorySource: `household:${string}`;
+			readonly writableNamespace: `household:${string}`;
+			readonly replyAddressRef: string;
+			readonly expectedConversationKey: string;
+			readonly conversationId: string;
+	  });
 
 export type WhatsAppIdentityResolver = (input: {
 	readonly senderAddressRef: string;
@@ -78,6 +95,7 @@ export type WhatsAppInboundCl1Result =
 			readonly event: InboundEvent;
 			readonly conversation: RelayConversation;
 			readonly turn: ReturnType<RelayConversationStore["mintInboundTurn"]>["turn"];
+			readonly identity: WhatsAppIdentityResolution;
 	  }
 	| {
 			readonly ok: true;
@@ -197,11 +215,21 @@ export function createWhatsAppInboundCl1Pipeline(
 			if (!identity) {
 				return failure(
 					"whatsapp_inbound_sender_unlinked",
-					"WhatsApp inbound sender is not linked to the operator profile",
+					"WhatsApp inbound sender is not linked to an authorized identity",
 					false,
 				);
 			}
-			const conversationId = conversationIdFor(event);
+			if (
+				identity.domain === "household" &&
+				event.conversationKey !== identity.expectedConversationKey
+			) {
+				return failure(
+					"whatsapp_inbound_conversation_mismatch",
+					"WhatsApp inbound conversation does not match the enrolled reply address",
+					false,
+				);
+			}
+			const conversationId = conversationIdFor(event, identity);
 			const existing = options.conversationStore
 				.list({ channel: "whatsapp" })
 				.find((conversation) => conversation.conversationId === conversationId);
@@ -256,7 +284,7 @@ export function createWhatsAppInboundCl1Pipeline(
 			const { conversation } = options.conversationStore.resumeOrMint({
 				channel: "whatsapp",
 				conversationId,
-				threadId: conversationId,
+				threadId: identity.domain === "household" ? identity.replyAddressRef : conversationId,
 				profileId: identity.profileId,
 				domain: identity.domain,
 				authorizationState: "authorized",
@@ -332,7 +360,7 @@ export function createWhatsAppInboundCl1Pipeline(
 				},
 			});
 			await options.onInboundEvent?.(inboundEvent);
-			return { ok: true, duplicate: false, event: inboundEvent, conversation, turn };
+			return { ok: true, duplicate: false, event: inboundEvent, conversation, turn, identity };
 		},
 	};
 }
@@ -384,8 +412,13 @@ function riskLabelsFor(text: string | undefined): string[] {
 	return labels;
 }
 
-function conversationIdFor(event: WhatsAppInboundBridgeEvent): string {
-	return requiredTrimmed(event.conversationKey, "conversationKey");
+function conversationIdFor(
+	event: WhatsAppInboundBridgeEvent,
+	identity: WhatsAppIdentityResolution,
+): string {
+	return identity.domain === "household"
+		? identity.conversationId
+		: requiredTrimmed(event.conversationKey, "conversationKey");
 }
 
 function cursorFor(sequence: number): string {
@@ -400,13 +433,6 @@ function parseCursorSequence(cursor: string): number | null {
 
 function auditIdFor(event: WhatsAppInboundBridgeEvent): string {
 	return `wa-audit:${hashShort({ eventId: event.eventId, messageId: event.messageId })}`;
-}
-
-export function normalizeWhatsAppAddressRef(value: string): string | null {
-	const trimmed = value.trim();
-	const e164 = trimmed.startsWith("whatsapp:") ? trimmed.slice("whatsapp:".length) : trimmed;
-	if (!/^\+[1-9]\d{6,14}$/.test(e164)) return null;
-	return `whatsapp:${e164}`;
 }
 
 function decodeBase64Bytes(value: string): Uint8Array {

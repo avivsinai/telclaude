@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	householdMemorySource,
+	isHouseholdMemorySource,
 	isTelegramMemorySource,
+	memorySourceFamily,
 	telegramMemorySource,
 	validateMemorySource,
 } from "../../src/memory/source.js";
@@ -34,5 +37,15 @@ describe("memory source validation", () => {
 		expect(isTelegramMemorySource("telegram:default")).toBe(true);
 		expect(isTelegramMemorySource("telegram:engineer")).toBe(true);
 		expect(isTelegramMemorySource("social")).toBe(false);
+	});
+
+	it("builds and validates opaque household binding memory sources", () => {
+		expect(householdMemorySource("parent-a")).toBe("household:parent-a");
+		expect(isHouseholdMemorySource("household:parent-a")).toBe(true);
+		expect(memorySourceFamily("household:parent-a")).toBe("household");
+		expect(validateMemorySource("household:parent-a")).toBeNull();
+		expect(validateMemorySource("household:123456789")).toMatch(/opaque|binding|household/i);
+		expect(() => householdMemorySource("123456789")).toThrow(/opaque|binding|household/i);
+		expect(isHouseholdMemorySource("household:UPPERCASE")).toBe(false);
 	});
 });

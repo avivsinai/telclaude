@@ -8,11 +8,11 @@ import {
 } from "./archive.js";
 import { telegramMemorySource } from "./source.js";
 import { getEntries } from "./store.js";
-import type { MemoryEntry } from "./types.js";
+import type { MemoryEntry, MemorySource } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-memory" });
 
-function logTelegramScopeLeak(
+function logMemoryScopeLeak(
 	leakedSources: Map<string, number>,
 	context: {
 		chatId?: string;
@@ -23,7 +23,7 @@ function logTelegramScopeLeak(
 	for (const [blockedSource, count] of leakedSources) {
 		logger.warn(
 			{ chatId: context.chatId, activeProfileId: context.activeProfileId, blockedSource, count },
-			`SECURITY: cross-profile memory leaked into telegram query (${context.label}) — filtering out`,
+			`SECURITY: cross-profile memory leaked into scoped query (${context.label}) — filtering out`,
 		);
 	}
 }
@@ -32,7 +32,7 @@ function logTelegramScopeLeak(
  * Runtime assertion: Telegram memory must be exact-source scoped to the active profile.
  * Dev throws so tests catch leaks; production filters so user memory is not exposed.
  */
-function assertTelegramEntryScope<T extends MemoryEntry>(
+function assertMemoryEntryScope<T extends MemoryEntry>(
 	entries: T[],
 	expectedSource: string,
 	context: { chatId?: string; activeProfileId: string; label: string },
@@ -46,14 +46,14 @@ function assertTelegramEntryScope<T extends MemoryEntry>(
 	}
 	if (process.env.NODE_ENV !== "production") {
 		throw new Error(
-			`SECURITY: ${leaked.length} entries leaked into telegram profile memory (${context.label}; expected ${expectedSource})`,
+			`SECURITY: ${leaked.length} entries leaked into scoped profile memory (${context.label}; expected ${expectedSource})`,
 		);
 	}
-	logTelegramScopeLeak(leakedSources, context);
+	logMemoryScopeLeak(leakedSources, context);
 	return entries.filter((e) => e._provenance.source === expectedSource);
 }
 
-function assertTelegramEpisodeScope<T extends MemoryEpisode>(
+function assertMemoryEpisodeScope<T extends MemoryEpisode>(
 	episodes: T[],
 	expectedSource: string,
 	context: { chatId?: string; activeProfileId: string; label: string },
@@ -66,10 +66,10 @@ function assertTelegramEpisodeScope<T extends MemoryEpisode>(
 	}
 	if (process.env.NODE_ENV !== "production") {
 		throw new Error(
-			`SECURITY: ${leaked.length} episodes leaked into telegram profile memory (${context.label}; expected ${expectedSource})`,
+			`SECURITY: ${leaked.length} episodes leaked into scoped profile memory (${context.label}; expected ${expectedSource})`,
 		);
 	}
-	logTelegramScopeLeak(leakedSources, context);
+	logMemoryScopeLeak(leakedSources, context);
 	return episodes.filter((episode) => episode.source === expectedSource);
 }
 
@@ -220,17 +220,19 @@ function buildCompiledMemoryMd(bundle: {
 export function buildTelegramMemoryBundle(options: {
 	chatId?: string;
 	profileId?: string;
+	memorySource?: MemorySource;
+	scopeKey?: string;
 	query?: string;
 	includeRecentHistory?: boolean;
 }): TelegramMemoryBundle {
 	const activeProfileId = options.profileId ?? "default";
-	const memorySource = telegramMemorySource(activeProfileId);
+	const memorySource = options.memorySource ?? telegramMemorySource(activeProfileId);
 	const scopeContext = {
 		chatId: options.chatId,
 		activeProfileId,
-		label: "telegram-memory-bundle",
+		label: "scoped-memory-bundle",
 	};
-	const stableEntries = assertTelegramEntryScope(
+	const stableEntries = assertMemoryEntryScope(
 		getEntries({
 			sources: [memorySource],
 			trust: ["trusted"],
@@ -243,7 +245,7 @@ export function buildTelegramMemoryBundle(options: {
 		scopeContext,
 	);
 
-	const scopeKey = resolveTelegramScopeKey(options.chatId);
+	const scopeKey = options.scopeKey ?? resolveTelegramScopeKey(options.chatId);
 	const relevantEpisodes = scopeKey
 		? findRelevantEpisodes({
 				source: memorySource,
@@ -262,16 +264,12 @@ export function buildTelegramMemoryBundle(options: {
 				})
 			: [];
 
-	const scopedRelevantEpisodes = assertTelegramEpisodeScope(
+	const scopedRelevantEpisodes = assertMemoryEpisodeScope(
 		relevantEpisodes,
 		memorySource,
 		scopeContext,
 	);
-	const scopedRecentEpisodes = assertTelegramEpisodeScope(
-		recentEpisodes,
-		memorySource,
-		scopeContext,
-	);
+	const scopedRecentEpisodes = assertMemoryEpisodeScope(recentEpisodes, memorySource, scopeContext);
 	const promptEpisodes = dedupeEpisodes(scopedRelevantEpisodes, scopedRecentEpisodes);
 
 	return {

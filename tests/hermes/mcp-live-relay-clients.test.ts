@@ -219,6 +219,56 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		expect(requestedApprovals).toEqual([providerPrepared.actionRef, outboundPrepared.outboundRef]);
 	});
 
+	it("derives household WhatsApp replies from the current sender and rejects alternate targets", async () => {
+		const ledger = testLedger();
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const senderAddress = "whatsapp:+15557654321";
+		const { token } = mintWhatsappConversation("household-parent-a", {
+			profileId: "parent-a",
+			domain: "household",
+			threadId: senderAddress,
+			members: [
+				{
+					actorId: "household:whatsapp:parent-a",
+					principalId: senderAddress,
+					role: "sender",
+					identityAssurance: "strong_link",
+					scopes: ["message:reply", "whatsapp:reply"],
+				},
+			],
+			humanPairingProvenance: true,
+		});
+		const turnConversationRef = mintWhatsappTurn(token, "household-parent-a", {
+			senderActorId: "household:whatsapp:parent-a",
+		});
+		const request = outboundPrepare({
+			...householdStamp(),
+			conversationToken: token,
+			turnConversationRef,
+			body: "See you at 19:00",
+		});
+
+		const prepared = (await clients.outboundPrepare(request)) as { outboundRef: string };
+		expect(ledger.get(prepared.outboundRef)).toMatchObject({
+			domain: "household",
+			destination: senderAddress,
+			resolvedDestination: expect.objectContaining({
+				addressRef: senderAddress,
+			}),
+		});
+
+		await expect(
+			clients.outboundPrepare({
+				...request,
+				replyIntent: { kind: "address", addressRef: "whatsapp:+15550000000" },
+			}),
+		).rejects.toThrow("household outbound reply intent must match the current sender address");
+	});
+
 	it("revokes prepared side effects when the human approval request cannot be created", async () => {
 		const ledger = testLedger();
 		const clients = createTelclaudeLiveMcpRelayClients({
@@ -693,6 +743,24 @@ function socialStamp(
 		writableNamespace: "social:public",
 		endpointId: "endpoint-social",
 		networkNamespace: "netns-social",
+		...overrides,
+	};
+}
+
+function householdStamp(
+	overrides: Partial<TelclaudeMcpAuthorityStamp> = {},
+): TelclaudeMcpAuthorityStamp {
+	return {
+		actorId: "household:whatsapp:parent-a",
+		subjectUserId: "household:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		memorySource: "household:parent-a",
+		writableNamespace: "household:parent-a",
+		providerScopes: ["clalit"],
+		outboundChannels: ["whatsapp"],
+		endpointId: "endpoint-household",
+		networkNamespace: "netns-household",
 		...overrides,
 	};
 }

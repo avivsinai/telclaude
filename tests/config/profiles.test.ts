@@ -79,4 +79,64 @@ describe("operator profile resolution", () => {
 		expect(resolved.missingProfileId).toBe("missing");
 		expect(resolved.warnings[0]).toContain("missing");
 	});
+
+	it("resolves household WhatsApp senders to disjoint profile and subject bindings", async () => {
+		const { resolveWhatsAppHouseholdBinding } = await import("../../src/config/profiles.js");
+		const cfg = {
+			profiles: [
+				{
+					id: "parent-a",
+					label: "Parent A",
+					allowedSkills: [],
+					providerScopes: ["clalit"],
+					capabilityScopes: ["schedule.read", "schedule.write"],
+					outboundChannels: ["whatsapp"],
+					whatsappHouseholdBindings: [
+						{
+							bindingId: "parent-a",
+							address: "whatsapp:+15551234567",
+							replyAddress: "whatsapp:+15551234567",
+							displayName: "Parent A",
+							subjectUserId: "household:parent-a",
+						},
+					],
+				},
+				{
+					id: "parent-b",
+					label: "Parent B",
+					allowedSkills: [],
+					providerScopes: ["clalit"],
+					capabilityScopes: ["schedule.read", "schedule.write"],
+					outboundChannels: ["whatsapp"],
+					whatsappHouseholdBindings: [
+						{
+							bindingId: "parent-b",
+							address: "whatsapp:+15557654321",
+							replyAddress: "whatsapp:+15557654321",
+							displayName: "Parent B",
+							subjectUserId: "household:parent-b",
+						},
+					],
+				},
+			],
+		} as never;
+
+		expect(resolveWhatsAppHouseholdBinding("+15551234567", cfg)).toMatchObject({
+			bindingId: "parent-a",
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			memorySource: "household:parent-a",
+			writableNamespace: "household:parent-a",
+			domain: "household",
+			profile: { id: "parent-a" },
+		});
+		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15557654321", cfg)).toMatchObject({
+			bindingId: "parent-b",
+			actorId: "household:whatsapp:parent-b",
+			subjectUserId: "household:parent-b",
+			memorySource: "household:parent-b",
+			profile: { id: "parent-b" },
+		});
+		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15550000000", cfg)).toBeNull();
+	});
 });

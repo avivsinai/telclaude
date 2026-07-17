@@ -1,3 +1,5 @@
+import { householdMemorySource } from "../memory/source.js";
+import { normalizeWhatsAppAddressRef, whatsAppDirectConversationKey } from "../whatsapp/address.js";
 import type { OperatorProfileConfig, TelclaudeConfig } from "./config.js";
 import { getChatActiveProfileId } from "./sessions.js";
 
@@ -13,7 +15,22 @@ export type EffectiveOperatorProfile = {
 	capabilityScopes?: OperatorProfileConfig["capabilityScopes"];
 	outboundChannels?: string[];
 	defaultModel?: OperatorProfileConfig["defaultModel"];
+	whatsappHouseholdBindings?: OperatorProfileConfig["whatsappHouseholdBindings"];
 	implicit: boolean;
+};
+
+export type ResolvedWhatsAppHouseholdBinding = {
+	readonly bindingId: string;
+	readonly actorId: string;
+	readonly subjectUserId: string;
+	readonly memorySource: ReturnType<typeof householdMemorySource>;
+	readonly writableNamespace: ReturnType<typeof householdMemorySource>;
+	readonly domain: "household";
+	readonly address: string;
+	readonly replyAddress: string;
+	readonly expectedConversationKey: string;
+	readonly displayName: string;
+	readonly profile: EffectiveOperatorProfile;
 };
 
 export type ResolvedChatProfile = {
@@ -40,6 +57,9 @@ export function listOperatorProfiles(cfg: TelclaudeConfig): EffectiveOperatorPro
 			providerScopes: profile.providerScopes ? [...profile.providerScopes] : undefined,
 			capabilityScopes: profile.capabilityScopes ? [...profile.capabilityScopes] : undefined,
 			outboundChannels: profile.outboundChannels ? [...profile.outboundChannels] : undefined,
+			whatsappHouseholdBindings: profile.whatsappHouseholdBindings?.map((binding) => ({
+				...binding,
+			})),
 			implicit: false,
 		})),
 	];
@@ -60,8 +80,77 @@ export function getOperatorProfile(
 		providerScopes: configured.providerScopes ? [...configured.providerScopes] : undefined,
 		capabilityScopes: configured.capabilityScopes ? [...configured.capabilityScopes] : undefined,
 		outboundChannels: configured.outboundChannels ? [...configured.outboundChannels] : undefined,
+		whatsappHouseholdBindings: configured.whatsappHouseholdBindings?.map((binding) => ({
+			...binding,
+		})),
 		implicit: false,
 	};
+}
+
+export function resolveWhatsAppHouseholdBinding(
+	addressRef: string,
+	cfg: TelclaudeConfig,
+): ResolvedWhatsAppHouseholdBinding | null {
+	const normalized = normalizeWhatsAppAddressRef(addressRef);
+	if (!normalized) return null;
+	for (const profile of listOperatorProfiles(cfg)) {
+		if (profile.implicit) continue;
+		const binding = profile.whatsappHouseholdBindings?.find(
+			(candidate) => candidate.address === normalized,
+		);
+		if (!binding) continue;
+		assertNarrowHouseholdProfile(profile);
+		const replyAddress = normalizeWhatsAppAddressRef(binding.replyAddress);
+		const expectedConversationKey = replyAddress
+			? whatsAppDirectConversationKey(replyAddress)
+			: null;
+		if (
+			!replyAddress ||
+			replyAddress !== normalized ||
+			!expectedConversationKey ||
+			binding.subjectUserId !== `household:${binding.bindingId}`
+		) {
+			throw new Error(`invalid household WhatsApp binding: ${binding.bindingId}`);
+		}
+		const memorySource = householdMemorySource(binding.bindingId);
+		return {
+			bindingId: binding.bindingId,
+			actorId: `household:whatsapp:${binding.bindingId}`,
+			subjectUserId: binding.subjectUserId,
+			memorySource,
+			writableNamespace: memorySource,
+			domain: "household",
+			address: normalized,
+			replyAddress,
+			expectedConversationKey,
+			displayName: binding.displayName,
+			profile,
+		};
+	}
+	return null;
+}
+
+export function assertNarrowHouseholdProfile(profile: EffectiveOperatorProfile): void {
+	if (
+		!sameStringSet(profile.allowedSkills, []) ||
+		!sameStringSet(profile.providerScopes, ["clalit"]) ||
+		!sameStringSet(profile.capabilityScopes, ["schedule.read", "schedule.write"]) ||
+		!sameStringSet(profile.outboundChannels, ["whatsapp"])
+	) {
+		throw new Error(`household profile is not narrowly scoped: ${profile.id}`);
+	}
+}
+
+function sameStringSet(
+	actual: readonly string[] | undefined,
+	expected: readonly string[],
+): boolean {
+	return (
+		actual !== undefined &&
+		actual.length === expected.length &&
+		new Set(actual).size === actual.length &&
+		expected.every((value) => actual.includes(value))
+	);
 }
 
 export function resolveChatProfile(chatId: number, cfg: TelclaudeConfig): ResolvedChatProfile {

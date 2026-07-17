@@ -71,6 +71,53 @@ describe("hermes live-mcp admin CLI", () => {
 		}
 	});
 
+	it("passes explicit household subject and turn authority through the admin socket", async () => {
+		const socketPath = path.join(tempDir, "household-admin.sock");
+		let captured: unknown;
+		const handle = await startTelclaudeLiveMcpAdminServer({
+			socketPath,
+			issueProbeTokenBundle: (input) => {
+				captured = input;
+				return tokenBundle();
+			},
+		});
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"live-mcp",
+				"probe-tokens",
+				"--socket",
+				socketPath,
+				"--json",
+				"--domain",
+				"household",
+				"--profile-id",
+				"parent-a",
+				"--subject-user-id",
+				"household:parent-a",
+				"--turn-conversation-ref",
+				`turn_${"a".repeat(32)}`,
+			]);
+
+			expect(result.exitCode).toBeUndefined();
+			expect(captured).toMatchObject({
+				privateAuthority: {
+					actorId: "household:probe:parent-a",
+					subjectUserId: "household:parent-a",
+					profileId: "parent-a",
+					domain: "household",
+					memorySource: "household:parent-a",
+					writableNamespace: "household:parent-a",
+					providerScopes: ["clalit"],
+					outboundChannels: ["whatsapp"],
+					turnConversationRef: `turn_${"a".repeat(32)}`,
+				},
+			});
+		} finally {
+			await handle.stop();
+		}
+	});
+
 	it("fails clearly when the runtime admin socket is absent", async () => {
 		const result = await runHermesCommand([
 			"hermes",

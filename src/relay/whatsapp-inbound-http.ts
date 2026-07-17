@@ -5,13 +5,20 @@ import {
 	createRelayConversationStore,
 	type RelayConversationStore,
 } from "../hermes/relay-conversation-store.js";
+import { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 import {
 	type AttachmentQuarantineStore,
 	createAttachmentQuarantineStore,
 } from "./attachment-quarantine-store.js";
 import {
+	combineWhatsAppIdentityResolvers,
+	createWhatsAppHouseholdIdentityResolver,
+} from "./whatsapp-household-bindings.js";
+import {
 	createOperatorWhatsAppIdentityResolver,
 	createWhatsAppInboundCl1Pipeline,
+	type WhatsAppIdentityResolution,
+	type WhatsAppIdentityResolver,
 	type WhatsAppInboundBridgeEvent,
 	WhatsAppInboundBridgeEventSchema,
 	type WhatsAppInboundCl1Result,
@@ -109,12 +116,7 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		signatureSecret: resolved.signatureSecret,
 		conversationStore: resolved.conversationStore,
 		quarantineStore: resolved.quarantineStore,
-		resolveIdentity: createOperatorWhatsAppIdentityResolver({
-			operatorAddressRefs: resolved.operatorAddressRefs,
-			profileId: resolved.profile.id,
-			...(resolved.actorId ? { actorId: resolved.actorId } : {}),
-			...(resolved.displayName ? { displayName: resolved.displayName } : {}),
-		}),
+		resolveIdentity: resolved.resolveIdentity,
 		...(resolved.nowMs ? { nowMs: resolved.nowMs } : {}),
 	});
 	const cl1 = await pipeline.ingest({
@@ -134,13 +136,22 @@ export async function handleWhatsAppInboundBridgePost(input: {
 			},
 		};
 	}
+	const dispatchProfile = resolved.resolveProfile(cl1.identity);
+	if (!dispatchProfile) {
+		return failure(
+			503,
+			"whatsapp_inbound_profile_missing",
+			`WhatsApp inbound profile is not configured: ${cl1.identity.profileId}`,
+		);
+	}
 
 	const dispatch = await resolved.dispatch({
 		event: cl1.event,
 		conversation: cl1.conversation,
 		turn: cl1.turn,
 		config: resolved.config,
-		profile: resolved.profile,
+		profile: dispatchProfile,
+		identity: cl1.identity,
 		...(resolved.cwd ? { cwd: resolved.cwd } : {}),
 		...(resolved.timeoutMs !== undefined ? { timeoutMs: resolved.timeoutMs } : {}),
 	});
@@ -163,12 +174,11 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 	| {
 			readonly ok: true;
 			readonly signatureSecret: string;
-			readonly operatorAddressRefs: readonly string[];
-			readonly profileId: string;
-			readonly actorId?: string;
-			readonly displayName?: string;
+			readonly resolveIdentity: WhatsAppIdentityResolver;
+			readonly resolveProfile: (
+				identity: WhatsAppIdentityResolution,
+			) => EffectiveOperatorProfile | null;
 			readonly config: Pick<TelclaudeConfig, "hermes">;
-			readonly profile: EffectiveOperatorProfile;
 			readonly conversationStore: RelayConversationStore;
 			readonly quarantineStore: AttachmentQuarantineStore;
 			readonly dispatch: WhatsAppInboundDispatch;
@@ -184,22 +194,34 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		`${TELCLAUDE_WHATSAPP_INBOUND_SECRET_ENV} is required`,
 	);
 	if (!signatureSecret.ok) return signatureSecret;
+	const config = options?.config ?? loadConfig();
 	const operatorAddressRefs =
 		options?.operatorAddressRefs ?? csvEnv(env[TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES_ENV]);
-	if (operatorAddressRefs.length === 0) {
+	const householdAddresses = new Set(
+		(config.profiles ?? [])
+			.flatMap((profile) =>
+				(profile.whatsappHouseholdBindings ?? []).map((binding) =>
+					normalizeWhatsAppAddressRef(binding.address),
+				),
+			)
+			.filter((address): address is string => address !== null),
+	);
+	if (operatorAddressRefs.length === 0 && householdAddresses.size === 0) {
 		return failure(
 			503,
 			"whatsapp_inbound_operator_addresses_missing",
-			`${TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES_ENV} is required`,
+			`${TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES_ENV} or a household binding is required`,
 		);
 	}
-	const config = options?.config ?? loadConfig();
 	const profileId =
 		options?.profileId?.trim() ||
 		env[TELCLAUDE_WHATSAPP_INBOUND_PROFILE_ID_ENV]?.trim() ||
 		"default";
-	const profile = options?.profile ?? getOperatorProfile(profileId, config);
-	if (!profile) {
+	const operatorProfile =
+		operatorAddressRefs.length > 0
+			? (options?.profile ?? getOperatorProfile(profileId, config))
+			: null;
+	if (operatorAddressRefs.length > 0 && !operatorProfile) {
 		return failure(
 			503,
 			"whatsapp_inbound_profile_missing",
@@ -209,15 +231,43 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 	const actorId = options?.actorId?.trim() || env[TELCLAUDE_WHATSAPP_INBOUND_ACTOR_ID_ENV]?.trim();
 	const displayName =
 		options?.displayName?.trim() || env[TELCLAUDE_WHATSAPP_INBOUND_DISPLAY_NAME_ENV]?.trim();
+	let operatorResolver: WhatsAppIdentityResolver | null = null;
+	if (operatorAddressRefs.length > 0 && operatorProfile) {
+		const normalizedOperators = operatorAddressRefs.map(normalizeWhatsAppAddressRef);
+		if (normalizedOperators.some((address) => !address)) {
+			return failure(
+				503,
+				"whatsapp_inbound_operator_addresses_invalid",
+				`${TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES_ENV} contains an invalid address`,
+			);
+		}
+		if (normalizedOperators.some((address) => address && householdAddresses.has(address))) {
+			return failure(
+				503,
+				"whatsapp_inbound_identity_overlap",
+				"A WhatsApp address may not be both operator-private and household-bound",
+			);
+		}
+		operatorResolver = createOperatorWhatsAppIdentityResolver({
+			operatorAddressRefs,
+			profileId: operatorProfile.id,
+			...(actorId ? { actorId } : {}),
+			...(displayName ? { displayName } : {}),
+		});
+	}
+	const householdResolver = createWhatsAppHouseholdIdentityResolver(config);
+	const resolveIdentity = operatorResolver
+		? combineWhatsAppIdentityResolvers(operatorResolver, householdResolver)
+		: householdResolver;
 	return {
 		ok: true,
 		signatureSecret: signatureSecret.value,
-		operatorAddressRefs,
-		profileId,
-		...(actorId ? { actorId } : {}),
-		...(displayName ? { displayName } : {}),
+		resolveIdentity,
+		resolveProfile: (identity) =>
+			identity.domain === "private"
+				? operatorProfile
+				: getOperatorProfile(identity.profileId, config),
 		config,
-		profile,
 		conversationStore: options?.conversationStore ?? createRelayConversationStore(),
 		quarantineStore: options?.quarantineStore ?? createAttachmentQuarantineStore(),
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,

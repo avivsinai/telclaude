@@ -145,6 +145,13 @@ import {
 	writeServedMcpContainmentEvidence,
 } from "../hermes/served-mcp-containment.js";
 import {
+	DEFAULT_SERVED_MCP_HOUSEHOLD_MEMORY_EVIDENCE_PATH,
+	evaluateServedMcpHouseholdMemoryEvidence,
+	runServedMcpHouseholdMemoryProbe,
+	SERVED_MCP_HOUSEHOLD_MEMORY_PROBE_ID,
+	writeServedMcpHouseholdMemoryEvidence,
+} from "../hermes/served-mcp-household-memory.js";
+import {
 	DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH,
 	evaluateServedMcpMemoryEvidence,
 	runServedMcpMemoryProbe,
@@ -528,12 +535,15 @@ type ProbeOption = JsonOption & {
 	hermesBin?: string;
 	hermesHome?: string;
 	mcpAuth?: string;
+	mcpSiblingAuth?: string;
 	mcpForgedAuth?: string;
 	mcpOffDomainContainer?: string;
 	mcpOffDomainPeerAddress?: string;
 	mcpOffDomainPeerAuth?: string;
 	mcpUrl?: string;
 	mcpWrongConnectionAuth?: string;
+	householdMemorySource?: string;
+	householdSiblingMemorySource?: string;
 	image?: string;
 	modelUrl?: string;
 	profileDir?: string;
@@ -594,6 +604,9 @@ type LiveMcpProbeTokenOption = JsonOption & {
 	offDomainMemorySource?: string;
 	offDomainWritableNamespace?: string;
 	actor?: string;
+	domain?: string;
+	subjectUserId?: string;
+	turnConversationRef?: string;
 	memorySource?: string;
 	writableNamespace?: string;
 	providerScope?: string;
@@ -607,6 +620,7 @@ type LiveMcpProbeTokenOption = JsonOption & {
 };
 
 const SERVED_MCP_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_AUTH";
+const SERVED_MCP_HOUSEHOLD_SIBLING_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_HOUSEHOLD_SIBLING_AUTH";
 const SERVED_MCP_OFF_DOMAIN_PEER_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH";
 const SERVED_MCP_WRONG_CONNECTION_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH";
 const SERVED_MCP_FORGED_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH";
@@ -2074,6 +2088,7 @@ function buildLiveMcpProbeTokenRequest(
 	options: LiveMcpProbeTokenOption,
 ): TelclaudeLiveMcpRuntimeProbeTokenInput {
 	const profileId = nonEmptyOption(options.profileId ?? options.profile, "default");
+	const domain = probeTokenDomain(options.domain);
 	const endpointId = nonEmptyOption(options.endpointId, "tc-hermes-private");
 	const networkNamespace = nonEmptyOption(
 		options.networkNamespace,
@@ -2091,10 +2106,22 @@ function buildLiveMcpProbeTokenRequest(
 		options.offDomainNetworkNamespace,
 		networkNamespace,
 	);
-	const providerScopes = parseCsvOption(options.providerScopes ?? options.providerScope ?? "bank");
+	const providerScopes = parseCsvOption(
+		options.providerScopes ?? options.providerScope ?? (domain === "household" ? "clalit" : "bank"),
+	);
 	const outboundChannels = parseCsvOption(
 		options.outboundChannels ?? options.outboundChannel ?? "whatsapp",
 	);
+
+	const memorySource = nonEmptyOption(
+		options.memorySource,
+		domain === "household" ? `household:${profileId}` : `telegram:${profileId}`,
+	);
+	const subjectUserId = options.subjectUserId?.trim();
+	const turnConversationRef = options.turnConversationRef?.trim();
+	if (domain === "household" && (!subjectUserId || !turnConversationRef)) {
+		throw new Error("household probe tokens require --subject-user-id and --turn-conversation-ref");
+	}
 
 	return {
 		privateConnection: {
@@ -2116,15 +2143,23 @@ function buildLiveMcpProbeTokenRequest(
 			networkNamespace: wrongNetworkNamespace,
 		},
 		privateAuthority: {
-			actorId: nonEmptyOption(options.actor, "operator:probe"),
+			actorId: nonEmptyOption(
+				options.actor,
+				domain === "household" ? `household:probe:${profileId}` : "operator:probe",
+			),
+			...(subjectUserId ? { subjectUserId } : {}),
 			profileId,
-			domain: "private",
-			memorySource: nonEmptyOption(options.memorySource, `telegram:${profileId}`),
-			writableNamespace: nonEmptyOption(options.writableNamespace, `private:${profileId}`),
+			domain,
+			memorySource,
+			writableNamespace: nonEmptyOption(
+				options.writableNamespace,
+				domain === "household" ? memorySource : `private:${profileId}`,
+			),
 			providerScopes,
 			outboundChannels,
 			endpointId,
 			networkNamespace,
+			...(turnConversationRef ? { turnConversationRef } : {}),
 		},
 		offDomainAuthority: {
 			actorId: nonEmptyOption(options.offDomainActor, "social:probe"),
@@ -2141,6 +2176,14 @@ function buildLiveMcpProbeTokenRequest(
 		peerAddress: options.peerAddress?.trim() || undefined,
 		offDomainPeerAddress: options.offDomainPeerAddress?.trim() || undefined,
 	};
+}
+
+function probeTokenDomain(value: string | undefined): "private" | "household" {
+	const domain = value?.trim() || "private";
+	if (domain !== "private" && domain !== "household") {
+		throw new Error("--domain must be private or household");
+	}
+	return domain;
 }
 
 function nonEmptyOption(value: string | undefined, fallback: string): string {
@@ -2452,6 +2495,9 @@ export function registerHermesCommand(program: Command): void {
 			"Social/off-domain sentinel probe network namespace",
 		)
 		.option("--actor <id>", "Private authority actor id")
+		.option("--domain <domain>", "Allowed authority domain: private or household")
+		.option("--subject-user-id <id>", "Household opaque subject id")
+		.option("--turn-conversation-ref <ref>", "Household current inbound turn authority")
 		.option("--memory-source <source>", "Private authority memory source")
 		.option("--writable-namespace <namespace>", "Private authority writable namespace")
 		.option("--off-domain-actor <id>", "Social/off-domain sentinel authority actor id")
@@ -2729,6 +2775,12 @@ export function registerHermesCommand(program: Command): void {
 		.option("--image <image>", "Hermes Docker image for execution.api_server_containment")
 		.option("--mcp-url <url>", "Relay-only served MCP HTTP endpoint URL")
 		.option("--mcp-auth <header>", "Authorized served MCP context header as 'Name: value'")
+		.option(
+			"--mcp-sibling-auth <header>",
+			"Second household served MCP context header as 'Name: value'",
+		)
+		.option("--household-memory-source <source>", "First household probe memory source")
+		.option("--household-sibling-memory-source <source>", "Second household probe memory source")
 		.option(
 			"--mcp-off-domain-peer-auth <header>",
 			"Off-domain/wrong-peer served MCP context header as 'Name: value'",
@@ -3122,6 +3174,82 @@ export function registerHermesCommand(program: Command): void {
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}
 				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === SERVED_MCP_HOUSEHOLD_MEMORY_PROBE_ID) {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
+				const timeoutMs = parseTimeoutMs(options.timeoutMs);
+				const parentAEndpoint = servedMcpEndpoint(
+					options.mcpUrl,
+					options.mcpAuth,
+					SERVED_MCP_AUTH_ENV,
+				);
+				const parentBEndpoint = servedMcpEndpoint(
+					options.mcpUrl,
+					options.mcpSiblingAuth,
+					SERVED_MCP_HOUSEHOLD_SIBLING_AUTH_ENV,
+				);
+				const origin =
+					options.allowRun === true
+						? resolveServedMcpOriginConfig(options.containerName, options.expectedPeerAddress)
+						: undefined;
+				const report = await runServedMcpHouseholdMemoryProbe({
+					allowRun: options.allowRun === true,
+					...(parentAEndpoint ? { parentAEndpoint } : {}),
+					...(parentBEndpoint ? { parentBEndpoint } : {}),
+					...(options.householdMemorySource
+						? { parentAMemorySource: options.householdMemorySource }
+						: {}),
+					...(options.householdSiblingMemorySource
+						? { parentBMemorySource: options.householdSiblingMemorySource }
+						: {}),
+					...(origin?.expectedPeerAddress
+						? { expectedPeerAddress: origin.expectedPeerAddress }
+						: {}),
+					fetchImpl:
+						options.allowRun === true && origin?.containerName
+							? buildDockerExecFetch({
+									dockerBin: options.dockerBin,
+									containerName: origin.containerName,
+									timeoutMs,
+								})
+							: undefined,
+					timeoutMs,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true && report.status !== "pending") {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_SERVED_MCP_HOUSEHOLD_MEMORY_EVIDENCE_PATH,
+					);
+					writeServedMcpHouseholdMemoryEvidence(report, outPath, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				const verdict = evaluateServedMcpHouseholdMemoryEvidence(report, {
+					allowStaleAttestations: true,
+				});
+				process.exitCode =
+					report.status === "pending"
+						? 2
+						: verdict.status === "pass" && verdict.productionEnable
+							? 0
+							: verdict.status === "input_error"
+								? 2
+								: 1;
 				return;
 			}
 

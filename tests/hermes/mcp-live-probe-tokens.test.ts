@@ -9,6 +9,53 @@ import { createTelclaudeLiveMcpConnectionResolver } from "../../src/hermes/mcp/l
 import { createTelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
 
 describe("Telclaude live MCP probe tokens", () => {
+	it("issues a subject-bound household probe authority without a private-memory fallback", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const resolver = createTelclaudeLiveMcpConnectionResolver({
+			registry,
+			nowMs: () => 2_000,
+			allowedPeerAddresses: ["10.0.0.2"],
+		});
+		const householdConnection = connection({
+			sessionKey: "probe:household:parent-a",
+			profileId: "parent-a",
+		});
+		const bundle = createTelclaudeLiveMcpProbeTokenBundle({
+			registry,
+			resolver,
+			privateConnection: householdConnection,
+			wrongConnection: connection({ sessionKey: "probe:wrong", profileId: "wrong" }),
+			privateAuthority: authority({
+				actorId: "household:probe:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				providerScopes: ["clalit"],
+				turnConversationRef: `turn_${"a".repeat(32)}`,
+			}),
+			nowMs: 1_000,
+			ttlMs: 10_000,
+			peerAddress: "10.0.0.2",
+		});
+
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.2"),
+			),
+		).toMatchObject({
+			connection: householdConnection,
+			authority: {
+				domain: "household",
+				subjectUserId: "household:parent-a",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				turnConversationRef: `turn_${"a".repeat(32)}`,
+			},
+		});
+	});
+
 	it("issues bearer tokens against the shared resolver without exposing token material in metadata", () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const resolver = createTelclaudeLiveMcpConnectionResolver({

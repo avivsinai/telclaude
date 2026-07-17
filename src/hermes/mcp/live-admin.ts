@@ -95,6 +95,7 @@ const ConnectionSchema = z
 const AuthoritySchema = z
 	.object({
 		actorId: NonEmptyString,
+		subjectUserId: NonEmptyString.optional(),
 		profileId: NonEmptyString,
 		domain: z.enum(["private", "social", "household", "public", "specialist"]),
 		memorySource: NonEmptyString,
@@ -103,6 +104,7 @@ const AuthoritySchema = z
 		outboundChannels: z.array(NonEmptyString),
 		endpointId: NonEmptyString,
 		networkNamespace: NonEmptyString,
+		turnConversationRef: NonEmptyString.optional(),
 	})
 	.strip();
 const ProbeTokensRequestSchema = z

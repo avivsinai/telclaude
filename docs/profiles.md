@@ -1,6 +1,6 @@
 # Operator Profiles
 
-Per-chat overlays that bind a SOUL, a skill allowlist, and a default model to a Telegram chat on the private side. For the framing and the maturity ladder see `docs/operator-playbook.md`. For the security invariant that keeps memory per-profile see `docs/architecture.md` (invariant #8).
+Profiles bind a SOUL, skill and provider scopes, a default model, and optional channel identities to one runtime identity. Telegram uses per-chat profile selection on the private side; WhatsApp household profiles use explicit config bindings. For the framing and the maturity ladder see `docs/operator-playbook.md`. For the security invariant that keeps memory per-profile see `docs/architecture.md` (invariant #8).
 
 ## What a profile is
 
@@ -34,6 +34,69 @@ Per-chat binding lives in the sessions table and survives restarts. Operators sw
 Memory is scoped per profile (`source: "telegram:<profile-id>"`). Switching profiles switches what memory the agent sees. Cross-profile reads are runtime-asserted off — the assertion is the invariant, not a check we want to relax.
 
 The profile binding is runtime-independent inside the documented Hermes private path. A profile resolves the same SOUL append, skill allowlist, default model, and `telegram:<profile-id>` memory source for every private turn. Profiles are a Telclaude-side overlay above the contained Hermes execution backend, not part of it.
+
+## WhatsApp household bindings
+
+Each household WhatsApp principal gets a separate explicit profile and one binding:
+
+```jsonc
+{
+  "id": "parent-a",
+  "label": "Parent A",
+  "allowedSkills": [],
+  "providerScopes": ["clalit"],
+  "capabilityScopes": ["schedule.read", "schedule.write"],
+  "outboundChannels": ["whatsapp"],
+  "whatsappHouseholdBindings": [
+    {
+      "bindingId": "parent-a",
+      "address": "whatsapp:+15550001001",
+      "replyAddress": "whatsapp:+15550001001",
+      "displayName": "Parent A",
+      "subjectUserId": "household:parent-a"
+    }
+  ]
+}
+```
+
+The binding entry is the Phase 0 pairing attestation. Someone with administrative access to `telclaude.json` therefore has pairing authority and must be treated like a credential administrator. Changing or removing a binding changes or revokes that principal's access on the next config load.
+
+The fields deliberately separate local identity from provider credentials:
+
+- `bindingId` is an opaque local slug containing at least one letter. It is not a phone number, national ID, provider account, or credential.
+- `subjectUserId` must equal `household:<bindingId>`. Never paste an Israeli ID number, phone number, or provider username into it. Provider ID and phone enrollment data belong only in the vault/provider sidecar.
+- `address` and `replyAddress` must be the same enrolled E.164 WhatsApp address. Telclaude derives actor, conversation, reply, memory, and writable namespace authority from this binding; the model cannot choose them.
+- Household scope arrays are exact, not defaults: no skills, only the `clalit` provider, schedule read/write capabilities, and WhatsApp outbound. Missing or broader arrays fail config validation.
+
+Give each parent a distinct profile, `bindingId`, address, and `subjectUserId`. Their semantic and episodic memory source is exactly `household:<bindingId>`; cross-binding reads and writes are denied. Operator WhatsApp addresses configured through `TELCLAUDE_WHATSAPP_INBOUND_OPERATOR_ADDRESSES` continue to coexist, but they must be disjoint from every household binding or inbound setup fails closed.
+
+### Household memory proof
+
+`served_mcp.household_memory` is a separate sibling-isolation probe. It does not relax or replace the existing `served_mcp.memory` private/social air-gap proof. The probe needs two short-lived, peer-bound household tokens, each stamped with the real current inbound turn for that binding:
+
+```sh
+PARENT_A_JSON="$(pnpm dev hermes live-mcp probe-tokens --json \
+  --domain household --profile-id parent-a \
+  --subject-user-id household:parent-a \
+  --turn-conversation-ref "$PARENT_A_TURN_REF")"
+PARENT_B_JSON="$(pnpm dev hermes live-mcp probe-tokens --json \
+  --domain household --profile-id parent-b \
+  --subject-user-id household:parent-b \
+  --turn-conversation-ref "$PARENT_B_TURN_REF")"
+
+PARENT_A_AUTH="$(printf '%s' "$PARENT_A_JSON" | jq -r '.env.TELCLAUDE_HERMES_SERVED_MCP_AUTH')"
+PARENT_B_AUTH="$(printf '%s' "$PARENT_B_JSON" | jq -r '.env.TELCLAUDE_HERMES_SERVED_MCP_AUTH')"
+
+pnpm dev hermes probe served_mcp.household_memory --allow-run \
+  --mcp-url "$TELCLAUDE_HERMES_SERVED_MCP_URL" \
+  --mcp-auth "$PARENT_A_AUTH" --mcp-sibling-auth "$PARENT_B_AUTH" \
+  --household-memory-source household:parent-a \
+  --household-sibling-memory-source household:parent-b \
+  --container-name tc-hermes-contained \
+  --expected-peer-address "$TELCLAUDE_HERMES_CONTAINED_IP"
+```
+
+The signed evidence passes only when both principals can write and recall their own sentinel, both sibling searches return empty scoped results, client-selected sources are rejected, unsafe writes are rejected, and both authorities are observed from the expected contained peer. Treat the token JSON as ephemeral secret material; do not persist or commit it.
 
 ## Router profile convention
 

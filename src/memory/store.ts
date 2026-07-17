@@ -1,6 +1,7 @@
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import {
+	isHouseholdMemorySource,
 	isTelegramMemorySource,
 	type MemorySourceFamily,
 	telegramMemorySource,
@@ -38,7 +39,9 @@ const MAX_QUERY_LIMIT = 500;
 const MAX_ENTRIES_PER_SOURCE_CHAT = 500;
 
 function trustForSource(source: MemorySource): TrustLevel {
-	return isTelegramMemorySource(source) ? "trusted" : "untrusted";
+	return isTelegramMemorySource(source) || isHouseholdMemorySource(source)
+		? "trusted"
+		: "untrusted";
 }
 
 type MemoryEntryRow = {

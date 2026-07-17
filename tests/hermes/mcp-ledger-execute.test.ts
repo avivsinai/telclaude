@@ -417,6 +417,110 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		expect(harness.verifierCalls).toHaveLength(0);
 	});
 
+	it("rejects household execution when the live actor seat principal changed", async () => {
+		const harness = createLedgerHarness();
+		const outbound = harness.ledger.prepare(
+			outboundPrepareInput({
+				actorId: "household:whatsapp:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+			}),
+		);
+		harness.accept("outbound-household-token", outbound);
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedOutboundConversation: () =>
+					fixtureConversation({
+						token: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId,
+						profileId: "parent-a",
+						domain: "household",
+						mcpDomain: "household",
+						edgeDomain: "household",
+						members: [
+							{
+								actorId: "household:whatsapp:parent-a",
+								channel: "whatsapp",
+								principalId: "+15550000000",
+								principalHash:
+									"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+								role: "sender",
+								identityAssurance: "strong_link",
+								scopes: ["message:reply"],
+								revoked: false,
+							},
+						],
+					}),
+			},
+			{
+				actorId: "household:whatsapp:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+			},
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_recipient_not_targetable",
+			reason: "outbound household recipient no longer matches the live actor seat",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("rejects household execution when the live turn sender principal changed", async () => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"c".repeat(32)}`;
+		const outbound = harness.ledger.prepare(
+			outboundPrepareInput({
+				actorId: "household:whatsapp:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+				turnConversationRef,
+			}),
+		);
+		harness.accept("outbound-household-turn-token", outbound);
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedInboundTurn: () =>
+					fixtureInboundTurn({
+						ref: turnConversationRef,
+						conversationToken: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId ?? "",
+						profileId: "parent-a",
+						domain: "household",
+						mcpDomain: "household",
+						senderActorId: "household:whatsapp:parent-a",
+						senderPrincipalId: "+15550000000",
+					}),
+			},
+			{
+				actorId: "household:whatsapp:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				turnConversationRef,
+			},
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "effect_turn_authority_mismatch",
+			reason: "side effect turn authority mismatch",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
 	it("accepts social MCP domain outbound records against public-social relay conversations", async () => {
 		const harness = createLedgerHarness();
 		const base = outboundPrepareInput();
