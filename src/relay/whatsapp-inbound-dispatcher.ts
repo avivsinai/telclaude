@@ -14,6 +14,10 @@ import {
 } from "../memory/telegram-memory.js";
 import type { StreamChunk } from "../runtime/stream.js";
 import { buildSoulPromptAppend } from "../soul.js";
+import {
+	type ProviderChallengeTurnControl,
+	providerChallengeTurnControl,
+} from "./provider-challenge-turn-control.js";
 import type { WhatsAppIdentityResolution } from "./whatsapp-inbound-cl1.js";
 
 export type WhatsAppInboundHermesExecutor = (
@@ -31,6 +35,7 @@ export type WhatsAppInboundDispatchInput = {
 	readonly executeHermes?: WhatsAppInboundHermesExecutor;
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
+	readonly turnControl?: ProviderChallengeTurnControl;
 };
 
 export type WhatsAppInboundDispatchResult =
@@ -56,7 +61,12 @@ export async function dispatchWhatsAppInboundToHermes(
 ): Promise<WhatsAppInboundDispatchResult> {
 	const executeHermes = input.executeHermes ?? executeHermesQuery;
 	const prompt = buildWhatsAppInboundHermesPrompt(input);
-	const runtimeOptions = buildWhatsAppInboundHermesOptions(input);
+	const controller = new AbortController();
+	const unregister = (input.turnControl ?? providerChallengeTurnControl).register(
+		input.turn.ref,
+		controller,
+	);
+	const runtimeOptions = { ...buildWhatsAppInboundHermesOptions(input), signal: controller.signal };
 	let toolUses = 0;
 	let toolResults = 0;
 	let lastDone: Extract<StreamChunk, { type: "done" }>["result"] | null = null;
@@ -74,6 +84,8 @@ export async function dispatchWhatsAppInboundToHermes(
 			reason: error instanceof Error ? error.message : String(error),
 			retryable: true,
 		};
+	} finally {
+		unregister();
 	}
 
 	if (!lastDone) {

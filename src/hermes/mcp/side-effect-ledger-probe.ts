@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
+import {
+	createPendingProviderChallengeRegistry,
+	type PendingProviderChallengeBindingEvidence,
+} from "../../relay/pending-provider-challenge.js";
+import { createProviderChallengeTurnControl } from "../../relay/provider-challenge-turn-control.js";
 import type { ResolvedWhatsAppHouseholdReplyBinding } from "../../relay/whatsapp-household-bindings.js";
+import type { WhatsAppIdentityResolution } from "../../relay/whatsapp-inbound-cl1.js";
+import { createWhatsAppProviderChallengeInterceptor } from "../../relay/whatsapp-provider-challenge-interceptor.js";
 import { redactSecrets } from "../../security/output-filter.js";
 import {
 	type HermesSignedEvidenceValidationOptions,
@@ -137,6 +144,8 @@ export const SideEffectLedgerProbeEvidenceSchema = z
 				householdParentBContentHash: Sha256Digest.optional(),
 				householdDeliveryCallCount: z.number().int().nonnegative().optional(),
 				householdBindingResolverCallCount: z.number().int().nonnegative().optional(),
+				challengeResponderCallCount: z.number().int().nonnegative().optional(),
+				challengeControlSendCount: z.number().int().nonnegative().optional(),
 			})
 			.strict(),
 		runnerAttestation: SideEffectLedgerAttestationSchema.optional(),
@@ -155,6 +164,14 @@ export const HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS = [
 	"ledger.household.artifact-redacted",
 ] as const;
 
+export const PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS = [
+	"challenge.turn.abort-and-block",
+	"challenge.audio.stays-armed",
+	"challenge.parent-isolation",
+	"challenge.claim-one-shot",
+	"challenge.artifact-redacted",
+] as const;
+
 const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.provider.prepare-hashes",
 	"ledger.outbound.prepare-hashes",
@@ -171,6 +188,7 @@ const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.authority-mismatch-denied",
 	"ledger.provider-scope-mismatch-denied",
 	...HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS,
+	...PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS,
 ] as const;
 
 export function runTelclaudeMcpSideEffectLedgerProbe(input: {
@@ -653,6 +671,7 @@ async function runProbe(input: {
 			observations,
 			nowMs: () => nowMs,
 		});
+		await runProviderChallengeProbe({ checks, observations, nowMs: () => nowMs });
 	} catch (error) {
 		checks.push({
 			name: "ledger.probe.exception",
@@ -688,6 +707,215 @@ async function runProbe(input: {
 				) as SideEffectLedgerProbeEvidence["runnerAttestation"],
 			}
 		: evidence;
+}
+
+async function runProviderChallengeProbe(input: {
+	readonly checks: ProbeCheck[];
+	readonly observations: SideEffectLedgerProbeEvidence["observations"];
+	readonly nowMs: () => number;
+}): Promise<void> {
+	const turnControl = createProviderChallengeTurnControl({ nowMs: input.nowMs });
+	const registry = createPendingProviderChallengeRegistry({ nowMs: input.nowMs, turnControl });
+	const identity = providerChallengeIdentity("parent-a", "+15550000001");
+	const otherIdentity = providerChallengeIdentity("parent-b", "+15550000002");
+	const conversation = providerChallengeConversation(identity, "a");
+	const binding = providerChallengeBinding(identity, conversation);
+	const initiatingTurnRef = `turn_${"c".repeat(32)}`;
+	const streamController = new AbortController();
+	turnControl.register(initiatingTurnRef, streamController);
+	registry.arm({
+		origin: "relay_login_coordinator",
+		initiationRef: "provider_login_probe_parent_a_1234",
+		initiatingTurnRef,
+		binding,
+		service: "clalit",
+		providerChallengeId: "synthetic-provider-challenge-secret",
+		challengeType: "sms_otp",
+		sidecarExpiresAtMs: input.nowMs() + 60_000,
+		nowMs: input.nowMs(),
+	});
+	pushCheck(
+		input.checks,
+		"challenge.turn.abort-and-block",
+		streamController.signal.aborted && turnControl.isBlocked(initiatingTurnRef, input.nowMs()),
+		"coordinator arming aborts the active Hermes stream and blocks the opaque turn ref",
+	);
+
+	const controls: unknown[] = [];
+	const responderInputs: unknown[] = [];
+	const intercept = createWhatsAppProviderChallengeInterceptor({
+		registry,
+		nowMs: input.nowMs,
+		respondToChallenge: async (request) => {
+			responderInputs.push(request);
+			input.observations.challengeResponderCallCount = responderInputs.length;
+			return { status: "success" };
+		},
+		sendControl: async (request) => {
+			controls.push(request);
+			input.observations.challengeControlSendCount = controls.length;
+		},
+	});
+	const audioResult = await intercept({
+		event: providerChallengeEvent(identity, {
+			text: undefined,
+			attachments: [{ mediaType: "audio/ogg", bytesBase64: "must-not-decode" }],
+		}),
+		identity,
+		conversation,
+	});
+	pushCheck(
+		input.checks,
+		"challenge.audio.stays-armed",
+		audioResult.handled &&
+			audioResult.templateId === "challenge_type_digits" &&
+			registry.peekForInbound(binding, input.nowMs()).status === "armed" &&
+			responderInputs.length === 0,
+		"armed audio is handled with fixed copy without decode, claim, or provider response",
+	);
+
+	const otherResult = await intercept({
+		event: providerChallengeEvent(otherIdentity, { text: "862409" }),
+		identity: otherIdentity,
+		conversation: providerChallengeConversation(otherIdentity, "b"),
+	});
+	pushCheck(
+		input.checks,
+		"challenge.parent-isolation",
+		otherResult.handled &&
+			otherResult.templateId === "challenge_unarmed_safety" &&
+			registry.peekForInbound(binding, input.nowMs()).status === "armed" &&
+			responderInputs.length === 0,
+		"a different household binding cannot observe or consume the pending parent challenge",
+	);
+
+	const successResult = await intercept({
+		event: providerChallengeEvent(identity, { text: "862409" }),
+		identity,
+		conversation,
+	});
+	const replayResult = await intercept({
+		event: providerChallengeEvent(identity, { text: "862409", messageId: "challenge-replay" }),
+		identity,
+		conversation,
+	});
+	pushCheck(
+		input.checks,
+		"challenge.claim-one-shot",
+		successResult.handled &&
+			successResult.templateId === "challenge_success_repeat_request" &&
+			replayResult.handled &&
+			replayResult.templateId === "challenge_unarmed_safety" &&
+			responderInputs.length === 1 &&
+			registry.peekForInbound(binding, input.nowMs()).status === "none",
+		"a valid OTP deletes before provider response and replay cannot respond again",
+	);
+
+	const serialized = JSON.stringify({
+		audioResult,
+		otherResult,
+		successResult,
+		replayResult,
+		controls,
+	});
+	pushCheck(
+		input.checks,
+		"challenge.artifact-redacted",
+		!serialized.includes("862409") &&
+			!serialized.includes("synthetic-provider-challenge-secret") &&
+			redactSecrets(serialized) === serialized,
+		"signed challenge observations contain fixed templates and no OTP or provider challenge secret",
+	);
+}
+
+function providerChallengeIdentity(
+	bindingId: string,
+	phone: string,
+): Extract<WhatsAppIdentityResolution, { domain: "household" }> {
+	return {
+		domain: "household",
+		bindingId,
+		actorId: `household:whatsapp:${bindingId}`,
+		subjectUserId: `household:${bindingId}`,
+		profileId: bindingId,
+		principalId: `whatsapp:${phone}`,
+		identityAssurance: "strong_link",
+		authorizationScopes: [],
+		actorScopes: [],
+		humanPairingProvenance: true,
+		memorySource: `household:${bindingId}`,
+		writableNamespace: `household:${bindingId}`,
+		replyAddressRef: `whatsapp:${phone}`,
+		expectedConversationKey: `whatsapp:${phone}`,
+		conversationId: `whatsapp:household:${bindingId}`,
+	};
+}
+
+function providerChallengeConversation(
+	identity: Extract<WhatsAppIdentityResolution, { domain: "household" }>,
+	hex: string,
+): RelayConversation {
+	return {
+		token: `conv_${hex.repeat(32)}`,
+		channel: "whatsapp",
+		conversationId: identity.conversationId,
+		threadId: identity.replyAddressRef,
+		profileId: identity.profileId,
+		domain: "household",
+		mcpDomain: "household",
+		edgeDomain: "household",
+		routingSession: { sessionId: "challenge-probe", routeKey: "challenge-probe" },
+		authorizationState: "authorized",
+		humanPairingProvenance: true,
+		authorizationScopes: [],
+		members: [],
+		threadMessageIds: [],
+		inboundCursor: null,
+		auditIds: [],
+		createdAtMs: 100_000,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
+		updatedAtMs: 100_000,
+	};
+}
+
+function providerChallengeBinding(
+	identity: Extract<WhatsAppIdentityResolution, { domain: "household" }>,
+	conversation: RelayConversation,
+): PendingProviderChallengeBindingEvidence {
+	return {
+		bindingId: identity.bindingId,
+		actorId: identity.actorId,
+		subjectUserId: identity.subjectUserId,
+		profileId: identity.profileId,
+		conversationToken: conversation.token,
+		conversationId: conversation.conversationId,
+		senderPrincipalHash: `sha256:${crypto.createHash("sha256").update(identity.principalId).digest("hex")}`,
+	};
+}
+
+function providerChallengeEvent(
+	identity: Extract<WhatsAppIdentityResolution, { domain: "household" }>,
+	overrides: Partial<{
+		readonly text: string | undefined;
+		readonly messageId: string;
+		readonly attachments: { mediaType: string; bytesBase64: string }[];
+	}> = {},
+) {
+	return {
+		schemaVersion: "telclaude.edge.whatsapp.inbound.v1" as const,
+		eventId: "provider-challenge-probe",
+		messageId: "provider-challenge-message",
+		cursorSequence: 1,
+		chatKind: "direct" as const,
+		senderAddressRef: identity.principalId,
+		conversationKey: identity.expectedConversationKey,
+		text: "hello",
+		attachments: [],
+		receivedAtMs: 100_000,
+		...overrides,
+	};
 }
 
 async function runHouseholdReplyProbe(input: {

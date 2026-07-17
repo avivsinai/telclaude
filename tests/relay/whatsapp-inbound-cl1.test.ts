@@ -78,7 +78,9 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 		});
 
 		expect(result).toMatchObject({ ok: true, duplicate: false });
-		if (!result.ok || result.duplicate) throw new Error("expected first-seen event");
+		if (!result.ok || result.duplicate || result.intercepted) {
+			throw new Error("expected first-seen event");
+		}
 		expect(delivered).toEqual([result.event]);
 		expect(result.conversation.token).toMatch(/^conv_[0-9a-f]{32}$/);
 		expect(result.turn.ref).toMatch(/^turn_[0-9a-f]{32}$/);
@@ -180,7 +182,9 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 			signature: signWhatsAppInboundBridgeEvent(event, SECRET),
 		});
 		expect(result).toMatchObject({ ok: true, duplicate: false });
-		if (!result.ok || result.duplicate) throw new Error("expected first-seen event");
+		if (!result.ok || result.duplicate || result.intercepted) {
+			throw new Error("expected first-seen event");
+		}
 		const operatorSeat = result.conversation.members.find(
 			(member) => member.actorId === "operator:aviv",
 		);
@@ -412,6 +416,83 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 		).resolves.toMatchObject({ ok: true, duplicate: false });
 
 		expect(delivered).toHaveLength(4);
+	});
+
+	it("intercepts after identity and replay checks but before attachment decoding or persistence", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const {
+			createOperatorWhatsAppIdentityResolver,
+			createWhatsAppInboundCl1Pipeline,
+			signWhatsAppInboundBridgeEvent,
+		} = await import("../../src/relay/whatsapp-inbound-cl1.js");
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		const seeded = conversationStore.resumeOrMint({
+			channel: "whatsapp",
+			conversationId: OPERATOR_PHONE,
+			threadId: OPERATOR_PHONE,
+			profileId: "operator-private",
+			domain: "private",
+			authorizationState: "authorized",
+			humanPairingProvenance: true,
+			members: [
+				{
+					actorId: "operator:aviv",
+					principalId: OPERATOR_PHONE,
+					role: "sender",
+					identityAssurance: "strong_link",
+				},
+			],
+			nowMs: NOW,
+		}).conversation;
+		const quarantineStore = createAttachmentQuarantineStore({ now: () => NOW });
+		const quarantine = vi.spyOn(quarantineStore, "store");
+		const delivered = vi.fn();
+		const intercept = vi.fn(async () => ({
+			handled: true as const,
+			templateId: "challenge_type_digits",
+		}));
+		const pipeline = createWhatsAppInboundCl1Pipeline({
+			signatureSecret: SECRET,
+			conversationStore,
+			quarantineStore,
+			resolveIdentity: createOperatorWhatsAppIdentityResolver({
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profileId: "operator-private",
+				actorId: "operator:aviv",
+			}),
+			nowMs: () => NOW,
+			interceptBeforePersistence: intercept,
+			onInboundEvent: delivered,
+		});
+		const event = whatsappEvent({
+			messageId: "otp-audio",
+			cursorSequence: 2,
+			attachments: [{ mediaType: "audio/ogg", bytesBase64: "not-base64" }],
+		});
+
+		await expect(
+			pipeline.ingest({ event, signature: signWhatsAppInboundBridgeEvent(event, SECRET) }),
+		).resolves.toMatchObject({
+			ok: true,
+			duplicate: false,
+			intercepted: true,
+			templateId: "challenge_type_digits",
+		});
+		expect(intercept).toHaveBeenCalledWith(
+			expect.objectContaining({ conversation: expect.objectContaining({ token: seeded.token }) }),
+		);
+		expect(quarantine).not.toHaveBeenCalled();
+		expect(delivered).not.toHaveBeenCalled();
+		expect(conversationStore.inspect(seeded.token)).toMatchObject({
+			threadMessageIds: [],
+			inboundCursor: null,
+			auditIds: [],
+		});
 	});
 });
 

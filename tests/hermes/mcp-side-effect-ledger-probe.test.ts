@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS,
+	PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS,
 	runTelclaudeMcpSideEffectLedgerProbe,
 	sideEffectLedgerProbeEvidenceFailure,
 } from "../../src/hermes/mcp/side-effect-ledger-probe.js";
@@ -20,6 +21,14 @@ const EXPECTED_HOUSEHOLD_REPLY_CHECKS = [
 	"ledger.household.artifact-redacted",
 ] as const;
 
+const EXPECTED_PROVIDER_CHALLENGE_CHECKS = [
+	"challenge.turn.abort-and-block",
+	"challenge.audio.stays-armed",
+	"challenge.parent-isolation",
+	"challenge.claim-one-shot",
+	"challenge.artifact-redacted",
+] as const;
+
 describe("Telclaude MCP side-effect ledger probe", () => {
 	beforeEach(() => {
 		const relayKeys = generateKeyPair();
@@ -34,6 +43,10 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 
 	it("pins the household reply property catalog independently of the evaluator", () => {
 		expect(HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS).toEqual(EXPECTED_HOUSEHOLD_REPLY_CHECKS);
+	});
+
+	it("pins the provider challenge property catalog independently of the evaluator", () => {
+		expect(PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS).toEqual(EXPECTED_PROVIDER_CHALLENGE_CHECKS);
 	});
 
 	it("passes only after exercising prepare, execute, proxy, and denial paths", async () => {
@@ -67,6 +80,13 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 		expect(evidence.observations.householdBindingResolverCallCount).toBe(3);
 		expect(evidence.observations.householdParentAContentHash).not.toBe(
 			evidence.observations.householdParentBContentHash,
+		);
+		expect(evidence.observations.challengeResponderCallCount).toBe(1);
+		expect(evidence.observations.challengeControlSendCount).toBe(4);
+		expect(evidence.checks.filter((check) => check.name.startsWith("challenge."))).toEqual(
+			EXPECTED_PROVIDER_CHALLENGE_CHECKS.map((name) =>
+				expect.objectContaining({ name, status: "pass" }),
+			),
 		);
 		expect(evidence.checks.filter((check) => check.name.startsWith("ledger.household."))).toEqual(
 			EXPECTED_HOUSEHOLD_REPLY_CHECKS.map((name) =>

@@ -177,6 +177,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	/** Revalidates current browser credential/session binding before S3 execute. */
 	readonly browserWriteSessionValidator?: BrowserWriteSessionValidator;
 	readonly nowMs?: () => number;
+	readonly isTurnBlocked?: (turnConversationRef: string, nowMs?: number) => boolean;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
 };
 
@@ -259,6 +260,7 @@ export async function startTelclaudeLiveMcpRuntime(
 					? { browserWriteSessionValidator: options.browserWriteSessionValidator }
 					: {}),
 				nowMs: options.nowMs,
+				isTurnBlocked: options.isTurnBlocked,
 			});
 			const nodeServer = createTelclaudeLiveMcpNodeHttpServer(liveServer, {
 				path: options.config.path,

@@ -73,6 +73,7 @@ import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outboun
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import { createOutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
+import { providerChallengeTurnControl } from "../relay/provider-challenge-turn-control.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
 import {
@@ -482,6 +483,8 @@ export function registerRelayCommand(program: Command): void {
 					resolveHouseholdReplyBinding: liveMcpHouseholdReplyBindingResolver,
 					outboundDeliveryDispatcher: liveMcpOutboundDeliveryDispatcher,
 					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
+					isTurnBlocked: (turnConversationRef, nowMs) =>
+						providerChallengeTurnControl.isBlocked(turnConversationRef, nowMs),
 					...(liveMcpBrowserWriteCommitter
 						? { browserWriteCommitter: liveMcpBrowserWriteCommitter }
 						: {}),

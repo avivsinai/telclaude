@@ -129,6 +129,7 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly bindHost: string;
 	readonly networkName: string;
 	readonly nowMs?: () => number;
+	readonly isTurnBlocked?: (turnConversationRef: string, nowMs?: number) => boolean;
 };
 
 export type CreateTelclaudeLiveMcpNodeHttpServerOptions = {
@@ -277,6 +278,12 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 				nowMs: options.nowMs?.(),
 			});
 			if (!registered.ok) return jsonError(id, -32001, registered.reason);
+			if (
+				registered.authority.turnConversationRef &&
+				options.isTurnBlocked?.(registered.authority.turnConversationRef, options.nowMs?.())
+			) {
+				return jsonError(id, -32001, "MCP turn is closed by relay control");
+			}
 
 			try {
 				const result = await callBridgeTool(
