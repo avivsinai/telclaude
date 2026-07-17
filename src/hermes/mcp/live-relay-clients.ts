@@ -1,12 +1,28 @@
 import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { loadConfig } from "../../config/config.js";
+import { loadConfig, type TelclaudeConfig } from "../../config/config.js";
 import { getHomeTarget } from "../../config/sessions.js";
 import { validateCronExpression } from "../../cron/parse.js";
 import { addCronJob, getCronJob, listCronJobs, removeCronJob } from "../../cron/store.js";
 import type { CronJob, CronSchedule } from "../../cron/types.js";
 import { upsertCuratorItem } from "../../curator/store.js";
+import {
+	type HouseholdReminderContext,
+	resolveHouseholdReminderContext,
+} from "../../household-reminders/binding.js";
+import { householdReminderProposalPrompt } from "../../household-reminders/copy.js";
+import {
+	listHouseholdReminders,
+	prepareHouseholdReminderCancellation,
+	prepareHouseholdReminderCreate,
+	prepareHouseholdReminderUpdate,
+} from "../../household-reminders/store.js";
+import {
+	HOUSEHOLD_REMINDER_RECURRING_DECLINE_HE,
+	resolveJerusalemOneShot,
+} from "../../household-reminders/time.js";
+import type { HouseholdReminder } from "../../household-reminders/types.js";
 import { getChildLogger } from "../../logging.js";
 import type { MemorySnapshotRequest } from "../../memory/rpc.js";
 import { handleMemoryPropose, handleMemorySnapshot } from "../../memory/rpc.js";
@@ -89,7 +105,9 @@ import type {
 	TelclaudeMcpProviderReadRequest,
 	TelclaudeMcpScheduleCancelRequest,
 	TelclaudeMcpScheduleCreateRequest,
+	TelclaudeMcpScheduleInput,
 	TelclaudeMcpScheduleListRequest,
+	TelclaudeMcpScheduleUpdateRequest,
 	TelclaudeMcpSkillRequestRequest,
 	TelclaudeMcpToolName,
 	TelclaudeMcpTtsRequest,
@@ -192,6 +210,8 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	 * a home-target-backed resolver that keys off the authority's subjectUserId.
 	 */
 	readonly resolveScheduleOwner?: ScheduleOwnerResolver;
+	/** Injectable config for household reminder binding/consent resolution. */
+	readonly householdReminderConfig?: TelclaudeConfig;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
@@ -301,6 +321,7 @@ export type TelclaudeMcpCapabilityClients = Pick<
 	| "scheduleCreate"
 	| "scheduleList"
 	| "scheduleCancel"
+	| "scheduleUpdate"
 	| "githubListRepos"
 	| "githubListRefs"
 	| "githubGetTree"
@@ -350,6 +371,9 @@ export function createNotConfiguredTelclaudeMcpCapabilityClients(): TelclaudeMcp
 		},
 		async scheduleCancel() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_schedule_cancel");
+		},
+		async scheduleUpdate() {
+			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_schedule_update");
 		},
 		async githubListRepos() {
 			throw new TelclaudeLiveMcpToolNotConfiguredError("tc_github_list_repos");
@@ -1074,6 +1098,23 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async scheduleCreate(request: TelclaudeMcpScheduleCreateRequest) {
 			assertAuthorityMemoryBoundary(request);
+			if (request.domain === "household") {
+				const context = householdReminderContext(request, options.householdReminderConfig);
+				const prepared = prepareHouseholdReminderCreate({
+					...context,
+					text: request.prompt,
+					...(request.label ? { label: request.label } : {}),
+					source: { kind: "parent" },
+					schedule: householdOneShotSchedule(request.schedule),
+				});
+				await auditFromRequest(request, "schedule.create", {
+					reminderId: prepared.reminder.id,
+					revision: prepared.reminder.revision,
+					proposalHash: prepared.proposal.proposalHash,
+					status: prepared.reminder.status,
+				});
+				return householdProposalView(prepared.reminder, prepared.proposal.action);
+			}
 			// ownerId + delivery target are resolved SERVER-SIDE from the authority.
 			// The agent's input never carries an ownerId/chatId/threadId/deliveryTarget.
 			const ownerId = resolveScheduleOwnerOrThrow(resolveScheduleOwner, request);
@@ -1097,6 +1138,12 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async scheduleList(request: TelclaudeMcpScheduleListRequest) {
 			assertAuthorityMemoryBoundary(request);
+			if (request.domain === "household") {
+				const context = householdReminderContext(request, options.householdReminderConfig);
+				const reminders = listHouseholdReminders(context.authority).slice(0, request.limit);
+				await auditFromRequest(request, "schedule.list", { count: reminders.length });
+				return { reminders: reminders.map(householdReminderView) };
+			}
 			// Scope strictly to the authority's own owner. No home target means no
 			// owned jobs — return an empty list rather than failing.
 			const ownerId = resolveScheduleOwner(request)?.ownerId;
@@ -1111,6 +1158,20 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async scheduleCancel(request: TelclaudeMcpScheduleCancelRequest) {
 			assertAuthorityMemoryBoundary(request);
+			if (request.domain === "household") {
+				const context = householdReminderContext(request, options.householdReminderConfig);
+				const prepared = prepareHouseholdReminderCancellation({
+					...context,
+					reminderId: request.jobId,
+				});
+				await auditFromRequest(request, "schedule.cancel", {
+					reminderId: prepared.reminder.id,
+					revision: prepared.reminder.revision,
+					proposalHash: prepared.proposal.proposalHash,
+					status: prepared.reminder.status,
+				});
+				return householdProposalView(prepared.reminder, prepared.proposal.action);
+			}
 			const ownerId = resolveScheduleOwnerOrThrow(resolveScheduleOwner, request);
 			const job = getCronJob(request.jobId);
 			// Ownership check: a job owned by a different owner (or absent) fails
@@ -1126,6 +1187,88 @@ export function createTelclaudeLiveMcpRelayClients(
 			});
 			return { jobId: request.jobId, cancelled: removed };
 		},
+
+		async scheduleUpdate(request: TelclaudeMcpScheduleUpdateRequest) {
+			assertAuthorityMemoryBoundary(request);
+			if (request.domain !== "household") {
+				throw new TelclaudeLiveMcpScheduleValidationError(
+					"tc_schedule_update is available only for household reminders",
+				);
+			}
+			const context = householdReminderContext(request, options.householdReminderConfig);
+			const prepared = prepareHouseholdReminderUpdate({
+				...context,
+				reminderId: request.jobId,
+				text: request.prompt,
+				...(request.label ? { label: request.label } : {}),
+				schedule: householdOneShotSchedule(request.schedule),
+			});
+			await auditFromRequest(request, "schedule.update", {
+				reminderId: prepared.reminder.id,
+				revision: prepared.reminder.revision,
+				proposalHash: prepared.proposal.proposalHash,
+				status: prepared.reminder.status,
+			});
+			return householdProposalView(prepared.reminder, prepared.proposal.action);
+		},
+	};
+}
+
+function householdReminderContext(
+	request: TelclaudeMcpAuthorityStamp,
+	config: TelclaudeConfig | undefined,
+): HouseholdReminderContext {
+	const subjectUserId = optionalTrimmed(request.subjectUserId);
+	if (!subjectUserId) throw new Error("household reminder subject binding required");
+	const context = resolveHouseholdReminderContext(
+		{
+			actorId: request.actorId,
+			subjectUserId,
+			profileId: request.profileId,
+		},
+		config ?? loadConfig(),
+	);
+	if (!context) throw new Error("household reminder binding or consent is unavailable");
+	return context;
+}
+
+function householdOneShotSchedule(schedule: TelclaudeMcpScheduleInput) {
+	if (schedule.kind !== "at") {
+		throw new TelclaudeLiveMcpScheduleValidationError(
+			`household recurring reminders are not available. ${HOUSEHOLD_REMINDER_RECURRING_DECLINE_HE}`,
+		);
+	}
+	try {
+		return resolveJerusalemOneShot(schedule.at);
+	} catch (error) {
+		throw new TelclaudeLiveMcpScheduleValidationError(
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+}
+
+function householdProposalView(
+	reminder: HouseholdReminder,
+	action: "create" | "update" | "cancel",
+) {
+	return {
+		reminderId: reminder.id,
+		revision: reminder.revision,
+		status: reminder.status,
+		confirmationRequired: true,
+		confirmationPrompt: householdReminderProposalPrompt(action, reminder),
+	};
+}
+
+function householdReminderView(reminder: HouseholdReminder) {
+	return {
+		reminderId: reminder.id,
+		revision: reminder.revision,
+		status: reminder.status,
+		text: reminder.text,
+		...(reminder.label ? { label: reminder.label } : {}),
+		localDateTime: reminder.schedule.localDateTime,
+		timeZone: reminder.schedule.timeZone,
 	};
 }
 

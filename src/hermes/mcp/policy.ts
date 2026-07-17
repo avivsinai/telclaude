@@ -16,6 +16,7 @@ export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_schedule_create",
 	"tc_schedule_list",
 	"tc_schedule_cancel",
+	"tc_schedule_update",
 	"tc_browse",
 	"tc_browse_act",
 	"tc_browse_act_prepare",
@@ -42,6 +43,7 @@ export const TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES = {
 	tc_schedule_create: "schedule.write",
 	tc_schedule_list: "schedule.read",
 	tc_schedule_cancel: "schedule.write",
+	tc_schedule_update: "schedule.write",
 	tc_browse: "browse.use",
 	// Interactive browser acts (fill/type inline on cookie-less pages, plus the
 	// committing two-phase prepare/execute for everything else) require a SEPARATE,

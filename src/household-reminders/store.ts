@@ -451,6 +451,31 @@ export function listHouseholdReminders(
 	return rows.map(rowToReminder);
 }
 
+export function getPendingHouseholdReminderProposal(
+	authorityInput: HouseholdReminderAuthority,
+	bindingInput: HouseholdReminderBinding,
+): HouseholdReminderProposal | null {
+	const authority = normalizeAuthority(authorityInput);
+	const binding = normalizeBinding(bindingInput);
+	const bindingFingerprint = householdReminderBindingFingerprint(binding);
+	const row = getDb()
+		.prepare(
+			`SELECT * FROM household_reminder_proposals
+			 WHERE actor_id = ? AND subject_user_id = ? AND profile_id = ?
+			 AND conversation_id = ? AND binding_fingerprint = ? AND status = 'pending'
+			 ORDER BY created_at_ms DESC LIMIT 1`,
+		)
+		.get(
+			authority.actorId,
+			authority.subjectUserId,
+			authority.profileId,
+			binding.conversationId,
+			bindingFingerprint,
+		) as ProposalRow | undefined;
+	if (!row || !verifyProposalPayload(row).ok) return null;
+	return rowToProposal(row);
+}
+
 export function claimHouseholdReminderFire(input: {
 	readonly reminderId: string;
 	readonly revision: number;
@@ -812,6 +837,33 @@ function rowToFire(row: FireRow): HouseholdReminderFire {
 		...(row.failure_class ? { failureClass: row.failure_class } : {}),
 		createdAtMs: row.created_at_ms,
 		updatedAtMs: row.updated_at_ms,
+	};
+}
+
+function rowToProposal(row: ProposalRow): HouseholdReminderProposal {
+	return {
+		ref: row.ref,
+		action: row.action,
+		reminderId: row.reminder_id,
+		baseRevision: row.base_revision,
+		proposedRevision: row.proposed_revision,
+		authority: {
+			actorId: row.actor_id,
+			subjectUserId: row.subject_user_id,
+			profileId: row.profile_id,
+		},
+		binding: {
+			bindingId: row.binding_id,
+			conversationId: row.conversation_id,
+			senderPrincipalHash: sha256Ref(row.sender_principal_hash),
+			recipientPrincipalHash: sha256Ref(row.recipient_principal_hash),
+		},
+		bindingFingerprint: sha256Ref(row.binding_fingerprint),
+		consentHash: sha256Ref(row.consent_hash),
+		proposalHash: sha256Ref(row.proposal_hash),
+		status: row.status,
+		createdAtMs: row.created_at_ms,
+		expiresAtMs: row.expires_at_ms,
 	};
 }
 

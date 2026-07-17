@@ -1,8 +1,9 @@
-import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { TelclaudeConfig } from "../../src/config/config.js";
 import { setHomeTarget } from "../../src/config/sessions.js";
 import { addCronJob, getCronJob, listCronJobs } from "../../src/cron/store.js";
 import {
@@ -16,6 +17,12 @@ import {
 	type ScheduleOwnerResolver,
 } from "../../src/hermes/mcp/live-relay-clients.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
+import { resolveHouseholdReminderContext } from "../../src/household-reminders/binding.js";
+import {
+	confirmHouseholdReminderProposal,
+	getPendingHouseholdReminderProposal,
+	rejectHouseholdReminderProposal,
+} from "../../src/household-reminders/store.js";
 import { resetDatabase } from "../../src/storage/db.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
@@ -243,6 +250,120 @@ describe("Telclaude live MCP schedule tools", () => {
 		expect(listCronJobs({ includeDisabled: true })).toEqual([]);
 	});
 
+	it("routes household schedule tools to confirmation-bound reminder proposals without cron rows", async () => {
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			householdReminderConfig: householdConfig,
+		});
+		const stamp = householdStamp();
+		const firstTime = futureJerusalemMinute(60);
+		const created = (await clients.scheduleCreate({
+			...stamp,
+			schedule: { kind: "at", at: firstTime },
+			prompt: "להביא מסמכים",
+			label: "מרפאה",
+		})) as {
+			reminderId: string;
+			status: string;
+			confirmationRequired: boolean;
+			confirmationPrompt: string;
+		};
+
+		expect(created).toMatchObject({
+			status: "pending_confirmation",
+			confirmationRequired: true,
+		});
+		expect(created.confirmationPrompt).toContain("1. אישור");
+		expect(created.confirmationPrompt).toContain("2. ביטול");
+		expect(listCronJobs({ includeDisabled: true })).toEqual([]);
+
+		const listed = (await clients.scheduleList({ ...stamp, limit: 20 })) as {
+			reminders: Array<{ reminderId: string; status: string }>;
+		};
+		expect(listed.reminders).toEqual([
+			expect.objectContaining({
+				reminderId: created.reminderId,
+				status: "pending_confirmation",
+			}),
+		]);
+
+		const context = resolveHouseholdReminderContext(stamp, householdConfig);
+		expect(context).not.toBeNull();
+		if (!context) throw new Error("test household reminder context missing");
+		const pending = getPendingHouseholdReminderProposal(context.authority, context.binding);
+		expect(pending?.proposalHash).toMatch(/^sha256:/);
+		if (!pending) throw new Error("test household reminder proposal missing");
+		expect(
+			confirmHouseholdReminderProposal({
+				proposalRef: pending.ref,
+				...context,
+			}),
+		).toMatchObject({ ok: true, reminder: { status: "scheduled" } });
+
+		const updated = (await clients.scheduleUpdate({
+			...stamp,
+			jobId: created.reminderId,
+			schedule: { kind: "at", at: futureJerusalemMinute(120) },
+			prompt: "להביא מסמכים והפניה",
+		})) as { status: string; confirmationPrompt: string };
+		expect(updated.status).toBe("paused_confirmation");
+		expect(updated.confirmationPrompt).toContain("1. אישור");
+		expect(listCronJobs({ includeDisabled: true })).toEqual([]);
+		const updateProposal = getPendingHouseholdReminderProposal(context.authority, context.binding);
+		if (!updateProposal) throw new Error("test household update proposal missing");
+		expect(
+			rejectHouseholdReminderProposal({
+				proposalRef: updateProposal.ref,
+				...context,
+			}),
+		).toMatchObject({ ok: true, reminder: { status: "scheduled" } });
+
+		const cancelled = (await clients.scheduleCancel({
+			...stamp,
+			jobId: created.reminderId,
+		})) as { status: string; confirmationPrompt: string };
+		expect(cancelled.status).toBe("paused_confirmation");
+		expect(cancelled.confirmationPrompt).toContain("לאשר את ביטול התזכורת");
+		expect(listCronJobs({ includeDisabled: true })).toEqual([]);
+	});
+
+	it("declines recurring household input and keeps private schedule behavior unchanged", async () => {
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			householdReminderConfig: householdConfig,
+		});
+		await expect(
+			clients.scheduleCreate({
+				...householdStamp(),
+				schedule: { kind: "every", everyMs: 86_400_000 },
+				prompt: "לקחת תרופה",
+			}),
+		).rejects.toThrow("אני יכולה לקבוע תזכורת חד-פעמית");
+
+		setHomeTarget("local-operator", { chatId: 4242 });
+		const privateResult = (await clients.scheduleCreate({
+			...privateStamp({ subjectUserId: "local-operator" }),
+			schedule: { kind: "at", at: new Date(Date.now() + 3_600_000).toISOString() },
+			prompt: "private unchanged",
+		})) as { jobId: string };
+		expect(getCronJob(privateResult.jobId)?.action).toEqual({
+			kind: "agent-prompt",
+			prompt: "private unchanged",
+		});
+		await expect(
+			clients.scheduleUpdate({
+				...privateStamp(),
+				jobId: privateResult.jobId,
+				schedule: { kind: "at", at: new Date(Date.now() + 7_200_000).toISOString() },
+				prompt: "must not mutate",
+			}),
+		).rejects.toThrow(/only for household/i);
+		expect(getCronJob(privateResult.jobId)?.action).toEqual({
+			kind: "agent-prompt",
+			prompt: "private unchanged",
+		});
+	});
+
 	it("denies tc_schedule_create without schedule.write and tc_schedule_list without schedule.read", async () => {
 		const ledger = testLedger();
 		const clients = createTelclaudeLiveMcpRelayClients({
@@ -277,6 +398,13 @@ describe("Telclaude live MCP schedule tools", () => {
 		await expect(noScopeBridge.tc_schedule_cancel({ jobId: "cron-x" })).rejects.toThrow(
 			"capability scope denied: schedule.write",
 		);
+		await expect(
+			noScopeBridge.tc_schedule_update({
+				jobId: "reminder-x",
+				schedule: { kind: "at", at: "2026-08-01T09:00" },
+				prompt: "denied",
+			}),
+		).rejects.toThrow("capability scope denied: schedule.write");
 	});
 
 	it("retires the relay-side conversational-cron regex (no relay interception)", () => {
@@ -352,6 +480,69 @@ function privateStamp(
 	};
 }
 
+function householdStamp(): TelclaudeMcpAuthorityStamp & { subjectUserId: string } {
+	return {
+		actorId: "household:whatsapp:parent-a",
+		subjectUserId: "household:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		memorySource: "household:parent-a",
+		writableNamespace: "household:parent-a",
+		endpointId: "endpoint-household",
+		networkNamespace: "netns-household",
+	};
+}
+
+function futureJerusalemMinute(minutesFromNow: number): string {
+	const parts = new Intl.DateTimeFormat("en-CA", {
+		timeZone: "Asia/Jerusalem",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+	}).formatToParts(Date.now() + minutesFromNow * 60_000);
+	const value = (name: string) => parts.find((part) => part.type === name)?.value;
+	return `${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}`;
+}
+
+const householdConfig = {
+	profiles: [
+		{
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					address: "whatsapp:+15557654321",
+					replyAddress: "whatsapp:+15557654321",
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+					reminderConsent: {
+						state: "granted",
+						ceremonyVersion: "phase0.v1",
+						ceremonyHash: `sha256:${"a".repeat(64)}`,
+						verifiedChannelHash:
+							"sha256:a0237ae1db3c517ae525a8b60cb1b956bf87d4369f0b7533204cd7706236bce6",
+						categories: {
+							proactiveDelivery: true,
+							scheduleManagement: true,
+							retentionDisclosure: true,
+						},
+						recordedAt: "2026-07-17T09:00:00.000Z",
+						operatorId: "operator:phase0-admin",
+					},
+				},
+			],
+		},
+	],
+} as TelclaudeConfig;
+
 function authority(overrides: Partial<TelclaudeMcpAuthority>): TelclaudeMcpAuthority {
 	return {
 		actorId: "operator",
@@ -376,7 +567,7 @@ function authority(overrides: Partial<TelclaudeMcpAuthority>): TelclaudeMcpAutho
 function bridgeDeps(
 	clients: Pick<
 		TelclaudeMcpBridgeDependencies,
-		"scheduleCreate" | "scheduleList" | "scheduleCancel"
+		"scheduleCreate" | "scheduleList" | "scheduleCancel" | "scheduleUpdate"
 	>,
 ): TelclaudeMcpBridgeDependencies {
 	const fail = async (): Promise<never> => {
@@ -400,5 +591,6 @@ function bridgeDeps(
 		scheduleCreate: clients.scheduleCreate,
 		scheduleList: clients.scheduleList,
 		scheduleCancel: clients.scheduleCancel,
+		scheduleUpdate: clients.scheduleUpdate,
 	};
 }

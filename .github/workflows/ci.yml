@@ -60,6 +60,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify Hermes compatibility lock
+        run: pnpm --silent dev hermes doctor --probes --compat-lock --json
+
       - name: Lint
         run: pnpm run lint
 
