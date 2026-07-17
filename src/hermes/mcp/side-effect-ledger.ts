@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
+import { isValidHouseholdBindingId } from "../../memory/source.js";
 import type { BrowserActCommitSignal } from "../../relay/browser-act-evidence.js";
 import type { BrowserAuthorityDomain } from "../../relay/browser-cookie-store.js";
 import type { BrowserWriteDisplay } from "../../relay/browser-write-confirm.js";
@@ -52,6 +53,14 @@ export type TelclaudeMcpOutboundAuthorizationState =
 	| "denied"
 	| "revoked";
 
+export type TelclaudeMcpHouseholdReplyBinding = {
+	readonly bindingId: string;
+	readonly subjectUserId: string;
+	readonly senderPrincipalHash: `sha256:${string}`;
+	readonly recipientPrincipalHash: `sha256:${string}`;
+	readonly identityAssurance: "strong_link";
+};
+
 export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly ref: string;
 	readonly kind: "provider";
@@ -92,6 +101,8 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly subjectUserId?: string;
+	readonly householdReplyBinding?: TelclaudeMcpHouseholdReplyBinding;
 	readonly channel: string;
 	readonly destination: string;
 	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
@@ -200,6 +211,8 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly subjectUserId?: string;
+	readonly householdReplyBinding?: TelclaudeMcpHouseholdReplyBinding;
 	readonly channel: string;
 	readonly destination: string;
 	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
@@ -289,6 +302,8 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly subjectUserId?: string;
+	readonly householdReplyBinding?: TelclaudeMcpHouseholdReplyBinding;
 	readonly channel: string;
 	readonly destination: string;
 	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
@@ -837,6 +852,13 @@ function prepareOutboundRecord(
 	nowMs: number,
 	defaultTtlMs: number,
 ): TelclaudeMcpOutboundSideEffectRecord {
+	const subjectUserId = input.subjectUserId
+		? requiredTrimmed(input.subjectUserId, "subjectUserId")
+		: undefined;
+	const householdReplyBinding = input.householdReplyBinding
+		? normalizeHouseholdReplyBinding(input.householdReplyBinding)
+		: undefined;
+	assertHouseholdReplyBindingScope(input.domain, subjectUserId, householdReplyBinding);
 	const base = {
 		ref: requiredTrimmed(makeRef(), "ref"),
 		kind: "outbound" as const,
@@ -844,6 +866,8 @@ function prepareOutboundRecord(
 		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),
 		profileId: requiredTrimmed(input.profileId, "profileId"),
 		domain: input.domain,
+		...(subjectUserId ? { subjectUserId } : {}),
+		...(householdReplyBinding ? { householdReplyBinding } : {}),
 		channel: requiredTrimmed(input.channel, "channel"),
 		destination: requiredTrimmed(input.destination, "destination"),
 		resolvedDestination: normalizeResolvedDestination(input.resolvedDestination),
@@ -921,6 +945,8 @@ function hashOutboundParams(record: OutboundBindingFields): string {
 		actorId: record.actorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		subjectUserId: record.subjectUserId ?? null,
+		householdReplyBinding: record.householdReplyBinding ?? null,
 		channel: record.channel,
 		destination: record.destination,
 		resolvedDestination: record.resolvedDestination,
@@ -945,6 +971,8 @@ function hashOutboundBody(record: OutboundBindingFields): string {
 		actorId: record.actorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		subjectUserId: record.subjectUserId ?? null,
+		householdReplyBinding: record.householdReplyBinding ?? null,
 		channel: record.channel,
 		destination: record.destination,
 		resolvedDestination: record.resolvedDestination,
@@ -992,6 +1020,8 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		subjectUserId: record.subjectUserId ?? null,
+		householdReplyBinding: record.householdReplyBinding ?? null,
 		channel: record.channel,
 		destination: record.destination,
 		resolvedDestination: record.resolvedDestination,
@@ -1098,6 +1128,10 @@ function approvalBinding(
 		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		...(record.subjectUserId ? { subjectUserId: record.subjectUserId } : {}),
+		...(record.householdReplyBinding
+			? { householdReplyBinding: record.householdReplyBinding }
+			: {}),
 		channel: record.channel,
 		destination: record.destination,
 		resolvedDestination: record.resolvedDestination,
@@ -1328,6 +1362,57 @@ function normalizeAuthorizationState(
 	throw new Error("side-effect authorizationState is invalid");
 }
 
+function normalizeHouseholdReplyBinding(
+	value: TelclaudeMcpHouseholdReplyBinding,
+): TelclaudeMcpHouseholdReplyBinding {
+	const bindingId = requiredTrimmed(value.bindingId, "householdReplyBinding.bindingId");
+	if (!isValidHouseholdBindingId(bindingId)) {
+		throw new Error("householdReplyBinding.bindingId must be an opaque household binding id");
+	}
+	const subjectUserId = requiredTrimmed(value.subjectUserId, "householdReplyBinding.subjectUserId");
+	if (subjectUserId !== `household:${bindingId}`) {
+		throw new Error("householdReplyBinding subject must match its opaque binding id");
+	}
+	if (value.identityAssurance !== "strong_link") {
+		throw new Error("householdReplyBinding identity assurance must be strong_link");
+	}
+	return {
+		bindingId,
+		subjectUserId,
+		senderPrincipalHash: normalizeSha256Hash(
+			value.senderPrincipalHash,
+			"householdReplyBinding.senderPrincipalHash",
+		) as `sha256:${string}`,
+		recipientPrincipalHash: normalizeSha256Hash(
+			value.recipientPrincipalHash,
+			"householdReplyBinding.recipientPrincipalHash",
+		) as `sha256:${string}`,
+		identityAssurance: "strong_link",
+	};
+}
+
+function assertHouseholdReplyBindingScope(
+	domain: TelclaudeMcpSideEffectDomain,
+	subjectUserId: string | undefined,
+	binding: TelclaudeMcpHouseholdReplyBinding | undefined,
+): void {
+	if (domain !== "household") {
+		if (binding) {
+			throw new Error("householdReplyBinding is allowed only for household outbound records");
+		}
+		return;
+	}
+	if (!subjectUserId || !binding) {
+		throw new Error("household outbound records require subject and reply binding evidence");
+	}
+	if (binding.subjectUserId !== subjectUserId) {
+		throw new Error("household outbound subject does not match reply binding evidence");
+	}
+	if (binding.senderPrincipalHash !== binding.recipientPrincipalHash) {
+		throw new Error("household outbound sender and recipient principals must match");
+	}
+}
+
 function normalizeRevision(value: number): number {
 	if (!Number.isInteger(value) || value < 1) {
 		throw new Error("approvalRevision must be a positive integer");
@@ -1475,6 +1560,8 @@ type OutboundBindingFields = Pick<
 	| "actorId"
 	| "profileId"
 	| "domain"
+	| "subjectUserId"
+	| "householdReplyBinding"
 	| "channel"
 	| "destination"
 	| "resolvedDestination"

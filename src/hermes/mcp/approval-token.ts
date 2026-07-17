@@ -26,6 +26,7 @@ const JTI_DATABASE_NAME = "hermes_mcp_side_effect_approval_jti.sqlite";
 
 const NonEmptyString = z.string().trim().min(1);
 const HashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const PrincipalHashSchema = HashSchema.transform((value) => value as `sha256:${string}`);
 const HmacRevisionSchema = z.string().regex(/^hmac-sha256:[a-f0-9]{64}$/);
 const EdgePreparedHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const TurnConversationRefSchema = z.string().regex(/^turn_[0-9a-f]{32}$/);
@@ -47,6 +48,15 @@ const PreparedMediaRefSchema = z
 	})
 	.strict();
 const AuthorizationStateSchema = z.enum(["authorized", "approval_required", "denied", "revoked"]);
+const HouseholdReplyBindingSchema = z
+	.object({
+		bindingId: NonEmptyString,
+		subjectUserId: NonEmptyString,
+		senderPrincipalHash: PrincipalHashSchema,
+		recipientPrincipalHash: PrincipalHashSchema,
+		identityAssurance: z.literal("strong_link"),
+	})
+	.strict();
 
 const ProviderBindingSchema = z
 	.object({
@@ -80,6 +90,8 @@ const OutboundBindingSchema = z
 		approverActorId: NonEmptyString,
 		profileId: NonEmptyString,
 		domain: DomainSchema,
+		subjectUserId: NonEmptyString.optional(),
+		householdReplyBinding: HouseholdReplyBindingSchema.optional(),
 		channel: NonEmptyString,
 		destination: NonEmptyString,
 		resolvedDestination: ResolvedDestinationSchema,

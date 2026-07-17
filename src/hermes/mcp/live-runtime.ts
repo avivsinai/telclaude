@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import net from "node:net";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
+import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp-household-bindings.js";
 import type {
 	TelclaudeMcpAuthorityConnection,
 	TelclaudeMcpAuthorityRegistry,
@@ -168,6 +169,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly resolveHouseholdReplyBinding?: WhatsAppHouseholdReplyBindingResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	/** Commits an approved browser write (S3); omitted → tc_browse_act_execute fails closed. */
@@ -247,6 +249,7 @@ export async function startTelclaudeLiveMcpRuntime(
 				sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 				resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 				resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+				resolveHouseholdReplyBinding: options.resolveHouseholdReplyBinding,
 				outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
 				providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 				...(options.browserWriteCommitter

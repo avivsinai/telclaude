@@ -34,6 +34,7 @@ import type {
 	RelayConversationInboundTurn,
 } from "../../src/hermes/relay-conversation-store.js";
 import type { OutboundDeliveryDispatcher } from "../../src/relay/outbound-delivery-dispatcher.js";
+import type { ResolvedWhatsAppHouseholdReplyBinding } from "../../src/relay/whatsapp-household-bindings.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
@@ -419,13 +420,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 	it("rejects household execution when the live actor seat principal changed", async () => {
 		const harness = createLedgerHarness();
-		const outbound = harness.ledger.prepare(
-			outboundPrepareInput({
-				actorId: "household:whatsapp:parent-a",
-				profileId: "parent-a",
-				domain: "household",
-			}),
-		);
+		const outbound = harness.ledger.prepare(householdOutboundPrepareInput());
 		harness.accept("outbound-household-token", outbound);
 		const bridge = createBridge(
 			harness,
@@ -476,14 +471,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 	it("rejects household execution when the live turn sender principal changed", async () => {
 		const harness = createLedgerHarness();
 		const turnConversationRef = `turn_${"c".repeat(32)}`;
-		const outbound = harness.ledger.prepare(
-			outboundPrepareInput({
-				actorId: "household:whatsapp:parent-a",
-				profileId: "parent-a",
-				domain: "household",
-				turnConversationRef,
-			}),
-		);
+		const outbound = harness.ledger.prepare(householdOutboundPrepareInput({ turnConversationRef }));
 		harness.accept("outbound-household-turn-token", outbound);
 		const bridge = createBridge(
 			harness,
@@ -519,6 +507,110 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
 		});
 		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it.each([
+		{
+			name: "pairing was removed",
+			resolution: null,
+			code: "household_reply_binding_unavailable",
+		},
+		{
+			name: "binding id changed",
+			resolution: resolvedHouseholdReplyBinding({ bindingId: "parent-b" }),
+			code: "household_reply_binding_mismatch",
+		},
+		{
+			name: "subject changed",
+			resolution: resolvedHouseholdReplyBinding({ subjectUserId: "household:parent-b" }),
+			code: "household_reply_binding_mismatch",
+		},
+		{
+			name: "recipient number changed",
+			resolution: resolvedHouseholdReplyBinding({
+				principalId: "+15550000000",
+				replyPrincipalId: "+15550000000",
+			}),
+			code: "household_reply_binding_mismatch",
+		},
+	])("rejects household execution when $name before token consumption", async ({
+		resolution,
+		code,
+	}) => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"d".repeat(32)}`;
+		const outbound = harness.ledger.prepare(householdOutboundPrepareInput({ turnConversationRef }));
+		harness.accept("outbound-household-binding-token", outbound);
+		let bindingResolverCalls = 0;
+		let dispatcherCalls = 0;
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedInboundTurn: () =>
+					fixtureInboundTurn({
+						ref: turnConversationRef,
+						conversationToken: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId ?? "",
+						profileId: "parent-a",
+						domain: "household",
+						mcpDomain: "household",
+						senderActorId: "household:whatsapp:parent-a",
+						senderPrincipalId: "+15551234567",
+					}),
+				resolveAuthorizedOutboundConversation: () =>
+					fixtureConversation({
+						token: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId,
+						profileId: "parent-a",
+						domain: "household",
+						mcpDomain: "household",
+						edgeDomain: "household",
+						humanPairingProvenance: true,
+						members: [
+							{
+								actorId: "household:whatsapp:parent-a",
+								channel: "whatsapp",
+								principalId: "+15551234567",
+								principalHash:
+									"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+								role: "sender",
+								identityAssurance: "strong_link",
+								scopes: ["message:reply"],
+								revoked: false,
+							},
+						],
+					}),
+				resolveHouseholdReplyBinding: () => {
+					bindingResolverCalls += 1;
+					return resolution;
+				},
+				outboundDeliveryDispatcher: async (prepared) => {
+					dispatcherCalls += 1;
+					return sentOutboundDeliveryDispatcher(prepared);
+				},
+			},
+			{
+				actorId: "household:whatsapp:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				turnConversationRef,
+			},
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code,
+			reason: expect.any(String),
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(bindingResolverCalls).toBe(1);
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+		expect(dispatcherCalls).toBe(0);
 	});
 
 	it("accepts social MCP domain outbound records against public-social relay conversations", async () => {
@@ -1181,6 +1273,44 @@ function outboundPrepareInput(
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },
 		idempotencyKey: "idem-outbound-1",
+		...overrides,
+	};
+}
+
+function householdOutboundPrepareInput(
+	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
+): TelclaudeMcpOutboundSideEffectPrepareInput {
+	return outboundPrepareInput({
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		subjectUserId: "household:parent-a",
+		householdReplyBinding: {
+			bindingId: "parent-a",
+			subjectUserId: "household:parent-a",
+			senderPrincipalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			recipientPrincipalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			identityAssurance: "strong_link",
+		},
+		...overrides,
+	});
+}
+
+function resolvedHouseholdReplyBinding(
+	overrides: Partial<ResolvedWhatsAppHouseholdReplyBinding> = {},
+): ResolvedWhatsAppHouseholdReplyBinding {
+	return {
+		bindingId: "parent-a",
+		actorId: "household:whatsapp:parent-a",
+		subjectUserId: "household:parent-a",
+		profileId: "parent-a",
+		principalId: "+15551234567",
+		replyPrincipalId: "+15551234567",
+		identityAssurance: "strong_link",
+		pairingAttested: true,
+		revoked: false,
 		...overrides,
 	};
 }

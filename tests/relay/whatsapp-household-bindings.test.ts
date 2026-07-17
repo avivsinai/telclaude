@@ -129,6 +129,38 @@ describe("WhatsApp household bindings", () => {
 			code: "whatsapp_inbound_conversation_mismatch",
 		});
 	});
+
+	it("re-resolves reply evidence only for the exact actor, subject, and profile tuple", async () => {
+		const { createWhatsAppHouseholdReplyBindingResolver } = await import(
+			"../../src/relay/whatsapp-household-bindings.js"
+		);
+		const resolve = createWhatsAppHouseholdReplyBindingResolver(config);
+
+		expect(
+			await resolve({
+				actorId: "household:whatsapp:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+			}),
+		).toEqual({
+			bindingId: "parent-a",
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			principalId: "whatsapp:+15551234567",
+			replyPrincipalId: "whatsapp:+15551234567",
+			identityAssurance: "strong_link",
+			pairingAttested: true,
+			revoked: false,
+		});
+		expect(
+			await resolve({
+				actorId: "household:whatsapp:parent-b",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+			}),
+		).toBeNull();
+	});
 });
 
 function householdEvent(parent: "a" | "b") {

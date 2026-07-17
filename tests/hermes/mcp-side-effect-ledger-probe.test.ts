@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS,
 	runTelclaudeMcpSideEffectLedgerProbe,
 	sideEffectLedgerProbeEvidenceFailure,
 } from "../../src/hermes/mcp/side-effect-ledger-probe.js";
@@ -9,6 +10,15 @@ const ORIGINAL_ENV = {
 	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
 	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 };
+
+const EXPECTED_HOUSEHOLD_REPLY_CHECKS = [
+	"ledger.household.binding-evidence-hash-bound",
+	"ledger.household.same-subject-delivery",
+	"ledger.household.parent-isolation-denied",
+	"ledger.household.binding-revocation-denied",
+	"ledger.household.step-up-escalation-denied",
+	"ledger.household.artifact-redacted",
+] as const;
 
 describe("Telclaude MCP side-effect ledger probe", () => {
 	beforeEach(() => {
@@ -20,6 +30,10 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 	afterEach(() => {
 		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
+	});
+
+	it("pins the household reply property catalog independently of the evaluator", () => {
+		expect(HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS).toEqual(EXPECTED_HOUSEHOLD_REPLY_CHECKS);
 	});
 
 	it("passes only after exercising prepare, execute, proxy, and denial paths", async () => {
@@ -49,6 +63,16 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 			evidence.observations.outboundEdgePreparedRef,
 		);
 		expect(evidence.observations.outboundDeliveryIdempotencyKey).toBe("idem-outbound-ledger-probe");
+		expect(evidence.observations.householdDeliveryCallCount).toBe(1);
+		expect(evidence.observations.householdBindingResolverCallCount).toBe(3);
+		expect(evidence.observations.householdParentAContentHash).not.toBe(
+			evidence.observations.householdParentBContentHash,
+		);
+		expect(evidence.checks.filter((check) => check.name.startsWith("ledger.household."))).toEqual(
+			EXPECTED_HOUSEHOLD_REPLY_CHECKS.map((name) =>
+				expect.objectContaining({ name, status: "pass" }),
+			),
+		);
 		expect(sideEffectLedgerProbeEvidenceFailure("sideeffect.ledger", evidence)).toBeNull();
 	});
 

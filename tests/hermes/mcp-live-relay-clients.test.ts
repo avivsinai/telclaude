@@ -221,12 +221,13 @@ describe("Telclaude live MCP relay-client adapters", () => {
 
 	it("derives household WhatsApp replies from the current sender and rejects alternate targets", async () => {
 		const ledger = testLedger();
+		const senderAddress = "whatsapp:+15557654321";
 		const clients = createTelclaudeLiveMcpRelayClients({
 			ledger,
 			makeApprovalRequestId: makeApprovalIds(),
 			outboundApproverActorId: "operator:outbound-approver",
+			resolveHouseholdReplyBinding: householdReplyBindingResolver(senderAddress),
 		});
-		const senderAddress = "whatsapp:+15557654321";
 		const { token } = mintWhatsappConversation("household-parent-a", {
 			profileId: "parent-a",
 			domain: "household",
@@ -255,6 +256,14 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		const prepared = (await clients.outboundPrepare(request)) as { outboundRef: string };
 		expect(ledger.get(prepared.outboundRef)).toMatchObject({
 			domain: "household",
+			subjectUserId: "household:parent-a",
+			householdReplyBinding: {
+				bindingId: "parent-a",
+				subjectUserId: "household:parent-a",
+				senderPrincipalHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				recipientPrincipalHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				identityAssurance: "strong_link",
+			},
 			destination: senderAddress,
 			resolvedDestination: expect.objectContaining({
 				addressRef: senderAddress,
@@ -267,6 +276,64 @@ describe("Telclaude live MCP relay-client adapters", () => {
 				replyIntent: { kind: "address", addressRef: "whatsapp:+15550000000" },
 			}),
 		).rejects.toThrow("household outbound reply intent must match the current sender address");
+	});
+
+	it.each([
+		{
+			name: "missing subject",
+			stamp: { subjectUserId: undefined },
+			resolver: householdReplyBindingResolver("whatsapp:+15557654321"),
+			error: "live MCP household subject must equal memory source",
+		},
+		{
+			name: "removed pairing",
+			stamp: {},
+			resolver: () => null,
+			error: "household reply binding unavailable or mismatched",
+		},
+		{
+			name: "cross-parent principal",
+			stamp: {},
+			resolver: householdReplyBindingResolver("whatsapp:+15550000000"),
+			error: "household reply binding does not match the live conversation",
+		},
+	])("rejects household prepare when $name", async ({ stamp, resolver, error }) => {
+		const ledger = testLedger();
+		const senderAddress = "whatsapp:+15557654321";
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			outboundApproverActorId: "operator:outbound-approver",
+			resolveHouseholdReplyBinding: resolver,
+		});
+		const { token } = mintWhatsappConversation(`binding-negative-${error}`, {
+			profileId: "parent-a",
+			domain: "household",
+			threadId: senderAddress,
+			humanPairingProvenance: true,
+			members: [
+				{
+					actorId: "household:whatsapp:parent-a",
+					principalId: senderAddress,
+					role: "sender",
+					identityAssurance: "strong_link",
+					scopes: ["message:reply"],
+				},
+			],
+		});
+		const turnConversationRef = mintWhatsappTurn(token, "binding-negative", {
+			senderActorId: "household:whatsapp:parent-a",
+		});
+
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					...householdStamp(stamp),
+					conversationToken: token,
+					turnConversationRef,
+				}),
+			),
+		).rejects.toThrow(error);
+		expect(ledger.list()).toEqual([]);
 	});
 
 	it("revokes prepared side effects when the human approval request cannot be created", async () => {
@@ -763,6 +830,20 @@ function householdStamp(
 		networkNamespace: "netns-household",
 		...overrides,
 	};
+}
+
+function householdReplyBindingResolver(principalId: string) {
+	return (input: { actorId: string; subjectUserId: string; profileId: string }) => ({
+		bindingId: "parent-a",
+		actorId: input.actorId,
+		subjectUserId: input.subjectUserId,
+		profileId: input.profileId,
+		principalId,
+		replyPrincipalId: principalId,
+		identityAssurance: "strong_link" as const,
+		pairingAttested: true as const,
+		revoked: false as const,
+	});
 }
 
 function memorySearch(

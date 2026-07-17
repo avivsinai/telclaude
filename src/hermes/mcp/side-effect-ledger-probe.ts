@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
+import type { ResolvedWhatsAppHouseholdReplyBinding } from "../../relay/whatsapp-household-bindings.js";
+import { redactSecrets } from "../../security/output-filter.js";
 import {
 	type HermesSignedEvidenceValidationOptions,
 	hermesAllowsStaleAttestations,
@@ -11,7 +13,10 @@ import {
 } from "../attestation-validation.js";
 import { EdgeAdapterSchemaVersions } from "../edge-adapter-contract.js";
 import { edgePreparedPayloadHash } from "../edge-adapter-runtime.js";
-import type { RelayConversation } from "../relay-conversation-store.js";
+import type {
+	RelayConversation,
+	RelayConversationInboundTurn,
+} from "../relay-conversation-store.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -24,8 +29,12 @@ import {
 	type TelclaudeMcpAuthority,
 	type TelclaudeMcpBridgeDependencies,
 } from "./bridge.js";
-import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js";
+import {
+	createTelclaudeMcpLedgerExecuteDependencies,
+	type TelclaudeMcpInboundTurnAuthorityResolver,
+} from "./ledger-execute.js";
 import { createNotConfiguredTelclaudeMcpCapabilityClients } from "./live-relay-clients.js";
+import { createSideEffectHumanApprovalController } from "./side-effect-human-approval.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
@@ -122,6 +131,12 @@ export const SideEffectLedgerProbeEvidenceSchema = z
 				outboundEdgePreparedRef: NonEmptyString.optional(),
 				outboundDeliveryOutboundRef: NonEmptyString.optional(),
 				outboundDeliveryIdempotencyKey: NonEmptyString.optional(),
+				householdParentARef: NonEmptyString.optional(),
+				householdParentBRef: NonEmptyString.optional(),
+				householdParentAContentHash: Sha256Digest.optional(),
+				householdParentBContentHash: Sha256Digest.optional(),
+				householdDeliveryCallCount: z.number().int().nonnegative().optional(),
+				householdBindingResolverCallCount: z.number().int().nonnegative().optional(),
 			})
 			.strict(),
 		runnerAttestation: SideEffectLedgerAttestationSchema.optional(),
@@ -130,6 +145,15 @@ export const SideEffectLedgerProbeEvidenceSchema = z
 
 export type SideEffectLedgerProbeEvidence = z.infer<typeof SideEffectLedgerProbeEvidenceSchema>;
 type ProbeCheck = z.infer<typeof SideEffectLedgerProbeCheckSchema>;
+
+export const HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS = [
+	"ledger.household.binding-evidence-hash-bound",
+	"ledger.household.same-subject-delivery",
+	"ledger.household.parent-isolation-denied",
+	"ledger.household.binding-revocation-denied",
+	"ledger.household.step-up-escalation-denied",
+	"ledger.household.artifact-redacted",
+] as const;
 
 const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.provider.prepare-hashes",
@@ -146,6 +170,7 @@ const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.kind-mismatch-denied",
 	"ledger.authority-mismatch-denied",
 	"ledger.provider-scope-mismatch-denied",
+	...HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS,
 ] as const;
 
 export function runTelclaudeMcpSideEffectLedgerProbe(input: {
@@ -194,6 +219,21 @@ export function sideEffectLedgerProbeEvidenceFailure(
 	}
 	if (data.observations.outboundDeliveryCallCount !== 1) {
 		failures.push(`outboundDeliveryCallCount is ${data.observations.outboundDeliveryCallCount}`);
+	}
+	if (data.observations.householdDeliveryCallCount !== 1) {
+		failures.push(
+			`householdDeliveryCallCount is ${String(data.observations.householdDeliveryCallCount)}`,
+		);
+	}
+	if ((data.observations.householdBindingResolverCallCount ?? 0) < 3) {
+		failures.push("householdBindingResolverCallCount is too low");
+	}
+	if (
+		!data.observations.householdParentAContentHash ||
+		!data.observations.householdParentBContentHash ||
+		data.observations.householdParentAContentHash === data.observations.householdParentBContentHash
+	) {
+		failures.push("household parent approval bindings are not independently hash-bound");
 	}
 	if (!data.observations.outboundEdgePreparedRef) {
 		failures.push("outboundEdgePreparedRef is missing");
@@ -606,6 +646,13 @@ async function runProbe(input: {
 				providerScopeAllowedResult.record?.status === "executed",
 			"provider scopes must match the prepared provider before approval verification or JTI use",
 		);
+		await runHouseholdReplyProbe({
+			ledger,
+			vault,
+			checks,
+			observations,
+			nowMs: () => nowMs,
+		});
 	} catch (error) {
 		checks.push({
 			name: "ledger.probe.exception",
@@ -641,6 +688,227 @@ async function runProbe(input: {
 				) as SideEffectLedgerProbeEvidence["runnerAttestation"],
 			}
 		: evidence;
+}
+
+async function runHouseholdReplyProbe(input: {
+	readonly ledger: TelclaudeMcpSideEffectLedger;
+	readonly vault: TelclaudeMcpSideEffectApprovalSigner;
+	readonly checks: ProbeCheck[];
+	readonly observations: SideEffectLedgerProbeEvidence["observations"];
+	readonly nowMs: () => number;
+}): Promise<void> {
+	const parentA = input.ledger.prepare(
+		householdOutboundPrepareInput("parent-a", "whatsapp:+15550000001", "deliver"),
+	) as TelclaudeMcpOutboundSideEffectRecord;
+	const parentB = input.ledger.prepare(
+		householdOutboundPrepareInput("parent-b", "whatsapp:+15550000002", "concurrent"),
+	) as TelclaudeMcpOutboundSideEffectRecord;
+	const parentABinding = getTelclaudeMcpSideEffectApprovalBinding(parentA);
+	const parentBBinding = getTelclaudeMcpSideEffectApprovalBinding(parentB);
+	input.observations.householdParentARef = parentA.ref;
+	input.observations.householdParentBRef = parentB.ref;
+	input.observations.householdParentAContentHash = parentABinding.contentHash;
+	input.observations.householdParentBContentHash = parentBBinding.contentHash;
+	input.observations.householdDeliveryCallCount = 0;
+	input.observations.householdBindingResolverCallCount = 0;
+	pushCheck(
+		input.checks,
+		"ledger.household.binding-evidence-hash-bound",
+		parentA.subjectUserId === "household:parent-a" &&
+			parentA.householdReplyBinding?.bindingId === "parent-a" &&
+			parentA.householdReplyBinding.subjectUserId === parentA.subjectUserId &&
+			parentA.householdReplyBinding.senderPrincipalHash ===
+				parentA.householdReplyBinding.recipientPrincipalHash &&
+			parentABinding.contentHash !== parentBBinding.contentHash &&
+			parentA.paramsHash !== parentB.paramsHash &&
+			parentA.bodyHash !== parentB.bodyHash,
+		"household subject and principal evidence is immutable and parent-specific in every hash",
+	);
+
+	const controller = createSideEffectHumanApprovalController({
+		nowMs: input.nowMs,
+		autoGrant: { enabled: true },
+		mintApprovalToken: ({ binding, jti, ttlMs, nowMs }) =>
+			generateTelclaudeMcpSideEffectApprovalToken(binding, input.vault, {
+				nowSeconds: () => Math.floor(nowMs / 1_000),
+				ttlSeconds: Math.max(1, Math.ceil(ttlMs / 1_000)),
+				jti,
+			}),
+	});
+	const parentARequest = await controller.request({ record: parentA, chatId: 111 });
+	const parentABridge = createHouseholdProbeBridge({
+		record: parentA,
+		controller,
+		ledger: input.ledger,
+		observations: input.observations,
+		nowMs: input.nowMs,
+		resolveBinding: () => resolvedHouseholdReplyBinding("parent-a", "whatsapp:+15550000001"),
+	});
+	const parentAResult = resultShape(
+		await parentABridge.tc_outbound_execute({ outboundRef: parentA.ref }),
+	);
+	pushCheck(
+		input.checks,
+		"ledger.household.same-subject-delivery",
+		parentARequest.ok === true &&
+			parentARequest.autoGranted === true &&
+			parentAResult.ok === true &&
+			parentAResult.record?.status === "executed" &&
+			input.observations.householdDeliveryCallCount === 1,
+		"the current strongly-linked parent reply auto-grants and delivers exactly once",
+	);
+
+	const crossParent = input.ledger.prepare(
+		householdOutboundPrepareInput("parent-a", "whatsapp:+15550000001", "cross-parent"),
+	) as TelclaudeMcpOutboundSideEffectRecord;
+	const crossRequest = await controller.request({ record: crossParent, chatId: 111 });
+	const crossResult = resultShape(
+		await createHouseholdProbeBridge({
+			record: crossParent,
+			controller,
+			ledger: input.ledger,
+			observations: input.observations,
+			nowMs: input.nowMs,
+			resolveBinding: () => resolvedHouseholdReplyBinding("parent-b", "whatsapp:+15550000002"),
+		}).tc_outbound_execute({ outboundRef: crossParent.ref }),
+	);
+	pushCheck(
+		input.checks,
+		"ledger.household.parent-isolation-denied",
+		crossRequest.ok === true &&
+			crossRequest.autoGranted === true &&
+			crossResult.ok === false &&
+			crossResult.code === "household_reply_binding_mismatch" &&
+			crossResult.record?.status === "prepared" &&
+			input.observations.householdDeliveryCallCount === 1,
+		"a parent-B binding cannot consume or dispatch a parent-A prepared reply",
+	);
+
+	const revoked = input.ledger.prepare(
+		householdOutboundPrepareInput("parent-a", "whatsapp:+15550000001", "revoked"),
+	) as TelclaudeMcpOutboundSideEffectRecord;
+	const revokedRequest = await controller.request({ record: revoked, chatId: 111 });
+	const revokedResult = resultShape(
+		await createHouseholdProbeBridge({
+			record: revoked,
+			controller,
+			ledger: input.ledger,
+			observations: input.observations,
+			nowMs: input.nowMs,
+			resolveBinding: () => null,
+		}).tc_outbound_execute({ outboundRef: revoked.ref }),
+	);
+	pushCheck(
+		input.checks,
+		"ledger.household.binding-revocation-denied",
+		revokedRequest.ok === true &&
+			revokedRequest.autoGranted === true &&
+			revokedResult.ok === false &&
+			revokedResult.code === "household_reply_binding_unavailable" &&
+			revokedResult.record?.status === "prepared" &&
+			input.observations.householdDeliveryCallCount === 1,
+		"removing the pairing after prepare denies before approval consumption or dispatch",
+	);
+
+	const escalated = input.ledger.prepare(
+		householdOutboundPrepareInput("parent-a", "whatsapp:+15550000001", "step-up"),
+	) as TelclaudeMcpOutboundSideEffectRecord;
+	let escalatedMintCalls = 0;
+	const escalatedController = createSideEffectHumanApprovalController({
+		nowMs: input.nowMs,
+		autoGrant: { enabled: true },
+		requiresFreshStepUp: () => true,
+		createApproval: () => {
+			throw new Error("forced step-up must not create a human approval row");
+		},
+		stepUpVerification: {
+			verify: async () => ({
+				ok: false,
+				code: "fresh_step_up_required",
+				reason: "fresh step-up required",
+				retryable: false,
+			}),
+		},
+		mintApprovalToken: async () => {
+			escalatedMintCalls += 1;
+			return "must-not-mint";
+		},
+	});
+	const escalatedResult = await escalatedController.request({ record: escalated, chatId: 111 });
+	pushCheck(
+		input.checks,
+		"ledger.household.step-up-escalation-denied",
+		escalatedResult.ok === false &&
+			escalatedResult.code === "fresh_step_up_required" &&
+			escalatedMintCalls === 0,
+		"independent step-up escalation fails closed without token minting or human-row fallback",
+	);
+
+	const serialized = JSON.stringify({
+		parentA,
+		parentB,
+		parentAResult,
+		crossResult,
+		revokedResult,
+		escalatedResult,
+	});
+	pushCheck(
+		input.checks,
+		"ledger.household.artifact-redacted",
+		redactSecrets(serialized) === serialized,
+		"signed household probe observations contain synthetic identifiers and no secret-shaped data",
+	);
+}
+
+function createHouseholdProbeBridge(input: {
+	readonly record: TelclaudeMcpOutboundSideEffectRecord;
+	readonly controller: ReturnType<typeof createSideEffectHumanApprovalController>;
+	readonly ledger: TelclaudeMcpSideEffectLedger;
+	readonly observations: SideEffectLedgerProbeEvidence["observations"];
+	readonly nowMs: () => number;
+	readonly resolveBinding: () => ResolvedWhatsAppHouseholdReplyBinding | null;
+}) {
+	const record = input.record;
+	const authority = householdProbeAuthority(record);
+	return createTelclaudeMcpBridge(authority, {
+		...baseDependencies(),
+		...createTelclaudeMcpLedgerExecuteDependencies({
+			ledger: input.ledger,
+			sideEffectApprovalTokenResolver: ({ actionRef, record: current }) =>
+				input.controller.takeServerSideApproval({
+					actionRef,
+					record: current,
+					nowMs: input.nowMs(),
+				}),
+			resolveAuthorizedOutboundConversation: () => householdProbeConversation(record),
+			resolveAuthorizedInboundTurn: householdProbeTurnResolver(record),
+			resolveHouseholdReplyBinding: () => {
+				input.observations.householdBindingResolverCallCount =
+					(input.observations.householdBindingResolverCallCount ?? 0) + 1;
+				return input.resolveBinding();
+			},
+			outboundDeliveryDispatcher: async (prepared) => {
+				input.observations.householdDeliveryCallCount =
+					(input.observations.householdDeliveryCallCount ?? 0) + 1;
+				return {
+					schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+					outboundRef: prepared.outboundRef,
+					platformMessageId: "household-probe-message",
+					deliveryStatus: "sent",
+					timestamps: {
+						observedAt: new Date(input.nowMs()).toISOString(),
+						sentAt: new Date(input.nowMs()).toISOString(),
+					},
+					retry: {
+						attempt: 1,
+						maxAttempts: prepared.retryPolicy.maxAttempts,
+						idempotencyKey: prepared.idempotencyKey,
+					},
+				};
+			},
+			nowMs: input.nowMs,
+		}),
+	});
 }
 
 function createProbeVault(): TelclaudeMcpSideEffectApprovalSigner &
@@ -891,6 +1159,184 @@ function outboundPrepareInput(
 		approvalMetadata: { reviewer: "operator", scope: "household" },
 		idempotencyKey: "idem-outbound-ledger-probe",
 		...overrides,
+	};
+}
+
+function householdOutboundPrepareInput(
+	bindingId: string,
+	principalId: string,
+	caseId: string,
+): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const channel = "whatsapp";
+	const caseHash = crypto
+		.createHash("sha256")
+		.update(`${bindingId}:${caseId}`, "utf8")
+		.digest("hex");
+	const conversationId = `whatsapp:household:${bindingId}`;
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: principalId,
+		conversationId,
+	};
+	const requestedBody = `Synthetic household reply ${caseId}`;
+	const preparedMediaRefs: readonly [] = [];
+	const principalHash = fixtureContentHash(principalId);
+	return {
+		kind: "outbound",
+		actorId: `household:whatsapp:${bindingId}`,
+		approverActorId: "telegram:operator",
+		profileId: bindingId,
+		domain: "household",
+		subjectUserId: `household:${bindingId}`,
+		householdReplyBinding: {
+			bindingId,
+			subjectUserId: `household:${bindingId}`,
+			senderPrincipalHash: principalHash,
+			recipientPrincipalHash: principalHash,
+			identityAssurance: "strong_link",
+		},
+		channel,
+		destination: principalId,
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
+		mediaRefs: [],
+		preparedMediaRefs,
+		conversationRef: `conv_${caseHash.slice(0, 32)}`,
+		authorizationState: "authorized",
+		edgePreparedRef: `edge-household-${bindingId}-${caseId}`,
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
+		approvalRequestId: `approval-household-${bindingId}-${caseId}`,
+		approvalRevision: 1,
+		approvalMetadata: {
+			source: "hermes-live-mcp",
+			pairedProvenance: true,
+			replyCapableActorSeat: true,
+			actorIdentityAssurance: "strong_link",
+		},
+		turnConversationRef: `turn_${caseHash.slice(0, 32)}`,
+		idempotencyKey: `idem-household-${bindingId}-${caseId}`,
+	};
+}
+
+function householdProbeAuthority(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+): TelclaudeMcpAuthority {
+	return {
+		actorId: record.actorId,
+		subjectUserId: record.subjectUserId,
+		profileId: record.profileId,
+		domain: "household",
+		memorySource: record.subjectUserId ?? "household:unbound",
+		writableNamespace: record.subjectUserId ?? "household:unbound",
+		providerScopes: [],
+		outboundChannels: ["whatsapp"],
+		endpointId: "endpoint-household-probe",
+		networkNamespace: "netns-household-probe",
+		turnConversationRef: record.turnConversationRef,
+	};
+}
+
+function householdProbeConversation(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+): RelayConversation {
+	const binding = record.householdReplyBinding;
+	const addressRef =
+		record.resolvedDestination.kind === "address"
+			? record.resolvedDestination.addressRef
+			: undefined;
+	if (!binding || !addressRef) {
+		throw new Error("household probe record is missing reply evidence");
+	}
+	return {
+		token: record.conversationRef,
+		channel: "whatsapp",
+		conversationId: record.resolvedDestination.conversationId ?? "",
+		threadId: addressRef,
+		profileId: record.profileId,
+		domain: "household",
+		mcpDomain: "household",
+		edgeDomain: "household",
+		routingSession: {
+			sessionId: `probe-session:${binding.bindingId}`,
+			routeKey: `probe-route:${binding.bindingId}`,
+		},
+		authorizationState: "authorized",
+		humanPairingProvenance: true,
+		authorizationScopes: ["message:reply"],
+		members: [
+			{
+				actorId: record.actorId,
+				channel: "whatsapp",
+				principalId: addressRef,
+				principalHash: binding.senderPrincipalHash,
+				role: "sender",
+				identityAssurance: "strong_link",
+				scopes: ["message:reply"],
+				revoked: false,
+			},
+		],
+		threadMessageIds: [],
+		inboundCursor: null,
+		auditIds: [],
+		createdAtMs: 100_000,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
+		updatedAtMs: 100_000,
+	};
+}
+
+function householdProbeTurnResolver(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+): TelclaudeMcpInboundTurnAuthorityResolver {
+	return (): RelayConversationInboundTurn => {
+		const addressRef =
+			record.resolvedDestination.kind === "address"
+				? record.resolvedDestination.addressRef
+				: undefined;
+		if (!addressRef || !record.turnConversationRef) {
+			throw new Error("household probe turn evidence is missing");
+		}
+		return {
+			ref: record.turnConversationRef,
+			conversationToken: record.conversationRef,
+			channel: "whatsapp",
+			conversationId: record.resolvedDestination.conversationId ?? "",
+			threadId: addressRef,
+			profileId: record.profileId,
+			domain: "household",
+			mcpDomain: "household",
+			inboundMessageId: `message:${record.householdReplyBinding?.bindingId ?? "unbound"}`,
+			senderActorId: record.actorId,
+			senderPrincipalId: addressRef,
+			createdAtMs: 100_000,
+			expiresAtMs: null,
+			revokedAtMs: null,
+			revokeReason: null,
+		};
+	};
+}
+
+function resolvedHouseholdReplyBinding(
+	bindingId: string,
+	principalId: string,
+): ResolvedWhatsAppHouseholdReplyBinding {
+	return {
+		bindingId,
+		actorId: `household:whatsapp:${bindingId}`,
+		subjectUserId: `household:${bindingId}`,
+		profileId: bindingId,
+		principalId,
+		replyPrincipalId: principalId,
+		identityAssurance: "strong_link",
+		pairingAttested: true,
+		revoked: false,
 	};
 }
 

@@ -75,6 +75,52 @@ const outboundMutations: Array<[string, Partial<TelclaudeMcpOutboundApprovalBind
 	["idempotency key", { idempotencyKey: "idem-outbound-2" }],
 ];
 
+const householdOutboundMutations: Array<[string, Partial<TelclaudeMcpOutboundApprovalBinding>]> = [
+	["subject", { subjectUserId: "household:parent-b" }],
+	[
+		"binding id",
+		{
+			householdReplyBinding: {
+				bindingId: "parent-b",
+				subjectUserId: "household:parent-b",
+				senderPrincipalHash:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				recipientPrincipalHash:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				identityAssurance: "strong_link",
+			},
+		},
+	],
+	[
+		"sender principal",
+		{
+			householdReplyBinding: {
+				bindingId: "parent-a",
+				subjectUserId: "household:parent-a",
+				senderPrincipalHash:
+					"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+				recipientPrincipalHash:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				identityAssurance: "strong_link",
+			},
+		},
+	],
+	[
+		"recipient principal",
+		{
+			householdReplyBinding: {
+				bindingId: "parent-a",
+				subjectUserId: "household:parent-a",
+				senderPrincipalHash:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				recipientPrincipalHash:
+					"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+				identityAssurance: "strong_link",
+			},
+		},
+	],
+];
+
 describe("Telclaude MCP side-effect approval tokens", () => {
 	let tempDir: string;
 	let jtiStore: TelclaudeMcpSideEffectJtiStore;
@@ -276,6 +322,58 @@ describe("Telclaude MCP side-effect approval tokens", () => {
 		});
 		expect(vault.verifyCalls).toHaveLength(0);
 		await expect(verifier(verification(binding, token, 121_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: jti,
+		});
+	});
+
+	it.each(
+		householdOutboundMutations,
+	)("rejects caller-supplied household outbound %s binding drift before signature verification", async (_label, mutation) => {
+		const { binding, record } = householdOutboundFixture();
+		const verifier = createVerifier();
+		const jti = `jti-household-request-drift-${String(_label).replaceAll(" ", "-")}`;
+		const token = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			jti,
+		});
+
+		await expect(
+			verifier(verification({ ...binding, ...mutation }, token, 120_000, record)),
+		).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "Approval request binding mismatch",
+		});
+		expect(vault.verifyCalls).toHaveLength(0);
+		await expect(verifier(verification(binding, token, 121_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: jti,
+		});
+	});
+
+	it.each(
+		householdOutboundMutations,
+	)("rejects household outbound token-claims %s binding drift without consuming the JTI", async (_label, mutation) => {
+		const { binding, record } = householdOutboundFixture();
+		const verifier = createVerifier();
+		const jti = `jti-household-token-drift-${String(_label).replaceAll(" ", "-")}`;
+		const badToken = await generateTelclaudeMcpSideEffectApprovalToken(
+			{ ...binding, ...mutation },
+			vault,
+			{ nowSeconds: () => 100, jti },
+		);
+
+		await expect(verifier(verification(binding, badToken, 120_000, record))).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "Approval token binding mismatch",
+		});
+		const validToken = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			jti,
+		});
+		await expect(verifier(verification(binding, validToken, 121_000, record))).resolves.toEqual({
 			ok: true,
 			approvalId: jti,
 		});
@@ -526,6 +624,32 @@ function outboundFixture(
 	readonly binding: TelclaudeMcpOutboundApprovalBinding;
 } {
 	const record = prepareFixture(outboundPrepareInput(overrides));
+	const binding = getTelclaudeMcpSideEffectApprovalBinding(record);
+	if (binding.kind !== "outbound") throw new Error("expected outbound binding");
+	return { record, binding };
+}
+
+function householdOutboundFixture(): {
+	readonly record: TelclaudeMcpSideEffectRecord;
+	readonly binding: TelclaudeMcpOutboundApprovalBinding;
+} {
+	const record = prepareFixture(
+		outboundPrepareInput({
+			actorId: "household:whatsapp:parent-a",
+			profileId: "parent-a",
+			domain: "household",
+			subjectUserId: "household:parent-a",
+			householdReplyBinding: {
+				bindingId: "parent-a",
+				subjectUserId: "household:parent-a",
+				senderPrincipalHash:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				recipientPrincipalHash:
+					"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				identityAssurance: "strong_link",
+			},
+		}),
+	);
 	const binding = getTelclaudeMcpSideEffectApprovalBinding(record);
 	if (binding.kind !== "outbound") throw new Error("expected outbound binding");
 	return { record, binding };

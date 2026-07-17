@@ -721,6 +721,143 @@ describe("Hermes MCP side-effect human approvals", () => {
 		});
 	});
 
+	it("auto-grants an exact same-subject household reply without creating a human approval row", async () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			nowMs: () => 100_000,
+			makeRef: () => "effect-auto-household",
+			defaultTtlMs: 300_000,
+			verifyApproval: createTelclaudeMcpSideEffectApprovalVerifier({
+				vaultClient: vault,
+				jtiStore,
+				nowSeconds: () => 100,
+			}),
+		});
+		const record = ledger.prepare(householdOutboundPrepareInput());
+		const controller = createController({ autoGrant: { enabled: true } });
+
+		const request = await controller.request({ record, chatId: 111 });
+
+		expect(request).toMatchObject({
+			ok: true,
+			autoGranted: true,
+			nonce: "auto-effect-auto-household",
+		});
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+		expect(vault.signCalls).toHaveLength(1);
+	});
+
+	it.each([
+		[
+			"missing subject",
+			{ subjectUserId: undefined },
+			"household outbound records require subject and reply binding evidence",
+		],
+		[
+			"wrong subject",
+			{ subjectUserId: "household:parent-b" },
+			"household outbound subject does not match reply binding evidence",
+		],
+		[
+			"missing binding",
+			{ householdReplyBinding: undefined },
+			"household outbound records require subject and reply binding evidence",
+		],
+		[
+			"binding subject mismatch",
+			{
+				householdReplyBinding: {
+					...householdReplyEvidence(),
+					subjectUserId: "household:parent-b",
+				},
+			},
+			"householdReplyBinding subject must match its opaque binding id",
+		],
+		[
+			"cross-parent recipient",
+			{
+				householdReplyBinding: {
+					...householdReplyEvidence(),
+					recipientPrincipalHash:
+						"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				},
+			},
+			"household outbound sender and recipient principals must match",
+		],
+		[
+			"weak identity",
+			{
+				householdReplyBinding: {
+					...householdReplyEvidence(),
+					identityAssurance: "paired",
+				},
+			},
+			"householdReplyBinding identity assurance must be strong_link",
+		],
+	] as const)("hard-denies household reply preparation with %s", (_name, overrides, error) => {
+		expect(() =>
+			prepareOutboundRecord({
+				...householdOutboundOverrides(),
+				...overrides,
+			} as Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">>),
+		).toThrow(error);
+		expect(vault.signCalls).toHaveLength(0);
+	});
+
+	it.each([
+		[
+			"missing pairing provenance",
+			{ approvalMetadata: householdApprovalMetadata({ pairedProvenance: false }) },
+		],
+		[
+			"missing reply seat",
+			{ approvalMetadata: householdApprovalMetadata({ replyCapableActorSeat: false }) },
+		],
+		["missing turn", { turnConversationRef: undefined }],
+		["wrong channel", { channel: "email" }],
+		["non-authorized conversation", { authorizationState: "approval_required" }],
+	] as const)("does not auto-grant a household reply with %s", async (_name, overrides) => {
+		const record = prepareOutboundRecord({
+			...householdOutboundOverrides(),
+			...overrides,
+		} as Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">>);
+		const controller = createController({ autoGrant: { enabled: true } });
+
+		const request = await controller.request({ record, chatId: 111 });
+
+		expect(request).toMatchObject({ ok: true });
+		expect(request).not.toHaveProperty("autoGranted");
+		expect(vault.signCalls).toHaveLength(0);
+	});
+
+	it.each([
+		["missing", undefined, undefined],
+		["stale", freshStepUp("telegram:operator", { verifiedAtMs: 1 }), undefined],
+		["wrong actor", freshStepUp("telegram:wrong"), undefined],
+		[
+			"verifier error",
+			undefined,
+			{
+				verify: async () => {
+					throw new Error("step-up backend unavailable");
+				},
+			},
+		],
+	] as const)("fails a policy-forced household step-up closed for %s proof without a human row", async (_name, stepUp, stepUpVerification) => {
+		const record = prepareOutboundRecord(householdOutboundOverrides());
+		const controller = createController({
+			autoGrant: { enabled: true },
+			stepUpMaxAgeMs: 30_000,
+			requiresFreshStepUp: () => true,
+			...(stepUpVerification ? { stepUpVerification } : {}),
+		});
+
+		const request = await controller.request({ record, chatId: 111, stepUp });
+
+		expect(request).toMatchObject({ ok: false });
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+		expect(vault.signCalls).toHaveLength(0);
+	});
+
 	it("refuses auto-grant for providers, public/social outbound, and missing relay provenance", async () => {
 		const controller = createController({ autoGrant: { enabled: true } });
 		const provider = prepareProviderRecord();
@@ -992,6 +1129,45 @@ function outboundPrepareInput(
 		idempotencyKey: "idem-outbound-1",
 		...overrides,
 	};
+}
+
+function householdReplyEvidence() {
+	return {
+		bindingId: "parent-a",
+		subjectUserId: "household:parent-a",
+		senderPrincipalHash:
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as const,
+		recipientPrincipalHash:
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as const,
+		identityAssurance: "strong_link" as const,
+	};
+}
+
+function householdApprovalMetadata(overrides: Record<string, unknown> = {}) {
+	return {
+		source: "hermes-live-mcp",
+		pairedProvenance: true,
+		replyCapableActorSeat: true,
+		...overrides,
+	};
+}
+
+function householdOutboundOverrides(): Partial<
+	Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">
+> {
+	return {
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		channel: "whatsapp",
+		subjectUserId: "household:parent-a",
+		householdReplyBinding: householdReplyEvidence(),
+		approvalMetadata: householdApprovalMetadata(),
+	};
+}
+
+function householdOutboundPrepareInput(): TelclaudeMcpOutboundSideEffectPrepareInput {
+	return outboundPrepareInput(householdOutboundOverrides());
 }
 
 function signatureFor(prefix: string, payload: string): string {

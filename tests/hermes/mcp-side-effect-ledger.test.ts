@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
+	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalVerifier,
+	telclaudeMcpSideEffectRecordIntegrityFailures,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
 
 describe("Telclaude MCP side-effect ledger", () => {
@@ -116,6 +118,61 @@ describe("Telclaude MCP side-effect ledger", () => {
 		expect(() =>
 			ledger.prepare(outboundInput({ edgePreparedHash: "edge-prepared-hash-1" })),
 		).toThrow("edgePreparedHash must be a 64-character lowercase hex digest");
+	});
+
+	it("binds household subject and strong-linked principal evidence into every outbound digest", () => {
+		const ledger = createTestLedger();
+		const householdReplyBinding = {
+			bindingId: "parent-a",
+			subjectUserId: "household:parent-a",
+			senderPrincipalHash:
+				"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as const,
+			recipientPrincipalHash:
+				"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as const,
+			identityAssurance: "strong_link" as const,
+		};
+		const prepared = ledger.prepare(
+			outboundInput({
+				domain: "household",
+				subjectUserId: householdReplyBinding.subjectUserId,
+				householdReplyBinding,
+			}),
+		);
+		const changedBinding = ledger.prepare(
+			outboundInput({
+				domain: "household",
+				subjectUserId: "household:parent-b",
+				householdReplyBinding: {
+					...householdReplyBinding,
+					bindingId: "parent-b",
+					subjectUserId: "household:parent-b",
+				},
+			}),
+		);
+
+		expect(prepared).toMatchObject({
+			subjectUserId: "household:parent-a",
+			householdReplyBinding,
+		});
+		expect(getTelclaudeMcpSideEffectApprovalBinding(prepared)).toMatchObject({
+			subjectUserId: "household:parent-a",
+			householdReplyBinding,
+		});
+		expect(changedBinding.paramsHash).not.toBe(prepared.paramsHash);
+		expect(changedBinding.bodyHash).not.toBe(prepared.bodyHash);
+		expect(
+			telclaudeMcpSideEffectRecordIntegrityFailures({
+				...prepared,
+				householdReplyBinding: {
+					...householdReplyBinding,
+					recipientPrincipalHash:
+						"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				},
+			}),
+		).toEqual([
+			"outbound paramsHash does not match current outbound params/render",
+			"outbound bodyHash does not match current outbound render",
+		]);
 	});
 
 	it("authorizes by stored ref only and passes precise stored binding to the verifier", async () => {

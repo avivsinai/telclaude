@@ -74,6 +74,7 @@ import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import { createOutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
 import { initTokenManager } from "../relay/token-manager.js";
+import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -440,6 +441,8 @@ export function registerRelayCommand(program: Command): void {
 						);
 					},
 				});
+				const liveMcpHouseholdReplyBindingResolver =
+					createWhatsAppHouseholdReplyBindingResolver(cfg);
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: liveMcpRuntimeConfig,
 					registry: hermesMcpAuthorityRegistry,
@@ -476,6 +479,7 @@ export function registerRelayCommand(program: Command): void {
 						}
 						return turn;
 					},
+					resolveHouseholdReplyBinding: liveMcpHouseholdReplyBindingResolver,
 					outboundDeliveryDispatcher: liveMcpOutboundDeliveryDispatcher,
 					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
 					...(liveMcpBrowserWriteCommitter
@@ -506,6 +510,7 @@ export function registerRelayCommand(program: Command): void {
 						return createTelclaudeLiveMcpRelayClients({
 							ledger,
 							conversationStore: liveMcpConversationStore,
+							resolveHouseholdReplyBinding: liveMcpHouseholdReplyBindingResolver,
 							edgeRuntime: liveMcpEdgeRuntime,
 							browser: liveMcpBrowseExecutor,
 							...(liveMcpBrowserActSurface ? { browserAct: liveMcpBrowserActSurface } : {}),
