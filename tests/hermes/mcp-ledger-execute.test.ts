@@ -25,6 +25,7 @@ import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalVerification,
 	type TelclaudeMcpSideEffectLedger,
@@ -736,6 +737,124 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 	});
 
+	it("executes scheduled outbound only through the internal system authorizer with immediate revalidation", async () => {
+		const harness = createLedgerHarness();
+		const scheduled = harness.ledger.prepare(scheduledOutboundPrepareInput());
+		harness.accept("scheduled-token", scheduled);
+		const dispatched: PreparedOutbound[] = [];
+		let authorizeCalls = 0;
+		let immediateRevalidationCalls = 0;
+		const scheduledOutboundAuthorizer = Object.assign(
+			async () => {
+				authorizeCalls += 1;
+				return {
+					ok: true as const,
+					approvalToken: "scheduled-token",
+					approvalId: "scheduled-token",
+				};
+			},
+			{
+				revalidate: async () => {
+					immediateRevalidationCalls += 1;
+					return { ok: true as const };
+				},
+			},
+		);
+		const dependencies = createTelclaudeMcpLedgerExecuteDependencies({
+			ledger: harness.ledger,
+			scheduledOutboundAuthorizer,
+			outboundDeliveryDispatcher: async (prepared) => {
+				dispatched.push(prepared);
+				return sentOutboundDeliveryDispatcher(prepared);
+			},
+			nowMs: harness.nowMs,
+		});
+
+		await expect(
+			dependencies.scheduledOutboundExecute({ outboundRef: scheduled.ref }),
+		).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: scheduled.ref,
+				kind: "scheduled-outbound",
+				status: "executed",
+				approvalId: "scheduled-token",
+			}),
+		});
+		expect(authorizeCalls).toBe(1);
+		expect(immediateRevalidationCalls).toBe(1);
+		expect(dispatched).toEqual([
+			expect.objectContaining({
+				outboundRef: scheduled.edgePreparedRef,
+				resolvedDestination: scheduled.resolvedDestination,
+				finalRenderedBody: scheduled.renderedBody,
+				mediaRefs: [],
+				idempotencyKey: scheduled.idempotencyKey,
+			}),
+		]);
+		expect(harness.resolverCalls).toEqual([]);
+	});
+
+	it("fails a claimed scheduled outbound terminally when immediate policy revalidation drifts", async () => {
+		const harness = createLedgerHarness();
+		const scheduled = harness.ledger.prepare(scheduledOutboundPrepareInput());
+		harness.accept("scheduled-token", scheduled);
+		let dispatcherCalls = 0;
+		const dependencies = createTelclaudeMcpLedgerExecuteDependencies({
+			ledger: harness.ledger,
+			scheduledOutboundAuthorizer: Object.assign(
+				async () => ({
+					ok: true as const,
+					approvalToken: "scheduled-token",
+					approvalId: "scheduled-token",
+				}),
+				{
+					revalidate: async () => ({
+						ok: false as const,
+						code: "reminder_binding_drift",
+						reason: "household reminder binding or consent changed",
+						retryable: false as const,
+					}),
+				},
+			),
+			outboundDeliveryDispatcher: async (prepared) => {
+				dispatcherCalls += 1;
+				return sentOutboundDeliveryDispatcher(prepared);
+			},
+			nowMs: harness.nowMs,
+		});
+
+		await expect(
+			dependencies.scheduledOutboundExecute({ outboundRef: scheduled.ref }),
+		).resolves.toMatchObject({
+			ok: false,
+			code: "reminder_binding_drift",
+			retryable: false,
+			record: { ref: scheduled.ref, status: "failed" },
+		});
+		expect(dispatcherCalls).toBe(0);
+		expect(harness.ledger.get(scheduled.ref)).toMatchObject({ status: "failed" });
+	});
+
+	it("keeps scheduled execution out of the MCP bridge and rejects standard records", async () => {
+		const harness = createLedgerHarness();
+		const dependencies = createTelclaudeMcpLedgerExecuteDependencies({
+			ledger: harness.ledger,
+			nowMs: harness.nowMs,
+		});
+		const standard = harness.ledger.prepare(outboundPrepareInput());
+		const bridge = createBridge(harness);
+
+		expect(bridge).not.toHaveProperty("tc_scheduled_outbound_execute");
+		await expect(
+			dependencies.scheduledOutboundExecute({ outboundRef: standard.ref }),
+		).resolves.toMatchObject({
+			ok: false,
+			code: "effect_kind_mismatch",
+			retryable: false,
+		});
+	});
+
 	it("fails closed before approval resolution when WhatsApp outbound has no dispatcher", async () => {
 		const harness = createLedgerHarness();
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
@@ -1340,6 +1459,60 @@ function outboundPrepareInput(
 		approvalMetadata: { category: "family-logistics" },
 		idempotencyKey: "idem-outbound-1",
 		...overrides,
+	};
+}
+
+function scheduledOutboundPrepareInput(): TelclaudeMcpScheduledOutboundSideEffectPrepareInput {
+	const channel = "whatsapp" as const;
+	const requestedBody = "תזכורת: להביא מסמכים";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+972501234567",
+		conversationId: "whatsapp:household:parent-a",
+	};
+	return {
+		kind: "scheduled-outbound",
+		source: "household-reminder-system.v1",
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		subjectUserId: "household:parent-a",
+		channel,
+		destination: "+972501234567",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
+		preparedMediaRefs: [],
+		conversationRef: "whatsapp:household:parent-a",
+		edgePreparedRef: "edge-reminder-fire-1",
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: [],
+		}),
+		idempotencyKey:
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		householdReminderPolicy: {
+			reminderId: "reminder-1",
+			fireId: "reminder-fire-1",
+			revision: 1,
+			confirmedProposalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			scheduleHash:
+				"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			contentHash:
+				"sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			bindingFingerprint:
+				"sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			recipientPrincipalHash:
+				"sha256:5555555555555555555555555555555555555555555555555555555555555555",
+			systemPolicyPrincipal: "telclaude:household-reminder-system",
+			systemPolicyVersion: "phase0.v1",
+		},
 	};
 }
 

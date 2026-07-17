@@ -1,3 +1,4 @@
+import type { HouseholdReminderSystemOriginAuthorizer } from "../../household-reminders/system-origin-authorizer.js";
 import type { BrowserActEvidence } from "../../relay/browser-act-evidence.js";
 import {
 	type BrowserWriteContext,
@@ -32,6 +33,7 @@ import type {
 	TelclaudeMcpBrowserWriteSideEffectRecord,
 	TelclaudeMcpOutboundSideEffectRecord,
 	TelclaudeMcpProviderSideEffectRecord,
+	TelclaudeMcpScheduledOutboundSideEffectRecord,
 	TelclaudeMcpSideEffectAuthorizeResult,
 	TelclaudeMcpSideEffectLedger,
 	TelclaudeMcpSideEffectRecord,
@@ -105,6 +107,9 @@ export type TelclaudeMcpLedgerExecuteDependencies = Pick<
 	browserWriteExecute(
 		request: TelclaudeMcpBrowserWriteExecuteRequest,
 	): Promise<TelclaudeMcpBrowserWriteExecuteResult>;
+	scheduledOutboundExecute(request: {
+		readonly outboundRef: string;
+	}): Promise<TelclaudeMcpSideEffectAuthorizeResult>;
 };
 
 export type TelclaudeMcpProviderSidecarApprovalTokenRequest = {
@@ -159,11 +164,17 @@ export type TelclaudeMcpInboundTurnAuthorityResolver = (request: {
 	readonly nowMs: number;
 }) => RelayConversationInboundTurn | null | Promise<RelayConversationInboundTurn | null>;
 
+type TelclaudeMcpTurnBoundSideEffectRecord = Exclude<
+	TelclaudeMcpSideEffectRecord,
+	{ kind: "scheduled-outbound" }
+>;
+
 export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly providerProxy?: ProviderProxy;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
+	readonly scheduledOutboundAuthorizer?: HouseholdReminderSystemOriginAuthorizer;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly resolveHouseholdReplyBinding?: WhatsAppHouseholdReplyBindingResolver;
@@ -271,6 +282,75 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			const executed = await options.ledger.markExecuted(request.outboundRef, approvalId);
 			if (executed.ok) resolved.finalize?.();
 			return executed;
+		},
+		async scheduledOutboundExecute(request) {
+			const nowMs = options.nowMs?.() ?? Date.now();
+			const checked = scheduledOutboundLedgerEffectRecord(
+				options.ledger,
+				request.outboundRef,
+				nowMs,
+			);
+			if (!checked.ok) return checked;
+			if (!options.outboundDeliveryDispatcher) {
+				return terminalFailure(
+					"outbound_delivery_dispatcher_missing",
+					"outbound delivery dispatcher is not configured for scheduled WhatsApp",
+					checked.record,
+				);
+			}
+			if (!options.scheduledOutboundAuthorizer) {
+				return terminalFailure(
+					"scheduled_outbound_authorizer_missing",
+					"scheduled outbound system authorizer is not configured",
+					checked.record,
+				);
+			}
+			let authorizedPolicy: TelclaudeMcpSideEffectApprovalTokenResolution;
+			try {
+				authorizedPolicy = await options.scheduledOutboundAuthorizer(checked.record);
+			} catch (error) {
+				return terminalFailure(
+					"scheduled_outbound_authorizer_unavailable",
+					redactSecrets(error instanceof Error ? error.message : String(error)),
+					checked.record,
+				);
+			}
+			if (!authorizedPolicy.ok) return { ...authorizedPolicy, record: checked.record };
+			const verified = await options.ledger.verify(
+				request.outboundRef,
+				authorizedPolicy.approvalToken,
+			);
+			if (!verified.ok) return verified;
+			const approvalId = verified.approvalId ?? authorizedPolicy.approvalId;
+			const claim = options.ledger.claimExecuting(request.outboundRef, approvalId);
+			if (!claim.ok) return claim;
+			const record = claim.record as TelclaudeMcpScheduledOutboundSideEffectRecord;
+			let immediatePolicy: Awaited<
+				ReturnType<HouseholdReminderSystemOriginAuthorizer["revalidate"]>
+			>;
+			try {
+				immediatePolicy = await options.scheduledOutboundAuthorizer.revalidate(record);
+			} catch (error) {
+				options.ledger.markFailed(request.outboundRef, "scheduled_outbound_policy_unavailable");
+				return terminalFailure(
+					"scheduled_outbound_policy_unavailable",
+					redactSecrets(error instanceof Error ? error.message : String(error)),
+					options.ledger.get(request.outboundRef) ?? record,
+				);
+			}
+			if (!immediatePolicy.ok) {
+				options.ledger.markFailed(request.outboundRef, immediatePolicy.code);
+				return terminalFailure(
+					immediatePolicy.code,
+					immediatePolicy.reason,
+					options.ledger.get(request.outboundRef) ?? record,
+				);
+			}
+			const delivered = await executeOutboundDelivery(options.outboundDeliveryDispatcher, record);
+			if (!delivered.ok) {
+				return releaseAndReport(options.ledger, request.outboundRef, delivered);
+			}
+			return options.ledger.markExecuted(request.outboundRef, approvalId);
 		},
 		async browserWriteExecute(request) {
 			const nowMs = options.nowMs?.() ?? Date.now();
@@ -577,12 +657,38 @@ async function outboundLedgerEffectRecord(
 	return { ok: true, record };
 }
 
+function scheduledOutboundLedgerEffectRecord(
+	ledger: TelclaudeMcpSideEffectLedger,
+	ref: string,
+	nowMs: number,
+):
+	| { readonly ok: true; readonly record: TelclaudeMcpScheduledOutboundSideEffectRecord }
+	| TelclaudeMcpSideEffectTerminalFailure {
+	const record = ledger.get(ref);
+	if (!record) {
+		return terminalFailure("effect_not_found", "side effect was not prepared");
+	}
+	if (record.kind !== "scheduled-outbound") {
+		return terminalFailure(
+			"effect_kind_mismatch",
+			"side effect kind mismatch: expected scheduled-outbound",
+			record,
+		);
+	}
+	const terminal = terminalFailureBeforeApproval(record, nowMs);
+	if (terminal) return terminal;
+	const edgeFailure = edgePreparedHashFailure(record);
+	if (edgeFailure) return edgeFailure;
+	return { ok: true, record };
+}
+
 async function liveTurnAuthorityFailure(
 	record: TelclaudeMcpSideEffectRecord,
 	request: TelclaudeMcpAuthorityStamp,
 	nowMs: number,
 	resolveAuthorizedInboundTurn: TelclaudeMcpInboundTurnAuthorityResolver | undefined,
 ): Promise<TelclaudeMcpSideEffectTerminalFailure | null> {
+	if (record.kind === "scheduled-outbound") return null;
 	if (!record.turnConversationRef) return null;
 	if (request.turnConversationRef !== record.turnConversationRef) {
 		return terminalFailure(
@@ -626,7 +732,7 @@ async function liveTurnAuthorityFailure(
 }
 
 function turnAuthorityRequest(
-	record: TelclaudeMcpSideEffectRecord,
+	record: TelclaudeMcpTurnBoundSideEffectRecord,
 	nowMs: number,
 ): Parameters<TelclaudeMcpInboundTurnAuthorityResolver>[0] {
 	return {
@@ -648,7 +754,7 @@ function turnAuthorityRequest(
 }
 
 function sameTurnAuthority(
-	record: TelclaudeMcpSideEffectRecord,
+	record: TelclaudeMcpTurnBoundSideEffectRecord,
 	turn: RelayConversationInboundTurn,
 ): boolean {
 	if (
@@ -742,6 +848,7 @@ function terminalFailureBeforeApproval(
 	if (record.expiresAtMs < nowMs) {
 		return terminalFailure("effect_expired", "side effect approval window expired", record);
 	}
+	if (record.kind === "scheduled-outbound") return null;
 	if (record.actorId === record.approverActorId) {
 		if (record.kind === "provider") {
 			return terminalFailure(
@@ -760,7 +867,7 @@ function terminalFailureBeforeApproval(
 }
 
 function edgePreparedHashFailure(
-	record: TelclaudeMcpOutboundSideEffectRecord,
+	record: TelclaudeMcpOutboundSideEffectRecord | TelclaudeMcpScheduledOutboundSideEffectRecord,
 ): TelclaudeMcpSideEffectTerminalFailure | null {
 	if (record.renderedBody !== record.requestedBody) {
 		return terminalFailure(
@@ -955,7 +1062,7 @@ async function liveHouseholdReplyBindingFailure(
 
 async function executeOutboundDelivery(
 	dispatcher: OutboundDeliveryDispatcher,
-	record: TelclaudeMcpOutboundSideEffectRecord,
+	record: TelclaudeMcpDeliverySideEffectRecord,
 ): Promise<TelclaudeMcpSideEffectAuthorizeResult> {
 	const prepared = preparedOutboundForDelivery(record);
 	let receipt: ReturnType<typeof DeliveryReceiptSchema.parse>;
@@ -986,7 +1093,7 @@ async function executeOutboundDelivery(
 }
 
 function preparedOutboundForDelivery(
-	record: TelclaudeMcpOutboundSideEffectRecord,
+	record: TelclaudeMcpDeliverySideEffectRecord,
 ): PreparedOutbound {
 	return PreparedOutboundSchema.parse({
 		schemaVersion: EdgeAdapterSchemaVersions.preparedOutbound,
@@ -1011,7 +1118,10 @@ function preparedOutboundForDelivery(
 		edgePreparedHash: record.edgePreparedHash,
 		policyResult: {
 			decision: "allowed",
-			reason: "MCP side-effect ledger authorized outbound delivery",
+			reason:
+				record.kind === "scheduled-outbound"
+					? "Household reminder system policy authorized outbound delivery"
+					: "MCP side-effect ledger authorized outbound delivery",
 		},
 		approvalRequirement: { required: false },
 		idempotencyKey: record.idempotencyKey ?? record.ref,
@@ -1026,8 +1136,8 @@ function preparedOutboundForDelivery(
 }
 
 function attachmentRefForDelivery(
-	record: TelclaudeMcpOutboundSideEffectRecord,
-	mediaRef: TelclaudeMcpOutboundSideEffectRecord["preparedMediaRefs"][number],
+	record: TelclaudeMcpDeliverySideEffectRecord,
+	mediaRef: TelclaudeMcpDeliverySideEffectRecord["preparedMediaRefs"][number],
 ): AttachmentRef {
 	return {
 		schemaVersion: EdgeAdapterSchemaVersions.attachmentRef,
@@ -1044,6 +1154,10 @@ function attachmentRefForDelivery(
 		},
 	};
 }
+
+type TelclaudeMcpDeliverySideEffectRecord =
+	| TelclaudeMcpOutboundSideEffectRecord
+	| TelclaudeMcpScheduledOutboundSideEffectRecord;
 
 function deliveryReceiptSucceeded(status: string): boolean {
 	return status === "sent" || status === "delivered" || status === "read";

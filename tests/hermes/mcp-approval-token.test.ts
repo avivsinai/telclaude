@@ -15,10 +15,13 @@ import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN,
 	type TelclaudeMcpOutboundApprovalBinding,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderApprovalBinding,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpScheduledOutboundApprovalBinding,
+	type TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalVerification,
 	type TelclaudeMcpSideEffectRecord,
@@ -216,6 +219,33 @@ describe("Telclaude MCP side-effect approval tokens", () => {
 			expect.objectContaining({ prefix: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN }),
 			expect.objectContaining({ prefix: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN }),
 		]);
+	});
+
+	it("signs the exact scheduled-outbound policy binding and rejects JTI replay", async () => {
+		const { binding, record } = scheduledOutboundFixture();
+		const verifier = createVerifier();
+		const token = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			ttlSeconds: 30,
+			jti: "jti-scheduled-outbound-1",
+		});
+
+		expect(vault.signCalls).toEqual([
+			expect.objectContaining({ prefix: TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN }),
+		]);
+		const claims = decodeTokenClaims(token);
+		expect(claims.binding).toEqual(binding);
+		expect(claims.binding).not.toHaveProperty("approverActorId");
+		expect(claims.binding).not.toHaveProperty("turnConversationRef");
+		await expect(verifier(verification(binding, token, 120_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: "jti-scheduled-outbound-1",
+		});
+		await expect(verifier(verification(binding, token, 121_000, record))).resolves.toEqual({
+			ok: false,
+			code: "approval_replayed",
+			reason: "Approval token already used",
+		});
 	});
 
 	it("rejects cross-domain provider/outbound reuse without consuming the JTI", async () => {
@@ -655,10 +685,23 @@ function householdOutboundFixture(): {
 	return { record, binding };
 }
 
+function scheduledOutboundFixture(): {
+	readonly record: TelclaudeMcpSideEffectRecord;
+	readonly binding: TelclaudeMcpScheduledOutboundApprovalBinding;
+} {
+	const record = prepareFixture(scheduledOutboundPrepareInput());
+	const binding = getTelclaudeMcpSideEffectApprovalBinding(record);
+	if (binding.kind !== "scheduled-outbound") throw new Error("expected scheduled binding");
+	return { record, binding };
+}
+
 let fixtureRefCounter = 0;
 
 function prepareFixture(
-	input: TelclaudeMcpProviderSideEffectPrepareInput | TelclaudeMcpOutboundSideEffectPrepareInput,
+	input:
+		| TelclaudeMcpProviderSideEffectPrepareInput
+		| TelclaudeMcpOutboundSideEffectPrepareInput
+		| TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
 ): TelclaudeMcpSideEffectRecord {
 	const ledger = createTelclaudeMcpSideEffectLedger({
 		nowMs: () => 100_000,
@@ -667,6 +710,53 @@ function prepareFixture(
 		verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
 	});
 	return ledger.prepare(input);
+}
+
+function scheduledOutboundPrepareInput(): TelclaudeMcpScheduledOutboundSideEffectPrepareInput {
+	const requestedBody = "תזכורת: להביא מסמכים";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+972501234567",
+		conversationId: "whatsapp:household:parent-a",
+	};
+	return {
+		kind: "scheduled-outbound",
+		source: "household-reminder-system.v1",
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		subjectUserId: "household:parent-a",
+		channel: "whatsapp",
+		destination: "+972501234567",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
+		preparedMediaRefs: [],
+		conversationRef: "whatsapp:household:parent-a",
+		edgePreparedRef: "edge-reminder-fire-1",
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel: "whatsapp",
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: [],
+		}),
+		idempotencyKey: "reminder-fire-idem-1",
+		householdReminderPolicy: {
+			reminderId: "reminder-1",
+			fireId: "reminder-fire-1",
+			revision: 1,
+			confirmedProposalHash: hash("1"),
+			scheduleHash: hash("2"),
+			contentHash: hash("3"),
+			bindingFingerprint: hash("4"),
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			recipientPrincipalHash: hash("5"),
+			systemPolicyPrincipal: "telclaude:household-reminder-system",
+			systemPolicyVersion: "phase0.v1",
+		},
+	};
 }
 
 function providerPrepareInput(

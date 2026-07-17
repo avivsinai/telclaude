@@ -151,6 +151,56 @@ describe("household reminder store", () => {
 		).toThrow(/consent does not match/i);
 	});
 
+	it("reads an authority-scoped confirmed revision and its confirmation evidence", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const created = store.prepareHouseholdReminderCreate({
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "להביא מסמכים",
+			schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+			source: { kind: "parent" },
+			nowMs: NOW_MS,
+		});
+		const confirmed = store.confirmHouseholdReminderProposal({
+			proposalRef: created.proposal.ref,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			nowMs: NOW_MS + 1_000,
+		});
+		if (!confirmed.ok) throw new Error(confirmed.code);
+
+		expect(
+			store.getConfirmedHouseholdReminderPolicySnapshot(
+				confirmed.reminder.id,
+				confirmed.reminder.revision,
+				AUTHORITY_A,
+			),
+		).toEqual({
+			reminder: confirmed.reminder,
+			confirmation: {
+				proposalRef: created.proposal.ref,
+				proposalHash: created.proposal.proposalHash,
+				action: "create",
+			},
+		});
+		expect(
+			store.getConfirmedHouseholdReminderPolicySnapshot(
+				confirmed.reminder.id,
+				confirmed.reminder.revision,
+				AUTHORITY_B,
+			),
+		).toBeNull();
+		expect(
+			store.getConfirmedHouseholdReminderPolicySnapshot(
+				"reminder-absent",
+				confirmed.reminder.revision,
+				AUTHORITY_A,
+			),
+		).toBeNull();
+	});
+
 	it("rejects schedules that are already due at prepare or confirmation time", async () => {
 		const store = await import("../../src/household-reminders/store.js");
 		const reminderSchedule = schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180);

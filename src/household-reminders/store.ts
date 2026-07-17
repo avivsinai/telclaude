@@ -110,6 +110,15 @@ export type HouseholdReminderProposalResolution =
 				| "invalid_state";
 	  };
 
+export type HouseholdReminderConfirmedPolicySnapshot = {
+	readonly reminder: HouseholdReminder;
+	readonly confirmation: {
+		readonly proposalRef: string;
+		readonly proposalHash: Sha256Ref;
+		readonly action: "create" | "update";
+	};
+};
+
 export function householdReminderBindingFingerprint(binding: HouseholdReminderBinding): Sha256Ref {
 	const normalized = normalizeBinding(binding);
 	return canonicalSha256({
@@ -429,6 +438,58 @@ export function getHouseholdReminderForAuthority(
 			authority.profileId,
 		) as ReminderRow | undefined;
 	return row ? rowToReminder(row) : null;
+}
+
+export function getConfirmedHouseholdReminderPolicySnapshot(
+	reminderIdInput: string,
+	revisionInput: number,
+	authorityInput: HouseholdReminderAuthority,
+): HouseholdReminderConfirmedPolicySnapshot | null {
+	const reminderId = nonEmpty(reminderIdInput, "reminderId");
+	const revision = positiveInt(revisionInput, "revision");
+	const authority = normalizeAuthority(authorityInput);
+	const db = getDb();
+	const reminderRow = db
+		.prepare(
+			`SELECT * FROM household_reminders
+			 WHERE id = ? AND revision = ?
+			 AND actor_id = ? AND subject_user_id = ? AND profile_id = ?`,
+		)
+		.get(reminderId, revision, authority.actorId, authority.subjectUserId, authority.profileId) as
+		| ReminderRow
+		| undefined;
+	if (!reminderRow) return null;
+	const proposalRow = db
+		.prepare(
+			`SELECT * FROM household_reminder_proposals
+			 WHERE reminder_id = ? AND proposed_revision = ?
+			 AND actor_id = ? AND subject_user_id = ? AND profile_id = ?
+			 AND status = 'confirmed' AND action IN ('create', 'update')
+			 ORDER BY created_at_ms DESC LIMIT 1`,
+		)
+		.get(reminderId, revision, authority.actorId, authority.subjectUserId, authority.profileId) as
+		| ProposalRow
+		| undefined;
+	if (!proposalRow) return null;
+	const verified = verifyProposalPayload(proposalRow);
+	if (
+		!verified.ok ||
+		!verified.payload ||
+		verified.payload.contentHash !== reminderRow.content_hash ||
+		verified.payload.scheduleHash !== reminderRow.schedule_hash ||
+		proposalRow.binding_fingerprint !== reminderRow.binding_fingerprint ||
+		proposalRow.consent_hash !== reminderRow.consent_hash
+	) {
+		return null;
+	}
+	return {
+		reminder: rowToReminder(reminderRow),
+		confirmation: {
+			proposalRef: proposalRow.ref,
+			proposalHash: proposalRow.proposal_hash as Sha256Ref,
+			action: proposalRow.action as "create" | "update",
+		},
+	};
 }
 
 export function listHouseholdReminders(
