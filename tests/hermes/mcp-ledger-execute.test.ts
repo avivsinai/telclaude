@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { createLiveMcpProviderSidecarApprovalTokenIssuer } from "../../src/commands/relay.js";
 import { sortKeysDeep } from "../../src/crypto/canonical-hash.js";
 import { JtiStore, verifyApprovalToken } from "../../src/google-services/approval.js";
 import type { FetchRequest } from "../../src/google-services/types.js";
@@ -991,6 +992,71 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		}
 	});
 
+	it("executes a Clalit renewal through the issuer configured by the live relay", async () => {
+		const harness = createLedgerHarness();
+		const provider = harness.ledger.prepare(
+			providerPrepareInput({
+				actorId: "household:whatsapp:parent-b",
+				approverActorId: "telegram:parent-a",
+				profileId: "parent-b",
+				domain: "household",
+				providerId: "clalit",
+				service: "clalit",
+				action: "prescription_renewal",
+				params: { prescriptionId: "synthetic-rx" },
+				subjectUserId: "household:parent-b",
+				providerAccountRef: "clalit:primary",
+			}),
+		);
+		harness.accept("provider-token", provider);
+		const vault = new PrefixSigningVault();
+		const providerCalls: unknown[] = [];
+		const bridge = createBridge(
+			harness,
+			{
+				providerProxy: async (request) => {
+					providerCalls.push(request);
+					expect(claimsFromApprovalToken(request.approvalToken ?? "")).toMatchObject({
+						aud: "israel-services",
+						providerId: "clalit",
+						service: "clalit",
+						action: "prescription_renewal",
+						subjectUserId: "household:parent-b",
+					});
+					return { status: "ok", data: { accepted: true } };
+				},
+				providerApprovalTokenIssuer: createLiveMcpProviderSidecarApprovalTokenIssuer(vault),
+			},
+			{
+				actorId: "household:whatsapp:parent-b",
+				profileId: "parent-b",
+				domain: "household",
+				memorySource: "household:parent-b",
+				writableNamespace: "household:parent-b",
+				providerScopes: ["clalit"],
+			},
+		);
+
+		await expect(bridge.tc_provider_execute_write({ actionRef: provider.ref })).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({ ref: provider.ref, status: "executed" }),
+		});
+		expect(providerCalls).toEqual([
+			expect.objectContaining({
+				providerId: "clalit",
+				body: JSON.stringify({
+					service: "clalit",
+					action: "prescription_renewal",
+					params: { prescriptionId: "synthetic-rx" },
+					subjectUserId: "household:parent-b",
+				}),
+				userId: "household:whatsapp:parent-b",
+				approvalToken: expect.stringMatching(/^v1\./),
+				approvalMode: "preapproved-ledger",
+			}),
+		]);
+	});
+
 	it("fails closed before provider sidecar execution when no sidecar token issuer is configured", async () => {
 		const harness = createLedgerHarness();
 		const provider = harness.ledger.prepare(providerPrepareInput());
@@ -1381,6 +1447,14 @@ function fixtureInboundTurn(
 
 function canonicalBinding(binding: TelclaudeMcpSideEffectApprovalBinding): string {
 	return JSON.stringify(sortKeysDeep(binding));
+}
+
+function claimsFromApprovalToken(token: string): Record<string, unknown> {
+	const [, claimsB64] = token.split(".");
+	return JSON.parse(Buffer.from(claimsB64, "base64url").toString("utf8")) as Record<
+		string,
+		unknown
+	>;
 }
 
 class PrefixSigningVault {

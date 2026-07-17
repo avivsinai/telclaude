@@ -18,6 +18,7 @@ import {
 } from "../../memory/source.js";
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
+import { assertHouseholdPhase0ProviderActionAllowed } from "../../providers/household-clalit-policy.js";
 import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
 import type {
 	BrowserActExecutorSurface,
@@ -479,7 +480,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async providerRead(request) {
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
-			assertProviderOperationPolicy(operation);
+			assertProviderOperationPolicy(operation, request.domain, "read");
 			const body = providerFetchBody({
 				...operation,
 				subjectUserId: request.subjectUserId,
@@ -500,7 +501,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async providerPrepareWrite(request) {
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
-			assertProviderOperationPolicy(operation);
+			assertProviderOperationPolicy(operation, request.domain, "write");
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
@@ -1627,17 +1628,29 @@ function outboundCorrelationId(
 	return `mcp-outbound:${hash}`;
 }
 
-function assertProviderOperationPolicy(request: {
-	readonly providerId: string;
-	readonly service: string;
-	readonly action: string;
-	readonly params: Record<string, unknown>;
-}): void {
-	if (request.providerId === "clalit" && containsUrgentHealthSignal(request)) {
+function assertProviderOperationPolicy(
+	request: {
+		readonly providerId: string;
+		readonly service: string;
+		readonly action: string;
+		readonly params: Record<string, unknown>;
+	},
+	domain: TelclaudeMcpDomain,
+	mode: "read" | "write",
+): void {
+	assertHouseholdPhase0ProviderActionAllowed({
+		domain,
+		service: request.service,
+		action: request.action,
+		mode,
+	});
+	if (request.service === "clalit" && containsUrgentHealthSignal(request)) {
 		throw new Error("provider policy denied: urgent_health_escalation_required");
 	}
 }
 
+// M5's deterministic pre-model health routing is the primary emergency boundary;
+// keep this relay-side check as defense in depth for direct or malformed MCP calls.
 function containsUrgentHealthSignal(value: unknown): boolean {
 	const text = JSON.stringify(value).toLowerCase();
 	return [
@@ -1648,6 +1661,17 @@ function containsUrgentHealthSignal(value: unknown): boolean {
 		"stroke",
 		"heart attack",
 		"suicidal",
+		"חירום",
+		"דחוף",
+		"כאבים בחזה",
+		"כאב בחזה",
+		"קוצר נשימה",
+		"קשיי נשימה",
+		"שבץ",
+		"אירוע מוחי",
+		"התקף לב",
+		"אוטם שריר הלב",
+		"אובדני",
 	].some((term) => text.includes(term));
 }
 

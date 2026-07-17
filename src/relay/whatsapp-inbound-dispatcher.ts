@@ -160,6 +160,8 @@ export function buildWhatsAppInboundHermesOptions(
 		input.config,
 		input.profile,
 		"WRITE_LOCAL",
+		undefined,
+		input.identity.domain,
 	);
 	const query = input.event.normalized.text;
 	const memoryBundle = buildTelegramMemoryBundle({

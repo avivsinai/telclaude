@@ -1,11 +1,12 @@
 import type { PermissionTier, TelclaudeConfig } from "../config/config.js";
 import type { EffectiveOperatorProfile } from "../config/profiles.js";
+import { filterHouseholdPhase0ProviderActionCatalog } from "../providers/household-clalit-policy.js";
 import {
 	formatGrantedProviderActionCatalog,
 	type ProviderActionCatalog,
 } from "../providers/provider-action-catalog.js";
 import { getCachedProviderActionCatalog } from "../providers/provider-skill.js";
-import type { TelclaudeMcpCapabilityScope } from "./mcp/bridge.js";
+import type { TelclaudeMcpCapabilityScope, TelclaudeMcpDomain } from "./mcp/bridge.js";
 
 export type HermesPrivateRuntimeProviderContext = {
 	readonly providerScopes: readonly string[];
@@ -38,6 +39,7 @@ export function buildHermesPrivateRuntimeProviderContext(
 	>,
 	tier?: PermissionTier,
 	actionCatalog: ProviderActionCatalog | null = getCachedProviderActionCatalog(),
+	domain: TelclaudeMcpDomain = "private",
 ): HermesPrivateRuntimeProviderContext {
 	const providerScopes = uniqueSorted(
 		profile?.providerScopes ?? config.hermes?.privateRuntime?.providerScopes,
@@ -54,7 +56,14 @@ export function buildHermesPrivateRuntimeProviderContext(
 	// The valid-action catalog is what stops the agent from guessing action ids
 	// (list_capabilities, get_medications, ...) that the sidecar rejects as 404s.
 	// Empty scopes -> empty block, so no separate guard is needed here.
-	const actionCatalogAppend = formatGrantedProviderActionCatalog(providerScopes, actionCatalog);
+	const advertisedActionCatalog =
+		domain === "household" && actionCatalog
+			? filterHouseholdPhase0ProviderActionCatalog(actionCatalog)
+			: actionCatalog;
+	const actionCatalogAppend = formatGrantedProviderActionCatalog(
+		providerScopes,
+		advertisedActionCatalog,
+	);
 	const runtimeBlock =
 		providerScopes.length > 0
 			? [

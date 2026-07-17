@@ -6,6 +6,7 @@ const ACTION_CATALOG: ProviderActionCatalog = {
 	"israel-services": {
 		clalit: [
 			{ id: "appointments", write: false },
+			{ id: "chronic_meds", write: false },
 			{ id: "lab_results", write: false },
 			{ id: "prescriptions", write: false },
 			{ id: "prescription_renewal", write: true },
@@ -130,7 +131,7 @@ describe("Hermes private runtime provider context", () => {
 		expect(context.systemPromptAppend).toContain("</hermes-provider-runtime>");
 		expect(context.systemPromptAppend).toContain("<hermes-provider-actions>");
 		expect(context.systemPromptAppend).toContain(
-			'- service "clalit": appointments, lab_results, prescriptions',
+			'- service "clalit": appointments, chronic_meds, lab_results, prescriptions',
 		);
 		// bank alias -> poalim actions, presented under the agent-facing "bank" service.
 		expect(context.systemPromptAppend).toContain('- service "bank": accounts, balance');
@@ -142,6 +143,45 @@ describe("Hermes private runtime provider context", () => {
 		);
 		// Stale/unconfigured government grant must not sprout invented actions.
 		expect(context.systemPromptAppend).not.toContain('service "government"');
+	});
+
+	it("advertises only the enforced Phase 0 Clalit surface to household turns", () => {
+		const extendedCatalog: ProviderActionCatalog = {
+			...ACTION_CATALOG,
+			"israel-services": {
+				...ACTION_CATALOG["israel-services"],
+				clalit: [
+					{ id: "home", write: false },
+					...(ACTION_CATALOG["israel-services"]?.clalit ?? []),
+					{ id: "appointment_booking", write: true },
+				],
+			},
+		};
+		const context = buildHermesPrivateRuntimeProviderContext(
+			{
+				hermes: {
+					privateRuntime: {
+						providerScopes: ["clalit"],
+						capabilityScopes: [],
+						outboundChannels: ["whatsapp"],
+					},
+				},
+			},
+			undefined,
+			"WRITE_LOCAL",
+			extendedCatalog,
+			"household",
+		);
+
+		expect(context.systemPromptAppend).toContain(
+			'- service "clalit": appointments, chronic_meds, lab_results, prescriptions',
+		);
+		expect(context.systemPromptAppend).toMatch(
+			/Writes[\s\S]*- service "clalit": prescription_renewal/,
+		);
+		expect(context.systemPromptAppend).not.toContain("appointment_booking");
+		expect(context.systemPromptAppend).not.toContain('service "clalit": home');
+		expect(context.systemPromptAppend).not.toContain('service "bank"');
 	});
 
 	it("omits the action catalog block when no schema catalog is available", () => {

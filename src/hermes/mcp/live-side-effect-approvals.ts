@@ -1,4 +1,8 @@
-import { type PendingApproval, peekPendingApprovalByNonce } from "../../security/approvals.js";
+import {
+	denyApproval,
+	type PendingApproval,
+	peekPendingApprovalByNonce,
+} from "../../security/approvals.js";
 import type { StepUpVerificationMetadata } from "../../security/totp-session.js";
 import {
 	type SideEffectHumanApprovalController,
@@ -13,6 +17,14 @@ export type TelclaudeLiveMcpSideEffectApprovalBinding = {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly controller: SideEffectHumanApprovalController;
 };
+
+export type TelclaudeLiveMcpSideEffectApprovalPublisher = (input: {
+	readonly record: Extract<TelclaudeMcpSideEffectRecord, { kind: "provider" }>;
+	readonly nonce: string;
+	readonly chatId: number;
+	readonly createdAt: number;
+	readonly expiresAt: number;
+}) => void | Promise<void>;
 
 export type TelclaudeLiveMcpSideEffectApprovalConsumeInput = {
 	readonly nonce: string;
@@ -45,14 +57,34 @@ export function setTelclaudeLiveMcpSideEffectApprovalBinding(
 export function requestTelclaudeLiveMcpSideEffectApproval(
 	controller: SideEffectHumanApprovalController,
 	record: TelclaudeMcpSideEffectRecord,
+	publish?: TelclaudeLiveMcpSideEffectApprovalPublisher,
 ): Promise<void> {
 	const chatId = chatIdFromTelegramActor(record.approverActorId);
 	if (chatId === null) {
 		throw new Error("live MCP side-effect approverActorId must be formatted as telegram:<chat-id>");
 	}
-	return controller.request({ record, chatId }).then((requested) => {
+	return controller.request({ record, chatId }).then(async (requested) => {
 		if (!requested.ok) {
 			throw new Error(requested.reason);
+		}
+		if (
+			publish &&
+			record.kind === "provider" &&
+			record.domain === "household" &&
+			requested.autoGranted !== true
+		) {
+			try {
+				await publish({
+					record,
+					nonce: requested.nonce,
+					chatId,
+					createdAt: requested.createdAt,
+					expiresAt: requested.expiresAt,
+				});
+			} catch {
+				denyApproval(requested.nonce, chatId);
+				throw new Error("household provider approval notification failed");
+			}
 		}
 	});
 }

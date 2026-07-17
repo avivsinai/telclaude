@@ -90,6 +90,61 @@ describe("Hermes MCP side-effect human approvals", () => {
 		expect(approval?.body).toContain(`"ref":"${record.ref}"`);
 	});
 
+	it("publishes household provider approvals immediately after the durable row exists", async () => {
+		const record = prepareProviderRecord({
+			actorId: "household:whatsapp:parent-a",
+			approverActorId: "telegram:111",
+			profileId: "parent-a",
+			domain: "household",
+			providerId: "clalit",
+			service: "clalit",
+			action: "prescription_renewal",
+			params: { prescriptionId: "synthetic-rx" },
+			subjectUserId: "household:parent-a",
+			providerAccountRef: "clalit:household:parent-a",
+			wysiwysRender: "clalit.clalit.prescription_renewal",
+		});
+		const controller = createController();
+		const published: Array<{ nonce: string; chatId: number; rowExists: boolean }> = [];
+
+		await requestTelclaudeLiveMcpSideEffectApproval(controller, record, async (input) => {
+			published.push({
+				nonce: input.nonce,
+				chatId: input.chatId,
+				rowExists: getPendingApprovalsForChat(input.chatId).some(
+					(approval) => approval.nonce === input.nonce,
+				),
+			});
+		});
+
+		expect(published).toEqual([
+			{ nonce: expect.stringMatching(/^[a-f0-9]{16}$/), chatId: 111, rowExists: true },
+		]);
+	});
+
+	it("revokes the pending row when immediate household approval notification fails", async () => {
+		const record = prepareProviderRecord({
+			actorId: "household:whatsapp:parent-a",
+			approverActorId: "telegram:111",
+			profileId: "parent-a",
+			domain: "household",
+			providerId: "clalit",
+			service: "clalit",
+			action: "prescription_renewal",
+			subjectUserId: "household:parent-a",
+			providerAccountRef: "clalit:primary",
+			wysiwysRender: "clalit.clalit.prescription_renewal",
+		});
+		const controller = createController();
+
+		await expect(
+			requestTelclaudeLiveMcpSideEffectApproval(controller, record, async () => {
+				throw new Error("synthetic Telegram failure with code 654321");
+			}),
+		).rejects.toThrow("household provider approval notification failed");
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+	});
+
 	it("renders WhatsApp outbound approvals with exact recipient, body, attachment hashes, ttl, and idempotency key", async () => {
 		const attachmentHash =
 			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

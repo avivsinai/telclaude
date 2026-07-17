@@ -219,6 +219,78 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		expect(requestedApprovals).toEqual([providerPrepared.actionRef, outboundPrepared.outboundRef]);
 	});
 
+	it("enforces the Phase 0 Clalit action allowlist for household reads and writes", async () => {
+		const ledger = testLedger();
+		const providerCalls: unknown[] = [];
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			providerWriteApproverActorId: "telegram:111",
+			providerProxy: async (request) => {
+				providerCalls.push(request);
+				return { status: "ok", data: { appointments: [] } };
+			},
+		});
+
+		await expect(
+			clients.providerRead(
+				providerRead({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointments",
+				}),
+			),
+		).resolves.toEqual({ appointments: [] });
+		expect(providerCalls).toHaveLength(1);
+		await expect(
+			clients.providerRead(
+				providerRead({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointments",
+					params: { symptoms: "כאבים בחזה" },
+				}),
+			),
+		).rejects.toThrow("urgent_health_escalation_required");
+
+		for (const action of ["home", "appointment_booking", "tofes_17"] as const) {
+			await expect(
+				clients.providerRead(
+					providerRead({
+						...householdStamp(),
+						providerId: "clalit",
+						service: "clalit",
+						action,
+					}),
+				),
+			).rejects.toThrow("household Phase 0 provider action denied");
+		}
+		await expect(
+			clients.providerPrepareWrite(
+				providerPrepare({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "prescription_renewal",
+					params: { prescriptionId: "synthetic-rx" },
+				}),
+			),
+		).resolves.toMatchObject({ actionRef: expect.any(String) });
+		await expect(
+			clients.providerPrepareWrite(
+				providerPrepare({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointment_booking",
+				}),
+			),
+		).rejects.toThrow("household Phase 0 provider action denied");
+		expect(providerCalls).toHaveLength(1);
+		expect(ledger.list()).toHaveLength(1);
+	});
+
 	it("derives household WhatsApp replies from the current sender and rejects alternate targets", async () => {
 		const ledger = testLedger();
 		const senderAddress = "whatsapp:+15557654321";

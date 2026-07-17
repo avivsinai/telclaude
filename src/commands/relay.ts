@@ -31,7 +31,10 @@ import {
 	requestTelclaudeLiveMcpSideEffectApproval,
 	setTelclaudeLiveMcpSideEffectApprovalBinding,
 } from "../hermes/mcp/live-side-effect-approvals.js";
-import { createGoogleProviderSidecarApprovalTokenIssuer } from "../hermes/mcp/provider-sidecar-token.js";
+import {
+	createProviderSidecarApprovalTokenIssuer,
+	type ProviderSidecarApprovalTokenSigner,
+} from "../hermes/mcp/provider-sidecar-token.js";
 import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effect-human-approval.js";
 import { createTelclaudeMcpSideEffectLedger } from "../hermes/mcp/side-effect-ledger.js";
 import { setHermesPrivateRuntimeMcpAuthorityActivation } from "../hermes/private-execute.js";
@@ -108,6 +111,7 @@ import { getEnabledSocialServices, isAutomaticHeartbeatEnabled } from "../social
 import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
 import { type MonitorOptions, monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
+import { sendConfiguredHouseholdProviderApprovalNotificationCard } from "../telegram/side-effect-approval-notification.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable, VaultClient } from "../vault-daemon/index.js";
 import { startWebhookServer } from "../webhooks/server.js";
@@ -593,6 +597,14 @@ export function registerRelayCommand(program: Command): void {
 										requestTelclaudeLiveMcpSideEffectApproval(
 											liveMcpSideEffectApprovals.controller,
 											record,
+											async (approval) => {
+												await sendConfiguredHouseholdProviderApprovalNotificationCard({
+													chatId: approval.chatId,
+													nonce: approval.nonce,
+													service: approval.record.service,
+													action: approval.record.action,
+												});
+											},
 										)
 								: undefined,
 						});
@@ -973,15 +985,21 @@ function createLiveMcpSideEffectApprovalKit(vaultSocketPath: string | undefined)
 			jtiStore,
 		}),
 		sideEffectApprovalTokenResolver,
-		providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
-			vaultClient,
-			subjectUserId: process.env.GOOGLE_USER_EMAIL,
-		}),
+		providerApprovalTokenIssuer: createLiveMcpProviderSidecarApprovalTokenIssuer(vaultClient),
 		close() {
 			setTelclaudeLiveMcpSideEffectApprovalBinding(null);
 			jtiStore.close();
 		},
 	};
+}
+
+export function createLiveMcpProviderSidecarApprovalTokenIssuer(
+	vaultClient: ProviderSidecarApprovalTokenSigner,
+) {
+	return createProviderSidecarApprovalTokenIssuer({
+		vaultClient,
+		subjectUserId: process.env.GOOGLE_USER_EMAIL,
+	});
 }
 
 async function denyRelayLiveMcpApproval() {

@@ -56,6 +56,8 @@ export type ApprovalCardState = {
 	explanation?: string;
 	approved?: boolean;
 	denied?: boolean;
+	/** Informational card; authority remains exclusively on the typed command path. */
+	notificationOnly?: boolean;
 };
 
 /**

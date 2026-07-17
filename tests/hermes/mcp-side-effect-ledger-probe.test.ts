@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	HOUSEHOLD_CLALIT_PROBE_REQUIRED_CHECKS,
 	HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS,
 	PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS,
 	runTelclaudeMcpSideEffectLedgerProbe,
@@ -29,6 +30,17 @@ const EXPECTED_PROVIDER_CHALLENGE_CHECKS = [
 	"challenge.artifact-redacted",
 ] as const;
 
+const EXPECTED_HOUSEHOLD_CLALIT_CHECKS = [
+	"clalit.household.action-allowlist-enforced",
+	"clalit.household.two-parent-binding-isolated",
+	"clalit.household.wrong-parent-denied",
+	"clalit.household.renewal-approved-once",
+	"clalit.household.changed-params-denied",
+	"clalit.household.expired-denied",
+	"clalit.household.self-approval-denied",
+	"clalit.household.artifact-redacted",
+] as const;
+
 describe("Telclaude MCP side-effect ledger probe", () => {
 	beforeEach(() => {
 		const relayKeys = generateKeyPair();
@@ -47,6 +59,10 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 
 	it("pins the provider challenge property catalog independently of the evaluator", () => {
 		expect(PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS).toEqual(EXPECTED_PROVIDER_CHALLENGE_CHECKS);
+	});
+
+	it("pins the household Clalit matrix independently of the evaluator", () => {
+		expect(HOUSEHOLD_CLALIT_PROBE_REQUIRED_CHECKS).toEqual(EXPECTED_HOUSEHOLD_CLALIT_CHECKS);
 	});
 
 	it("passes only after exercising prepare, execute, proxy, and denial paths", async () => {
@@ -83,6 +99,10 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 		);
 		expect(evidence.observations.challengeResponderCallCount).toBe(1);
 		expect(evidence.observations.challengeControlSendCount).toBe(4);
+		expect(evidence.observations.householdClalitWriteCallCount).toBe(1);
+		expect(evidence.observations.householdClalitParentAContentHash).not.toBe(
+			evidence.observations.householdClalitParentBContentHash,
+		);
 		expect(evidence.checks.filter((check) => check.name.startsWith("challenge."))).toEqual(
 			EXPECTED_PROVIDER_CHALLENGE_CHECKS.map((name) =>
 				expect.objectContaining({ name, status: "pass" }),
@@ -90,6 +110,11 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 		);
 		expect(evidence.checks.filter((check) => check.name.startsWith("ledger.household."))).toEqual(
 			EXPECTED_HOUSEHOLD_REPLY_CHECKS.map((name) =>
+				expect.objectContaining({ name, status: "pass" }),
+			),
+		);
+		expect(evidence.checks.filter((check) => check.name.startsWith("clalit.household."))).toEqual(
+			EXPECTED_HOUSEHOLD_CLALIT_CHECKS.map((name) =>
 				expect.objectContaining({ name, status: "pass" }),
 			),
 		);

@@ -5,6 +5,10 @@ import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
 import {
+	assertHouseholdPhase0ProviderActionAllowed,
+	HOUSEHOLD_PHASE0_CLALIT_READ_ACTIONS,
+} from "../../providers/household-clalit-policy.js";
+import {
 	createPendingProviderChallengeRegistry,
 	type PendingProviderChallengeBindingEvidence,
 } from "../../relay/pending-provider-challenge.js";
@@ -41,6 +45,10 @@ import {
 	type TelclaudeMcpInboundTurnAuthorityResolver,
 } from "./ledger-execute.js";
 import { createNotConfiguredTelclaudeMcpCapabilityClients } from "./live-relay-clients.js";
+import {
+	createProviderSidecarApprovalTokenIssuer,
+	type ProviderSidecarApprovalTokenSigner,
+} from "./provider-sidecar-token.js";
 import { createSideEffectHumanApprovalController } from "./side-effect-human-approval.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
@@ -144,6 +152,11 @@ export const SideEffectLedgerProbeEvidenceSchema = z
 				householdParentBContentHash: Sha256Digest.optional(),
 				householdDeliveryCallCount: z.number().int().nonnegative().optional(),
 				householdBindingResolverCallCount: z.number().int().nonnegative().optional(),
+				householdClalitParentARef: NonEmptyString.optional(),
+				householdClalitParentBRef: NonEmptyString.optional(),
+				householdClalitParentAContentHash: Sha256Digest.optional(),
+				householdClalitParentBContentHash: Sha256Digest.optional(),
+				householdClalitWriteCallCount: z.number().int().nonnegative().optional(),
 				challengeResponderCallCount: z.number().int().nonnegative().optional(),
 				challengeControlSendCount: z.number().int().nonnegative().optional(),
 			})
@@ -172,6 +185,17 @@ export const PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS = [
 	"challenge.artifact-redacted",
 ] as const;
 
+export const HOUSEHOLD_CLALIT_PROBE_REQUIRED_CHECKS = [
+	"clalit.household.action-allowlist-enforced",
+	"clalit.household.two-parent-binding-isolated",
+	"clalit.household.wrong-parent-denied",
+	"clalit.household.renewal-approved-once",
+	"clalit.household.changed-params-denied",
+	"clalit.household.expired-denied",
+	"clalit.household.self-approval-denied",
+	"clalit.household.artifact-redacted",
+] as const;
+
 const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.provider.prepare-hashes",
 	"ledger.outbound.prepare-hashes",
@@ -189,6 +213,7 @@ const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.provider-scope-mismatch-denied",
 	...HOUSEHOLD_REPLY_PROBE_REQUIRED_CHECKS,
 	...PROVIDER_CHALLENGE_PROBE_REQUIRED_CHECKS,
+	...HOUSEHOLD_CLALIT_PROBE_REQUIRED_CHECKS,
 ] as const;
 
 export function runTelclaudeMcpSideEffectLedgerProbe(input: {
@@ -252,6 +277,19 @@ export function sideEffectLedgerProbeEvidenceFailure(
 		data.observations.householdParentAContentHash === data.observations.householdParentBContentHash
 	) {
 		failures.push("household parent approval bindings are not independently hash-bound");
+	}
+	if (
+		!data.observations.householdClalitParentAContentHash ||
+		!data.observations.householdClalitParentBContentHash ||
+		data.observations.householdClalitParentAContentHash ===
+			data.observations.householdClalitParentBContentHash
+	) {
+		failures.push("household Clalit renewal bindings are not independently hash-bound");
+	}
+	if (data.observations.householdClalitWriteCallCount !== 1) {
+		failures.push(
+			`householdClalitWriteCallCount is ${String(data.observations.householdClalitWriteCallCount)}`,
+		);
 	}
 	if (!data.observations.outboundEdgePreparedRef) {
 		failures.push("outboundEdgePreparedRef is missing");
@@ -671,6 +709,16 @@ async function runProbe(input: {
 			observations,
 			nowMs: () => nowMs,
 		});
+		await runHouseholdClalitProbe({
+			ledger,
+			vault,
+			checks,
+			observations,
+			nowMs: () => nowMs,
+			setNowMs: (value) => {
+				nowMs = value;
+			},
+		});
 		await runProviderChallengeProbe({ checks, observations, nowMs: () => nowMs });
 	} catch (error) {
 		checks.push({
@@ -825,6 +873,219 @@ async function runProviderChallengeProbe(input: {
 			!serialized.includes("synthetic-provider-challenge-secret") &&
 			redactSecrets(serialized) === serialized,
 		"signed challenge observations contain fixed templates and no OTP or provider challenge secret",
+	);
+}
+
+async function runHouseholdClalitProbe(input: {
+	readonly ledger: TelclaudeMcpSideEffectLedger;
+	readonly vault: TelclaudeMcpSideEffectApprovalSigner & ProviderSidecarApprovalTokenSigner;
+	readonly checks: ProbeCheck[];
+	readonly observations: SideEffectLedgerProbeEvidence["observations"];
+	readonly nowMs: () => number;
+	readonly setNowMs: (value: number) => void;
+}): Promise<void> {
+	let allowlistEnforced = true;
+	try {
+		for (const action of HOUSEHOLD_PHASE0_CLALIT_READ_ACTIONS) {
+			assertHouseholdPhase0ProviderActionAllowed({
+				domain: "household",
+				service: "clalit",
+				action,
+				mode: "read",
+			});
+		}
+		assertHouseholdPhase0ProviderActionAllowed({
+			domain: "household",
+			service: "clalit",
+			action: "prescription_renewal",
+			mode: "write",
+		});
+		for (const [action, mode] of [
+			["home", "read"],
+			["appointment_booking", "write"],
+			["tofes_17", "write"],
+		] as const) {
+			try {
+				assertHouseholdPhase0ProviderActionAllowed({
+					domain: "household",
+					service: "clalit",
+					action,
+					mode,
+				});
+				allowlistEnforced = false;
+			} catch {
+				// Required denial.
+			}
+		}
+	} catch {
+		allowlistEnforced = false;
+	}
+	pushCheck(
+		input.checks,
+		"clalit.household.action-allowlist-enforced",
+		allowlistEnforced,
+		"reviewed reads and prescription renewal pass while home, booking, and Tofes 17 deny",
+	);
+
+	const parentA = input.ledger.prepare(
+		householdClalitRenewalPrepareInput("parent-a", { prescriptionId: "rx-parent-a" }),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	const parentB = input.ledger.prepare(
+		householdClalitRenewalPrepareInput("parent-b", { prescriptionId: "rx-parent-b" }),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	const parentABinding = getTelclaudeMcpSideEffectApprovalBinding(parentA);
+	const parentBBinding = getTelclaudeMcpSideEffectApprovalBinding(parentB);
+	input.observations.householdClalitParentARef = parentA.ref;
+	input.observations.householdClalitParentBRef = parentB.ref;
+	input.observations.householdClalitParentAContentHash = parentABinding.contentHash;
+	input.observations.householdClalitParentBContentHash = parentBBinding.contentHash;
+	input.observations.householdClalitWriteCallCount = 0;
+	pushCheck(
+		input.checks,
+		"clalit.household.two-parent-binding-isolated",
+		parentA.actorId !== parentB.actorId &&
+			parentA.subjectUserId !== parentB.subjectUserId &&
+			parentABinding.contentHash !== parentBBinding.contentHash &&
+			parentA.paramsHash !== parentB.paramsHash,
+		"two synthetic parents produce disjoint actor, subject, params, and approval bindings",
+	);
+
+	const approvals = new Map<string, string>();
+	const providerProxy = async () => {
+		input.observations.householdClalitWriteCallCount =
+			(input.observations.householdClalitWriteCallCount ?? 0) + 1;
+		return { status: "ok" as const, data: { accepted: true } };
+	};
+	const parentABridge = createProbeBridge(
+		input.ledger,
+		approvals,
+		input.observations,
+		input.nowMs,
+		providerProxy,
+		householdClalitAuthority("parent-a"),
+		createProviderSidecarApprovalTokenIssuer({ vaultClient: input.vault }),
+	);
+	const parentBBridge = createProbeBridge(
+		input.ledger,
+		approvals,
+		input.observations,
+		input.nowMs,
+		providerProxy,
+		householdClalitAuthority("parent-b"),
+		createProviderSidecarApprovalTokenIssuer({ vaultClient: input.vault }),
+	);
+	approvals.set(parentA.ref, await generateProbeToken(parentA, input.vault, "clalit-parent-a"));
+	const wrongParentResult = resultShape(
+		await parentBBridge.tc_provider_execute_write({ actionRef: parentA.ref }),
+	);
+	pushCheck(
+		input.checks,
+		"clalit.household.wrong-parent-denied",
+		wrongParentResult.ok === false &&
+			wrongParentResult.code === "effect_authority_mismatch" &&
+			input.ledger.get(parentA.ref)?.status === "prepared" &&
+			approvals.has(parentA.ref) &&
+			input.observations.householdClalitWriteCallCount === 0,
+		"parent B cannot consume parent A's renewal approval, ref, or provider call",
+	);
+
+	const approvedResult = resultShape(
+		await parentABridge.tc_provider_execute_write({ actionRef: parentA.ref }),
+	);
+	const replayResult = resultShape(
+		await parentABridge.tc_provider_execute_write({ actionRef: parentA.ref }),
+	);
+	pushCheck(
+		input.checks,
+		"clalit.household.renewal-approved-once",
+		approvedResult.ok === true &&
+			approvedResult.record?.status === "executed" &&
+			replayResult.ok === false &&
+			replayResult.code === "effect_already_executed" &&
+			input.observations.householdClalitWriteCallCount === 1,
+		"the exact approved renewal executes once and replay remains terminal",
+	);
+
+	const original = input.ledger.prepare(
+		householdClalitRenewalPrepareInput("parent-a", { prescriptionId: "rx-original" }),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	const changed = input.ledger.prepare(
+		householdClalitRenewalPrepareInput("parent-a", { prescriptionId: "rx-changed" }),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	approvals.set(changed.ref, await generateProbeToken(original, input.vault, "clalit-changed"));
+	const changedResult = resultShape(
+		await parentABridge.tc_provider_execute_write({ actionRef: changed.ref }),
+	);
+	pushCheck(
+		input.checks,
+		"clalit.household.changed-params-denied",
+		changedResult.ok === false &&
+			changedResult.code === "approval_mismatch" &&
+			input.ledger.get(changed.ref)?.status === "prepared" &&
+			getTelclaudeMcpSideEffectApprovalBinding(original).contentHash !==
+				getTelclaudeMcpSideEffectApprovalBinding(changed).contentHash &&
+			input.observations.householdClalitWriteCallCount === 1,
+		"an approval for one prescription cannot authorize changed renewal parameters",
+	);
+
+	const expired = input.ledger.prepare(
+		householdClalitRenewalPrepareInput("parent-a", { prescriptionId: "rx-expired" }, 1),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	approvals.set(expired.ref, await generateProbeToken(expired, input.vault, "clalit-expired"));
+	const originalNowMs = input.nowMs();
+	input.setNowMs(originalNowMs + 2);
+	const expiredResult = resultShape(
+		await parentABridge.tc_provider_execute_write({ actionRef: expired.ref }),
+	);
+	input.setNowMs(originalNowMs);
+	pushCheck(
+		input.checks,
+		"clalit.household.expired-denied",
+		expiredResult.ok === false &&
+			expiredResult.code === "effect_expired" &&
+			input.ledger.get(expired.ref)?.status === "prepared" &&
+			input.observations.householdClalitWriteCallCount === 1,
+		"an expired renewal ref fails before approval consumption or provider execution",
+	);
+
+	const selfApproved = input.ledger.prepare(
+		householdClalitRenewalPrepareInput("parent-a", { prescriptionId: "rx-self" }, undefined, {
+			approverActorId: "household:whatsapp:parent-a",
+		}),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	const selfApprovalController = createSideEffectHumanApprovalController({
+		nowMs: input.nowMs,
+		mintApprovalToken: async () => "must-not-mint",
+	});
+	const selfApprovalResult = await selfApprovalController.request({
+		record: selfApproved,
+		chatId: 111,
+	});
+	pushCheck(
+		input.checks,
+		"clalit.household.self-approval-denied",
+		selfApprovalResult.ok === false &&
+			selfApprovalResult.code === "approval_self_approval_denied" &&
+			input.ledger.get(selfApproved.ref)?.status === "prepared" &&
+			input.observations.householdClalitWriteCallCount === 1,
+		"the parent who requested a renewal cannot become its distinct Telegram approver",
+	);
+
+	const serialized = JSON.stringify({
+		parentA: { ref: parentA.ref, contentHash: parentABinding.contentHash },
+		parentB: { ref: parentB.ref, contentHash: parentBBinding.contentHash },
+		wrongParentResult,
+		approvedResult,
+		replayResult,
+		changedResult,
+		expiredResult,
+		selfApprovalResult,
+	});
+	pushCheck(
+		input.checks,
+		"clalit.household.artifact-redacted",
+		redactSecrets(serialized) === serialized,
+		"signed renewal evidence contains only synthetic opaque identifiers and hashes",
 	);
 }
 
@@ -1140,7 +1401,8 @@ function createHouseholdProbeBridge(input: {
 }
 
 function createProbeVault(): TelclaudeMcpSideEffectApprovalSigner &
-	TelclaudeMcpSideEffectApprovalSignatureVerifier {
+	TelclaudeMcpSideEffectApprovalSignatureVerifier &
+	ProviderSidecarApprovalTokenSigner {
 	const secret = "telclaude-hermes-sideeffect-ledger-probe";
 	return {
 		async signPayload(payload, prefix) {
@@ -1193,6 +1455,10 @@ function createProbeBridge(
 	nowMs: () => number,
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
+	providerApprovalTokenIssuer: Parameters<
+		typeof createTelclaudeMcpLedgerExecuteDependencies
+	>[0]["providerApprovalTokenIssuer"] = ({ providerId, service, action, approvalNonce }) =>
+		`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
 ) {
 	const authority = { ...probeAuthority(), ...authorityOverrides };
 	return createTelclaudeMcpBridge(authority, {
@@ -1240,8 +1506,7 @@ function createProbeBridge(
 					},
 				};
 			},
-			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
-				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+			providerApprovalTokenIssuer,
 			nowMs,
 		}),
 	});
@@ -1341,6 +1606,48 @@ function providerPrepareInput(
 		wysiwysRender: "Prepare ILS 100 transfer to vendor-ref",
 		idempotencyKey: "idem-provider-ledger-probe",
 		...overrides,
+	};
+}
+
+function householdClalitRenewalPrepareInput(
+	parent: "parent-a" | "parent-b",
+	params: Record<string, unknown>,
+	ttlMs?: number,
+	overrides: Partial<Omit<TelclaudeMcpProviderSideEffectPrepareInput, "kind">> = {},
+): TelclaudeMcpProviderSideEffectPrepareInput {
+	return {
+		kind: "provider",
+		actorId: `household:whatsapp:${parent}`,
+		approverActorId: "telegram:111",
+		profileId: parent,
+		domain: "household",
+		providerId: "clalit",
+		service: "clalit",
+		action: "prescription_renewal",
+		params,
+		subjectUserId: `household:${parent}`,
+		providerAccountRef: `clalit:household:${parent}`,
+		approvalRequestId: `approval-clalit-${parent}-${String(params.prescriptionId)}`,
+		approvalRevision: 1,
+		wysiwysRender: "clalit.clalit.prescription_renewal",
+		idempotencyKey: `idem-clalit-${parent}-${String(params.prescriptionId)}`,
+		...(ttlMs === undefined ? {} : { ttlMs }),
+		...overrides,
+	};
+}
+
+function householdClalitAuthority(parent: "parent-a" | "parent-b"): Partial<TelclaudeMcpAuthority> {
+	return {
+		actorId: `household:whatsapp:${parent}`,
+		subjectUserId: `household:${parent}`,
+		profileId: parent,
+		domain: "household",
+		memorySource: `household:${parent}`,
+		writableNamespace: `household:${parent}`,
+		providerScopes: ["clalit"],
+		outboundChannels: ["whatsapp"],
+		endpointId: `endpoint-${parent}`,
+		networkNamespace: `netns-${parent}`,
 	};
 }
 

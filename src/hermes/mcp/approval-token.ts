@@ -70,6 +70,7 @@ const ProviderBindingSchema = z
 		providerId: NonEmptyString,
 		service: NonEmptyString,
 		action: NonEmptyString,
+		subjectUserId: NonEmptyString.optional(),
 		providerAccountRef: NonEmptyString,
 		approvalRequestId: NonEmptyString,
 		approvalRevision: z.number().int().min(1),

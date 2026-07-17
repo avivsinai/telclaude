@@ -261,12 +261,14 @@ export async function sendApprovalCard(
 		nonce: string;
 		actorScope: CardActorScope;
 		threadId?: number;
+		notificationOnly?: boolean;
 	},
 ): Promise<CardInstance<typeof CK.Approval>> {
 	const state: ApprovalCardState = {
 		kind: CK.Approval,
 		title: opts.title,
 		body: opts.body,
+		...(opts.notificationOnly ? { notificationOnly: true } : {}),
 	};
 	return createAndSendCard(api, chatId, CK.Approval, state, {
 		actorScope: opts.actorScope,
