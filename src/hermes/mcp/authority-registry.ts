@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import {
+	isHouseholdMemorySource,
 	isSocialMemorySource,
 	isTelegramMemorySource,
 	telegramMemorySource,
@@ -256,6 +257,21 @@ function assertAuthorityMemoryBoundary(authority: TelclaudeMcpAuthority): void {
 	if (usesSocialMemory(authority.domain)) {
 		if (!isSocialMemorySource(authority.memorySource)) {
 			throw new Error("social MCP authority must use social memory source");
+		}
+		return;
+	}
+	if (authority.domain === "household") {
+		if (!isHouseholdMemorySource(authority.memorySource)) {
+			throw new Error("household MCP authority must use household binding memory source");
+		}
+		if (!authority.subjectUserId || authority.subjectUserId !== authority.memorySource) {
+			throw new Error("household MCP authority subject must match its opaque memory binding");
+		}
+		if (authority.writableNamespace !== authority.memorySource) {
+			throw new Error("household MCP authority namespace must match its memory source");
+		}
+		if (!authority.turnConversationRef) {
+			throw new Error("household MCP authority requires current inbound turn authority");
 		}
 		return;
 	}

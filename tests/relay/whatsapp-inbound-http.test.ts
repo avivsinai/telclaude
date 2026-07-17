@@ -336,6 +336,99 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			await closeServer(server);
 		}
 	});
+
+	it("coexists with operator access while dispatching household senders under bound authority", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const householdPhone = "whatsapp:+15557654321";
+		const householdEvent = whatsappEvent({
+			eventId: "wa-event-household",
+			messageId: "wa-message-household",
+			senderAddressRef: householdPhone,
+			conversationKey: "whatsapp:15557654321@s.whatsapp.net",
+		});
+		const dispatched: unknown[] = [];
+		const householdConfig = {
+			...config,
+			profiles: [
+				{
+					id: "parent-a",
+					label: "Parent A",
+					allowedSkills: [],
+					providerScopes: ["clalit"],
+					capabilityScopes: ["schedule.read", "schedule.write"],
+					outboundChannels: ["whatsapp"],
+					whatsappHouseholdBindings: [
+						{
+							bindingId: "parent-a",
+							address: householdPhone,
+							replyAddress: householdPhone,
+							displayName: "Parent A",
+							subjectUserId: "household:parent-a",
+						},
+					],
+				},
+			],
+		} as TelclaudeConfig;
+		const baseOptions = {
+			signatureSecret: SECRET,
+			operatorAddressRefs: [OPERATOR_PHONE],
+			profile,
+			config: householdConfig,
+			conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+			quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+			nowMs: () => NOW,
+			dispatch: async (input: never) => {
+				dispatched.push(input);
+				return {
+					ok: true as const,
+					response: "prepared",
+					success: true,
+					toolUses: 1,
+					toolResults: 1,
+				};
+			},
+		};
+
+		await expect(
+			handleWhatsAppInboundBridgePost({
+				body: whatsappInboundBridgeBody(householdEvent),
+				signatureHeader: signWhatsAppInboundBridgeEvent(householdEvent, SECRET),
+				options: baseOptions,
+			}),
+		).resolves.toMatchObject({ status: 202, payload: { dispatched: true } });
+		expect(dispatched).toEqual([
+			expect.objectContaining({
+				profile: expect.objectContaining({ id: "parent-a" }),
+				identity: expect.objectContaining({
+					domain: "household",
+					subjectUserId: "household:parent-a",
+					memorySource: "household:parent-a",
+				}),
+			}),
+		]);
+
+		await expect(
+			handleWhatsAppInboundBridgePost({
+				body: whatsappInboundBridgeBody(householdEvent),
+				signatureHeader: signWhatsAppInboundBridgeEvent(householdEvent, SECRET),
+				options: { ...baseOptions, operatorAddressRefs: [householdPhone] },
+			}),
+		).resolves.toMatchObject({
+			status: 503,
+			payload: { ok: false, code: "whatsapp_inbound_identity_overlap" },
+		});
+	});
 });
 
 describe("WhatsApp inbound Hermes dispatcher", () => {
@@ -419,6 +512,38 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 		});
 		expect(JSON.stringify(seenOptions)).toContain(cl1.conversation.token);
 	});
+
+	it("binds household execution to the opaque subject and exact memory namespace", async () => {
+		const { buildWhatsAppInboundHermesOptions } = await import(
+			"../../src/relay/whatsapp-inbound-dispatcher.js"
+		);
+		const cl1 = await mintHouseholdCl1Event();
+		const options = buildWhatsAppInboundHermesOptions({
+			...cl1,
+			config: householdDispatcherConfig,
+			profile: householdProfile,
+		});
+
+		expect(options).toMatchObject({
+			profileId: "parent-a",
+			userId: "household:parent-a",
+			actorId: "household:whatsapp:parent-a",
+			allowedSkills: [],
+			mcpAuthority: {
+				domain: "household",
+				subjectUserId: "household:parent-a",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				providerScopes: ["clalit"],
+				capabilityScopes: ["schedule.read", "schedule.write"],
+				outboundChannels: ["whatsapp"],
+				turnConversationRef: cl1.turn.ref,
+			},
+		});
+		expect(options.userId).not.toContain("+1555");
+		expect(options.compiledMemoryMd).toContain("household:parent-a");
+		expect(options.compiledMemoryMd).not.toContain("telegram:");
+	});
 });
 
 async function mintCl1Event(overrides: WhatsAppEventOverride = {}) {
@@ -451,7 +576,51 @@ async function mintCl1Event(overrides: WhatsAppEventOverride = {}) {
 		signature: signWhatsAppInboundBridgeEvent(event, SECRET),
 	});
 	if (!result.ok || result.duplicate) throw new Error("expected first-seen CL-1 event");
-	return { event: result.event, conversation: result.conversation, turn: result.turn };
+	return {
+		event: result.event,
+		conversation: result.conversation,
+		turn: result.turn,
+		identity: result.identity,
+	};
+}
+
+async function mintHouseholdCl1Event() {
+	const { createAttachmentQuarantineStore } = await import(
+		"../../src/relay/attachment-quarantine-store.js"
+	);
+	const { createRelayConversationStore } = await import(
+		"../../src/hermes/relay-conversation-store.js"
+	);
+	const { createWhatsAppHouseholdIdentityResolver } = await import(
+		"../../src/relay/whatsapp-household-bindings.js"
+	);
+	const { createWhatsAppInboundCl1Pipeline, signWhatsAppInboundBridgeEvent } = await import(
+		"../../src/relay/whatsapp-inbound-cl1.js"
+	);
+	const event = whatsappEvent({
+		eventId: "wa-event-parent-a",
+		messageId: "wa-msg-parent-a",
+		senderAddressRef: "whatsapp:+15557654321",
+		conversationKey: "whatsapp:15557654321@s.whatsapp.net",
+	});
+	const pipeline = createWhatsAppInboundCl1Pipeline({
+		signatureSecret: SECRET,
+		conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+		quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+		resolveIdentity: createWhatsAppHouseholdIdentityResolver(householdDispatcherConfig),
+		nowMs: () => NOW,
+	});
+	const result = await pipeline.ingest({
+		event,
+		signature: signWhatsAppInboundBridgeEvent(event, SECRET),
+	});
+	if (!result.ok || result.duplicate) throw new Error("expected first-seen household CL-1 event");
+	return {
+		event: result.event,
+		conversation: result.conversation,
+		turn: result.turn,
+		identity: result.identity,
+	};
 }
 
 type WhatsAppEventOverride = Partial<ReturnType<typeof whatsappEvent>>;
@@ -490,6 +659,30 @@ const profile: EffectiveOperatorProfile = {
 	outboundChannels: ["whatsapp"],
 	implicit: false,
 };
+
+const householdProfile: EffectiveOperatorProfile = {
+	id: "parent-a",
+	label: "Parent A",
+	allowedSkills: [],
+	providerScopes: ["clalit"],
+	capabilityScopes: ["schedule.read", "schedule.write"],
+	outboundChannels: ["whatsapp"],
+	whatsappHouseholdBindings: [
+		{
+			bindingId: "parent-a",
+			address: "whatsapp:+15557654321",
+			replyAddress: "whatsapp:+15557654321",
+			displayName: "Parent A",
+			subjectUserId: "household:parent-a",
+		},
+	],
+	implicit: false,
+};
+
+const householdDispatcherConfig = {
+	...config,
+	profiles: [householdProfile],
+} as TelclaudeConfig;
 
 async function postJson(url: string, body: string, headers: Record<string, string> = {}) {
 	return fetch(url, {

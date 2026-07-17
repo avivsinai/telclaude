@@ -270,6 +270,55 @@ describe("Hermes private runtime seam", () => {
 		});
 	});
 
+	it.each([
+		["subject", { subjectUserId: undefined }, "requires an explicit subjectUserId"],
+		["memory source", { memorySource: undefined }, "requires an explicit household memorySource"],
+		[
+			"matching namespace",
+			{ writableNamespace: "household:someone-else" },
+			"writableNamespace must equal memorySource",
+		],
+		["current turn", { turnConversationRef: undefined }, "requires the current inbound turn"],
+	] as const)("fails closed when household authority omits its %s", async (_label, patch, error) => {
+		let runtimeStarted = false;
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* () {
+				runtimeStarted = true;
+				yield { type: "done", response: "runtime must not start" };
+			},
+		};
+		const authority = {
+			domain: "household" as const,
+			subjectUserId: "household:parent-a",
+			memorySource: "household:parent-a" as const,
+			writableNamespace: "household:parent-a",
+			turnConversationRef: "turn_0123456789abcdef0123456789abcdef",
+			providerScopes: ["clalit"],
+			outboundChannels: ["whatsapp"],
+			...patch,
+		};
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions: new HermesSessionMap(() => "tc-household-session"),
+				request: baseRequest({
+					profileId: "parent-a",
+					identity: { userId: "household:parent-a", actorId: "household:whatsapp:parent-a" },
+					mcpAuthority: authority,
+				}),
+				now: () => 1_000,
+			}),
+		);
+
+		expect(chunks).toEqual([
+			expect.objectContaining({
+				type: "done",
+				result: expect.objectContaining({ success: false, error: expect.stringContaining(error) }),
+			}),
+		]);
+		expect(runtimeStarted).toBe(false);
+	});
+
 	it("does not grant capability tools by default for private authorities", async () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const sessions = new HermesSessionMap(() => "tc-session-1");

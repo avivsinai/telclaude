@@ -5,7 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import type { PermissionTier } from "../config/config.js";
 import type { InternalResponseProof } from "../internal-auth.js";
-import { telegramMemorySource } from "../memory/source.js";
+import { isHouseholdMemorySource, telegramMemorySource } from "../memory/source.js";
 import type { MemorySource } from "../memory/types.js";
 import {
 	mintOpenAiCodexPeerBoundProxyToken,
@@ -452,6 +452,10 @@ function buildPrivateMcpAuthority(
 	options: HermesPrivateMcpAuthorityOptions | undefined,
 ): TelclaudeMcpAuthority {
 	const domain = options?.domain ?? "private";
+	if (domain === "household") {
+		if (!options) throw new Error("household MCP authority options are required");
+		return buildHouseholdMcpAuthority(request, options);
+	}
 	const memorySource = options?.memorySource ?? defaultMemorySource(domain, request.profileId);
 	const subjectUserId =
 		optionalTrimmed(options?.subjectUserId) ?? optionalTrimmed(request.identity.userId);
@@ -471,7 +475,48 @@ function buildPrivateMcpAuthority(
 	};
 }
 
+function buildHouseholdMcpAuthority(
+	request: HermesPrivateRuntimeRequest,
+	options: HermesPrivateMcpAuthorityOptions,
+): TelclaudeMcpAuthority {
+	const subjectUserId = optionalTrimmed(options.subjectUserId);
+	if (!subjectUserId) {
+		throw new Error("household MCP authority requires an explicit subjectUserId");
+	}
+	if (optionalTrimmed(request.identity.userId) !== subjectUserId) {
+		throw new Error("household MCP authority subjectUserId must match the runtime identity");
+	}
+	if (!options.memorySource || !isHouseholdMemorySource(options.memorySource)) {
+		throw new Error("household MCP authority requires an explicit household memorySource");
+	}
+	const writableNamespace = optionalTrimmed(options.writableNamespace);
+	if (!writableNamespace || writableNamespace !== options.memorySource) {
+		throw new Error("household MCP authority writableNamespace must equal memorySource");
+	}
+	const turnConversationRef = optionalTrimmed(options.turnConversationRef);
+	if (!turnConversationRef) {
+		throw new Error("household MCP authority requires the current inbound turn");
+	}
+	return {
+		actorId: runtimeActorId(request),
+		subjectUserId,
+		profileId: request.profileId,
+		domain: "household",
+		memorySource: options.memorySource,
+		writableNamespace,
+		providerScopes: options.providerScopes ?? [],
+		outboundChannels: options.outboundChannels ?? [],
+		...(options.capabilityScopes?.length ? { capabilityScopes: options.capabilityScopes } : {}),
+		turnConversationRef,
+		endpointId: options.endpointId ?? DEFAULT_PRIVATE_MCP_ENDPOINT_ID,
+		networkNamespace: options.networkNamespace ?? DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE,
+	};
+}
+
 function defaultMemorySource(domain: TelclaudeMcpDomain, profileId: string): MemorySource {
+	if (domain === "household") {
+		throw new Error("household MCP authority may not use a default memory source");
+	}
 	return domain === "social" || domain === "public" ? "social" : telegramMemorySource(profileId);
 }
 

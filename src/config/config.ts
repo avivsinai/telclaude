@@ -2,9 +2,10 @@ import fs from "node:fs";
 
 import JSON5 from "json5";
 import { z } from "zod";
-
+import { isValidHouseholdBindingId } from "../memory/source.js";
 import { resolveInsideRoot } from "../path-safety.js";
 import { CONFIG_DIR } from "../utils.js";
+import { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 import { resolveConfigPath, resolveRuntimeConfigPath } from "./path.js";
 
 // =============================================================================
@@ -196,22 +197,91 @@ const OperatorProfileIdSchema = z
 	.regex(/^[a-z0-9-]{1,32}$/, "profile id must match ^[a-z0-9-]{1,32}$")
 	.refine((id) => id !== "default", "'default' is reserved for the implicit profile");
 
-const OperatorProfileConfigSchema = z.object({
-	id: OperatorProfileIdSchema,
-	label: z.string().min(1).max(80),
-	description: z.string().max(500).optional(),
-	soulPath: z.string().min(1).optional(),
-	allowedSkills: z.array(z.string().min(1).max(128)).optional(),
-	providerScopes: z.array(ProviderScopeIdSchema).optional(),
-	capabilityScopes: z.array(HermesCapabilityScopeSchema).optional(),
-	outboundChannels: z.array(z.string().min(1).max(64)).optional(),
-	defaultModel: z
-		.object({
-			providerId: z.string().min(1).max(64),
-			modelId: z.string().min(1).max(128),
-		})
-		.optional(),
+const WhatsAppAddressRefSchema = z.string().transform((value, ctx) => {
+	const normalized = normalizeWhatsAppAddressRef(value);
+	if (!normalized) {
+		ctx.addIssue({
+			code: z.ZodIssueCode.custom,
+			message: "WhatsApp address must be an E.164 number with optional whatsapp: prefix",
+		});
+		return z.NEVER;
+	}
+	return normalized;
 });
+
+const WhatsAppHouseholdBindingSchema = z
+	.object({
+		bindingId: z.string().refine(isValidHouseholdBindingId, "invalid opaque household binding id"),
+		address: WhatsAppAddressRefSchema,
+		replyAddress: WhatsAppAddressRefSchema,
+		displayName: z.string().trim().min(1).max(80),
+		subjectUserId: z.string().trim().min(1).max(80),
+	})
+	.superRefine((binding, ctx) => {
+		if (binding.replyAddress !== binding.address) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["replyAddress"],
+				message: "household WhatsApp replyAddress must match the enrolled address",
+			});
+		}
+		if (binding.subjectUserId !== `household:${binding.bindingId}`) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["subjectUserId"],
+				message:
+					"household subjectUserId must be the opaque local key household:<binding-id>, never an ID or phone",
+			});
+		}
+	});
+
+const OperatorProfileConfigSchema = z
+	.object({
+		id: OperatorProfileIdSchema,
+		label: z.string().min(1).max(80),
+		description: z.string().max(500).optional(),
+		soulPath: z.string().min(1).optional(),
+		allowedSkills: z.array(z.string().min(1).max(128)).optional(),
+		providerScopes: z.array(ProviderScopeIdSchema).optional(),
+		capabilityScopes: z.array(HermesCapabilityScopeSchema).optional(),
+		outboundChannels: z.array(z.string().min(1).max(64)).optional(),
+		whatsappHouseholdBindings: z.array(WhatsAppHouseholdBindingSchema).max(1).optional(),
+		defaultModel: z
+			.object({
+				providerId: z.string().min(1).max(64),
+				modelId: z.string().min(1).max(128),
+			})
+			.optional(),
+	})
+	.superRefine((profile, ctx) => {
+		if (!profile.whatsappHouseholdBindings?.length) return;
+		for (const [path, actual, expected] of [
+			["allowedSkills", profile.allowedSkills, []],
+			["providerScopes", profile.providerScopes, ["clalit"]],
+			["capabilityScopes", profile.capabilityScopes, ["schedule.read", "schedule.write"]],
+			["outboundChannels", profile.outboundChannels, ["whatsapp"]],
+		] as const) {
+			if (!sameStringSet(actual, expected)) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: [path],
+					message: `household profile ${path} must exactly equal ${JSON.stringify(expected)}`,
+				});
+			}
+		}
+	});
+
+function sameStringSet(
+	actual: readonly string[] | undefined,
+	expected: readonly string[],
+): boolean {
+	return (
+		actual !== undefined &&
+		actual.length === expected.length &&
+		new Set(actual).size === actual.length &&
+		expected.every((value) => actual.includes(value))
+	);
+}
 
 function validateProfileSoulPaths(
 	profiles: readonly z.infer<typeof OperatorProfileConfigSchema>[],
@@ -649,16 +719,35 @@ const TelclaudeConfigSchema = z.object({
 		.array(OperatorProfileConfigSchema)
 		.default([])
 		.superRefine((profiles, ctx) => {
-			const seen = new Set<string>();
+			const seenProfiles = new Set<string>();
+			const seenBindingIds = new Set<string>();
+			const seenAddresses = new Set<string>();
+			const seenSubjects = new Set<string>();
 			for (const [index, profile] of profiles.entries()) {
-				if (seen.has(profile.id)) {
+				if (seenProfiles.has(profile.id)) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						path: [index, "id"],
 						message: `duplicate profile id: ${profile.id}`,
 					});
 				}
-				seen.add(profile.id);
+				seenProfiles.add(profile.id);
+				for (const [bindingIndex, binding] of (profile.whatsappHouseholdBindings ?? []).entries()) {
+					for (const [seen, value, label, field] of [
+						[seenBindingIds, binding.bindingId, "binding id", "bindingId"],
+						[seenAddresses, binding.address, "WhatsApp address", "address"],
+						[seenSubjects, binding.subjectUserId, "subject", "subjectUserId"],
+					] as const) {
+						if (seen.has(value)) {
+							ctx.addIssue({
+								code: z.ZodIssueCode.custom,
+								path: [index, "whatsappHouseholdBindings", bindingIndex, field],
+								message: `duplicate household ${label}: ${value}`,
+							});
+						}
+						seen.add(value);
+					}
+				}
 			}
 		}),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),

@@ -206,6 +206,118 @@ describe("config defaults", () => {
 		});
 	});
 
+	it("accepts narrow household WhatsApp bindings and normalizes their addresses", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{
+						id: "parent-a",
+						label: "Parent A",
+						allowedSkills: [],
+						providerScopes: ["clalit"],
+						capabilityScopes: ["schedule.read", "schedule.write"],
+						outboundChannels: ["whatsapp"],
+						whatsappHouseholdBindings: [
+							{
+								bindingId: "parent-a",
+								address: "+15551234567",
+								replyAddress: "whatsapp:+15551234567",
+								displayName: "Parent A",
+								subjectUserId: "household:parent-a",
+							},
+						],
+					},
+				],
+			}),
+		);
+
+		const cfg = loadConfig();
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings).toEqual([
+			{
+				bindingId: "parent-a",
+				address: "whatsapp:+15551234567",
+				replyAddress: "whatsapp:+15551234567",
+				displayName: "Parent A",
+				subjectUserId: "household:parent-a",
+			},
+		]);
+	});
+
+	it("rejects unsafe household subjects, broad profiles, and duplicate addresses", () => {
+		setConfigPath(configPath());
+		const householdProfile = (overrides: Record<string, unknown> = {}) => ({
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					address: "whatsapp:+15551234567",
+					replyAddress: "whatsapp:+15551234567",
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+				},
+			],
+			...overrides,
+		});
+
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					householdProfile({
+						whatsappHouseholdBindings: [
+							{
+								bindingId: "parent-a",
+								address: "whatsapp:+15551234567",
+								replyAddress: "whatsapp:+15551234567",
+								displayName: "Parent A",
+								subjectUserId: "123456789",
+							},
+						],
+					}),
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/subjectUserId|household/i);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({ profiles: [householdProfile({ capabilityScopes: ["web.fetch"] })] }),
+		);
+		expect(() => loadConfig()).toThrow(/household.*capability|capability.*household/i);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					householdProfile(),
+					householdProfile({
+						id: "parent-b",
+						label: "Parent B",
+						whatsappHouseholdBindings: [
+							{
+								bindingId: "parent-b",
+								address: "+15551234567",
+								replyAddress: "+15551234567",
+								displayName: "Parent B",
+								subjectUserId: "household:parent-b",
+							},
+						],
+					}),
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/duplicate.*whatsapp|whatsapp.*duplicate/i);
+	});
+
 	it("rejects reserved, duplicate, and unsafe operator profiles", () => {
 		setConfigPath(configPath());
 		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [{ id: "default", label: "Bad" }] }));

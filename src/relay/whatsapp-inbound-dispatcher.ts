@@ -14,6 +14,7 @@ import {
 } from "../memory/telegram-memory.js";
 import type { StreamChunk } from "../runtime/stream.js";
 import { buildSoulPromptAppend } from "../soul.js";
+import type { WhatsAppIdentityResolution } from "./whatsapp-inbound-cl1.js";
 
 export type WhatsAppInboundHermesExecutor = (
 	prompt: string,
@@ -24,6 +25,7 @@ export type WhatsAppInboundDispatchInput = {
 	readonly event: InboundEvent;
 	readonly conversation: RelayConversation;
 	readonly turn: RelayConversationInboundTurn;
+	readonly identity: WhatsAppIdentityResolution;
 	readonly config: Pick<TelclaudeConfig, "hermes">;
 	readonly profile: EffectiveOperatorProfile;
 	readonly executeHermes?: WhatsAppInboundHermesExecutor;
@@ -150,6 +152,12 @@ export function buildWhatsAppInboundHermesOptions(
 	const query = input.event.normalized.text;
 	const memoryBundle = buildTelegramMemoryBundle({
 		profileId: input.profile.id,
+		...(input.identity.domain === "household"
+			? {
+					memorySource: input.identity.memorySource,
+					scopeKey: input.identity.bindingId,
+				}
+			: {}),
 		...(query !== undefined ? { query } : {}),
 		includeRecentHistory: true,
 	});
@@ -178,13 +186,17 @@ export function buildWhatsAppInboundHermesOptions(
 		profileId: input.profile.id,
 		enableSkills: true,
 		timeoutMs: input.timeoutMs ?? DEFAULT_WHATSAPP_INBOUND_TIMEOUT_MS,
-		userId: input.event.actorRef.channelIdentity.principalId,
+		userId:
+			input.identity.domain === "household"
+				? input.identity.subjectUserId
+				: input.event.actorRef.channelIdentity.principalId,
 		actorId: input.event.actorRef.actorId,
 		systemPromptAppend,
 		compiledMemoryMd: memoryBundle.compiledMemoryMd,
 		...(modelRoute.effectiveModel ? { model: modelRoute.effectiveModel } : {}),
 		...(input.profile.allowedSkills ? { allowedSkills: input.profile.allowedSkills } : {}),
 		mcpAuthority: {
+			domain: input.identity.domain,
 			providerScopes: providerContext.providerScopes,
 			...(providerContext.capabilityScopes.length
 				? { capabilityScopes: providerContext.capabilityScopes }
@@ -193,6 +205,13 @@ export function buildWhatsAppInboundHermesOptions(
 				? { outboundChannels: providerContext.outboundChannels }
 				: {}),
 			turnConversationRef: input.turn.ref,
+			...(input.identity.domain === "household"
+				? {
+						subjectUserId: input.identity.subjectUserId,
+						memorySource: input.identity.memorySource,
+						writableNamespace: input.identity.writableNamespace,
+					}
+				: {}),
 		},
 	};
 }
