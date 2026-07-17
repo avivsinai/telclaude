@@ -15,6 +15,7 @@ import {
 } from "../../src/hermes/mcp/approval-token.js";
 import {
 	createGoogleProviderSidecarApprovalTokenIssuer,
+	createProviderSidecarApprovalTokenIssuer,
 	type GoogleProviderSidecarApprovalTokenSigner,
 } from "../../src/hermes/mcp/provider-sidecar-token.js";
 import {
@@ -161,6 +162,44 @@ describe("Hermes provider sidecar approval-token issuer", () => {
 		).rejects.toThrow("unsupported provider sidecar");
 		expect(vault.calls).toEqual([]);
 	});
+
+	it("mints provider-correct signed evidence for an actor-bound Clalit renewal", async () => {
+		const issuer = createProviderSidecarApprovalTokenIssuer({ vaultClient: vault });
+		const record = clalitProviderRecord();
+
+		const token = await issuer(sidecarRequestFor(record));
+
+		expect(claimsFrom(token)).toMatchObject({
+			aud: "israel-services",
+			providerId: "clalit",
+			service: "clalit",
+			action: "prescription_renewal",
+			subjectUserId: record.subjectUserId,
+		});
+	});
+
+	it("fails closed when Clalit execution lacks an actor-bound subject", async () => {
+		const issuer = createProviderSidecarApprovalTokenIssuer({ vaultClient: vault });
+		const record = clalitProviderRecord();
+
+		await expect(
+			issuer({
+				...sidecarRequestFor(record),
+				subjectUserId: undefined,
+			}),
+		).rejects.toThrow("subjectUserId is required");
+		expect(vault.calls).toEqual([]);
+	});
+
+	it("fails closed for Clalit writes outside the Phase 0 renewal surface", async () => {
+		const issuer = createProviderSidecarApprovalTokenIssuer({ vaultClient: vault });
+		const record = clalitProviderRecord();
+
+		await expect(
+			issuer({ ...sidecarRequestFor(record), action: "appointment_booking" }),
+		).rejects.toThrow("unsupported Clalit sidecar action");
+		expect(vault.calls).toEqual([]);
+	});
 });
 
 function googleProviderRecord(
@@ -188,6 +227,30 @@ function googleProviderRecord(
 	});
 }
 
+function clalitProviderRecord(): TelclaudeMcpProviderSideEffectRecord {
+	const ledger = createTelclaudeMcpSideEffectLedger({
+		verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+		makeRef: () => "clalit-provider-sidecar-ref",
+		nowMs: () => 100_000,
+	});
+	return ledger.prepare({
+		kind: "provider",
+		actorId: "household:whatsapp:parent-b",
+		approverActorId: "telegram:parent-a",
+		profileId: "parent-b",
+		domain: "household",
+		providerId: "clalit",
+		service: "clalit",
+		action: "prescription_renewal",
+		params: { prescriptionId: "synthetic-rx" },
+		subjectUserId: "household:parent-b",
+		providerAccountRef: "clalit:primary",
+		approvalRequestId: "approval-clalit-renewal",
+		approvalRevision: 1,
+		wysiwysRender: "clalit.clalit.prescription_renewal",
+	});
+}
+
 function sidecarRequestFor(record: TelclaudeMcpProviderSideEffectRecord) {
 	return {
 		record,
@@ -195,6 +258,7 @@ function sidecarRequestFor(record: TelclaudeMcpProviderSideEffectRecord) {
 		service: record.service,
 		action: record.action,
 		params: record.params,
+		subjectUserId: record.subjectUserId,
 		actorUserId: record.actorId,
 		approvalNonce: record.approvalRequestId,
 	};

@@ -21,6 +21,7 @@ export type HermesQueryOptions = {
 	enableSkills: boolean;
 	allowedSkills?: readonly string[];
 	timeoutMs: number;
+	signal?: AbortSignal;
 	userId?: string;
 	chatId?: number;
 	actorId?: number | string;
@@ -144,6 +145,12 @@ export async function* executeHermesQuery(
 	}
 
 	const controller = new AbortController();
+	const abortFromCaller = () => controller.abort(options.signal?.reason);
+	if (options.signal?.aborted) {
+		abortFromCaller();
+	} else {
+		options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+	}
 	const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
 	try {
 		const request: HermesPrivateRuntimeRequest = {
@@ -178,5 +185,6 @@ export async function* executeHermesQuery(
 		});
 	} finally {
 		clearTimeout(timeout);
+		options.signal?.removeEventListener("abort", abortFromCaller);
 	}
 }

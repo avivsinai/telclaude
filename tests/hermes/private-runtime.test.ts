@@ -819,6 +819,36 @@ describe("Hermes private runtime seam", () => {
 		setHermesPrivateRuntimeAdapterForTest(null);
 	});
 
+	it("combines a caller abort signal with the private query timeout signal", async () => {
+		let seenSignal: AbortSignal | undefined;
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* (request) {
+				seenSignal = request.signal;
+				yield { type: "done", response: "stopped" };
+			},
+		};
+		setHermesPrivateRuntimeAdapterForTest(runtime);
+		const external = new AbortController();
+		external.abort(new Error("relay turn closed"));
+
+		await collect(
+			executeHermesQuery("hello", {
+				cwd: "/repo",
+				tier: "WRITE_LOCAL",
+				poolKey: "wa:parent-a",
+				telclaudeSessionId: "wa:parent-a",
+				profileId: "parent-a",
+				enableSkills: false,
+				timeoutMs: 60_000,
+				signal: external.signal,
+			}),
+		);
+
+		expect(seenSignal?.aborted).toBe(true);
+		expect(seenSignal?.reason).toEqual(new Error("relay turn closed"));
+		setHermesPrivateRuntimeAdapterForTest(null);
+	});
+
 	it("blocks raw credentials in Hermes launch surfaces", () => {
 		const telegramToken = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi";
 		const githubToken = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -18,6 +18,7 @@ import {
 } from "../../memory/source.js";
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
+import { assertHouseholdPhase0ProviderActionAllowed } from "../../providers/household-clalit-policy.js";
 import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
 import type {
 	BrowserActExecutorSurface,
@@ -26,6 +27,7 @@ import type {
 import type { BrowseRequest, BrowseResult } from "../../relay/browser-broker.js";
 import { browserAuthorityDomainFromMcp } from "../../relay/browser-cookie-store.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
+import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp-household-bindings.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
 import { redactSecrets } from "../../security/output-filter.js";
@@ -101,6 +103,7 @@ import {
 	resolveTelclaudeProviderOperation,
 } from "./provider-routing.js";
 import type {
+	TelclaudeMcpHouseholdReplyBinding,
 	TelclaudeMcpSideEffectLedger,
 	TelclaudeMcpSideEffectRecord,
 } from "./side-effect-ledger.js";
@@ -161,6 +164,8 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly conversationStore?: RelayConversationStore;
 	readonly edgeRuntime?: TelclaudeEdgeRuntime;
 	readonly resolveOutboundMediaRefs?: OutboundMediaResolver;
+	/** Re-resolves the relay-owned household pairing before preparing a reply. */
+	readonly resolveHouseholdReplyBinding?: WhatsAppHouseholdReplyBindingResolver;
 	readonly requestSideEffectApproval?: (
 		record: TelclaudeMcpSideEffectRecord,
 	) => void | Promise<void>;
@@ -475,7 +480,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async providerRead(request) {
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
-			assertProviderOperationPolicy(operation);
+			assertProviderOperationPolicy(operation, request.domain, "read");
 			const body = providerFetchBody({
 				...operation,
 				subjectUserId: request.subjectUserId,
@@ -496,7 +501,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async providerPrepareWrite(request) {
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
-			assertProviderOperationPolicy(operation);
+			assertProviderOperationPolicy(operation, request.domain, "write");
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
@@ -578,6 +583,15 @@ export function createTelclaudeLiveMcpRelayClients(
 			const approverActorId = outboundApproverFor(outboundApproverActorId, request.actorId);
 			const turn =
 				householdTurn ?? resolveOutboundTurnAuthority(conversationStore, request, conversation);
+			const householdReplyBinding = householdTurn
+				? await resolveLiveHouseholdReplyBinding(
+						options.resolveHouseholdReplyBinding,
+						request,
+						conversation,
+						householdTurn,
+						replyIntent,
+					)
+				: undefined;
 			const mediaRefs = await resolveOutboundMediaRefs(request.mediaRefs, {
 				request,
 				conversation,
@@ -600,6 +614,8 @@ export function createTelclaudeLiveMcpRelayClients(
 				approverActorId,
 				profileId: request.profileId,
 				domain: request.domain,
+				...(request.subjectUserId ? { subjectUserId: request.subjectUserId } : {}),
+				...(householdReplyBinding ? { householdReplyBinding } : {}),
 				channel: prepared.channel,
 				destination: destinationForPreparedOutbound(prepared),
 				resolvedDestination: prepared.resolvedDestination,
@@ -1399,6 +1415,76 @@ function resolveOutboundReplyIntent(
 	return expected;
 }
 
+async function resolveLiveHouseholdReplyBinding(
+	resolver: WhatsAppHouseholdReplyBindingResolver | undefined,
+	request: TelclaudeMcpOutboundPrepareRequest,
+	conversation: RelayConversation,
+	turn: RelayConversationInboundTurn,
+	replyIntent: RelayConversationReplyIntent,
+): Promise<TelclaudeMcpHouseholdReplyBinding> {
+	const subjectUserId = optionalTrimmed(request.subjectUserId);
+	if (!subjectUserId) {
+		throw new Error("household outbound subject binding required");
+	}
+	if (!resolver) {
+		throw new Error("household reply binding resolver is not configured");
+	}
+	let resolved: Awaited<ReturnType<WhatsAppHouseholdReplyBindingResolver>>;
+	try {
+		resolved = await resolver({
+			actorId: request.actorId,
+			subjectUserId,
+			profileId: request.profileId,
+		});
+	} catch (error) {
+		throw new Error(
+			`household reply binding unavailable: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+		);
+	}
+	if (
+		!resolved ||
+		resolved.revoked ||
+		!resolved.pairingAttested ||
+		resolved.identityAssurance !== "strong_link" ||
+		resolved.actorId !== request.actorId ||
+		resolved.subjectUserId !== subjectUserId ||
+		resolved.profileId !== request.profileId
+	) {
+		throw new Error("household reply binding unavailable or mismatched");
+	}
+	const actorSeat = targetableRelayConversationMembers(conversation).find(
+		(member) => member.actorId === request.actorId,
+	);
+	if (
+		conversation.humanPairingProvenance !== true ||
+		!actorSeat ||
+		actorSeat.revoked ||
+		actorSeat.identityAssurance !== "strong_link" ||
+		!actorSeat.scopes.includes("message:reply") ||
+		actorSeat.principalId !== turn.senderPrincipalId ||
+		actorSeat.principalId !== resolved.principalId ||
+		resolved.replyPrincipalId !== resolved.principalId ||
+		replyIntent.kind !== "address" ||
+		replyIntent.addressRef !== resolved.replyPrincipalId
+	) {
+		throw new Error("household reply binding does not match the live conversation");
+	}
+	return {
+		bindingId: resolved.bindingId,
+		subjectUserId,
+		senderPrincipalHash: householdPrincipalHash(actorSeat.principalHash),
+		recipientPrincipalHash: householdPrincipalHash(actorSeat.principalHash),
+		identityAssurance: "strong_link",
+	};
+}
+
+function householdPrincipalHash(value: string): `sha256:${string}` {
+	if (!/^sha256:[a-f0-9]{64}$/.test(value)) {
+		throw new Error("household reply binding principal hash is invalid");
+	}
+	return value as `sha256:${string}`;
+}
+
 async function defaultResolveOutboundMediaRefs(
 	refs: readonly string[],
 ): Promise<readonly EdgeAttachmentRef[]> {
@@ -1542,17 +1628,29 @@ function outboundCorrelationId(
 	return `mcp-outbound:${hash}`;
 }
 
-function assertProviderOperationPolicy(request: {
-	readonly providerId: string;
-	readonly service: string;
-	readonly action: string;
-	readonly params: Record<string, unknown>;
-}): void {
-	if (request.providerId === "clalit" && containsUrgentHealthSignal(request)) {
+function assertProviderOperationPolicy(
+	request: {
+		readonly providerId: string;
+		readonly service: string;
+		readonly action: string;
+		readonly params: Record<string, unknown>;
+	},
+	domain: TelclaudeMcpDomain,
+	mode: "read" | "write",
+): void {
+	assertHouseholdPhase0ProviderActionAllowed({
+		domain,
+		service: request.service,
+		action: request.action,
+		mode,
+	});
+	if (request.service === "clalit" && containsUrgentHealthSignal(request)) {
 		throw new Error("provider policy denied: urgent_health_escalation_required");
 	}
 }
 
+// M5's deterministic pre-model health routing is the primary emergency boundary;
+// keep this relay-side check as defense in depth for direct or malformed MCP calls.
 function containsUrgentHealthSignal(value: unknown): boolean {
 	const text = JSON.stringify(value).toLowerCase();
 	return [
@@ -1563,6 +1661,17 @@ function containsUrgentHealthSignal(value: unknown): boolean {
 		"stroke",
 		"heart attack",
 		"suicidal",
+		"חירום",
+		"דחוף",
+		"כאבים בחזה",
+		"כאב בחזה",
+		"קוצר נשימה",
+		"קשיי נשימה",
+		"שבץ",
+		"אירוע מוחי",
+		"התקף לב",
+		"אוטם שריר הלב",
+		"אובדני",
 	].some((term) => text.includes(term));
 }
 

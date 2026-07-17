@@ -31,7 +31,10 @@ import {
 	requestTelclaudeLiveMcpSideEffectApproval,
 	setTelclaudeLiveMcpSideEffectApprovalBinding,
 } from "../hermes/mcp/live-side-effect-approvals.js";
-import { createGoogleProviderSidecarApprovalTokenIssuer } from "../hermes/mcp/provider-sidecar-token.js";
+import {
+	createProviderSidecarApprovalTokenIssuer,
+	type ProviderSidecarApprovalTokenSigner,
+} from "../hermes/mcp/provider-sidecar-token.js";
 import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effect-human-approval.js";
 import { createTelclaudeMcpSideEffectLedger } from "../hermes/mcp/side-effect-ledger.js";
 import { setHermesPrivateRuntimeMcpAuthorityActivation } from "../hermes/private-execute.js";
@@ -73,7 +76,23 @@ import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outboun
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import { createOutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
+import {
+	createProviderChallengeControlPolicyStore,
+	createProviderChallengeControlSender,
+} from "../relay/provider-challenge-control-sender.js";
+import {
+	createConfiguredProviderChallengeSidecar,
+	createWhatsAppProviderChallengeResponder,
+} from "../relay/provider-challenge-sidecar.js";
+import { providerChallengeTurnControl } from "../relay/provider-challenge-turn-control.js";
+import {
+	createProviderLoginCoordinator,
+	setConfiguredProviderLoginCoordinator,
+} from "../relay/provider-login-coordinator.js";
 import { initTokenManager } from "../relay/token-manager.js";
+import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
+import { setDefaultWhatsAppInboundBridgeOptions } from "../relay/whatsapp-inbound-http.js";
+import { createWhatsAppProviderChallengeInterceptor } from "../relay/whatsapp-provider-challenge-interceptor.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -92,6 +111,7 @@ import { getEnabledSocialServices, isAutomaticHeartbeatEnabled } from "../social
 import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
 import { type MonitorOptions, monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
+import { sendConfiguredHouseholdProviderApprovalNotificationCard } from "../telegram/side-effect-approval-notification.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable, VaultClient } from "../vault-daemon/index.js";
 import { startWebhookServer } from "../webhooks/server.js";
@@ -257,9 +277,6 @@ export function registerRelayCommand(program: Command): void {
 
 				const capabilitiesEnabled = process.env.TELCLAUDE_CAPABILITIES_ENABLED !== "0";
 				if (capabilitiesEnabled) {
-					startCapabilityServer();
-					console.log("  Capabilities: enabled (relay broker)");
-
 					if (vaultAvailable) {
 						schedulerHandles.push(startAnthropicOauthRefreshScheduler());
 						console.log("  Anthropic OAuth refresh: enabled (proactive vault refresh)");
@@ -311,6 +328,9 @@ export function registerRelayCommand(program: Command): void {
 					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval ?? denyRelayLiveMcpApproval,
 				});
 				const liveMcpEdgeRuntime = new TelclaudeEdgeRuntime();
+				const providerChallengeControlPolicyStore = createProviderChallengeControlPolicyStore({
+					conversationStore: liveMcpConversationStore,
+				});
 				// tc_browse broker: live only when the browser overlay env is set
 				// (TELCLAUDE_BROWSER_WS_ENDPOINT/_CONNECT_PROXY_URL/_PEER_ADDRESS/
 				// _CONTEXT_TOKEN_SECRET). Otherwise omitted → tc_browse fails closed.
@@ -393,6 +413,9 @@ export function registerRelayCommand(program: Command): void {
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
 					registry: createDefaultEdgeOutboundExecutorRegistry(),
 					resolveConversation: async (prepared) => {
+						const systemControl =
+							await providerChallengeControlPolicyStore.resolveConversation(prepared);
+						if (systemControl) return systemControl;
 						const record = liveMcpLedger.get(prepared.sideEffectLedgerRef);
 						if (
 							record?.kind !== "outbound" ||
@@ -440,6 +463,53 @@ export function registerRelayCommand(program: Command): void {
 						);
 					},
 				});
+				const providerChallengeControlSender = createProviderChallengeControlSender({
+					config: cfg,
+					conversationStore: liveMcpConversationStore,
+					edgeRuntime: liveMcpEdgeRuntime,
+					dispatch: liveMcpOutboundDeliveryDispatcher,
+					policyStore: providerChallengeControlPolicyStore,
+				});
+				let providerChallengeSidecar: ReturnType<
+					typeof createConfiguredProviderChallengeSidecar
+				> | null = null;
+				const resolveProviderChallengeSidecar = () =>
+					(providerChallengeSidecar ??= createConfiguredProviderChallengeSidecar());
+				const providerChallengeInterceptor = createWhatsAppProviderChallengeInterceptor({
+					respondToChallenge: async (input) => {
+						return createWhatsAppProviderChallengeResponder(resolveProviderChallengeSidecar())(
+							input,
+						);
+					},
+					sendControl: providerChallengeControlSender,
+				});
+				setConfiguredProviderLoginCoordinator(
+					createProviderLoginCoordinator({
+						config: cfg,
+						conversationStore: liveMcpConversationStore,
+						sidecar: {
+							initiate: (input) => resolveProviderChallengeSidecar().initiate(input),
+							respond: (input) => resolveProviderChallengeSidecar().respond(input),
+						},
+						sendControl: providerChallengeControlSender,
+					}),
+				);
+				setDefaultWhatsAppInboundBridgeOptions({
+					config: cfg,
+					conversationStore: liveMcpConversationStore,
+					quarantineStore: liveMcpAttachmentQuarantineStore,
+					interceptBeforePersistence: providerChallengeInterceptor,
+				});
+				schedulerHandles.push({
+					stop: () => {
+						setDefaultWhatsAppInboundBridgeOptions(null);
+						setConfiguredProviderLoginCoordinator(null);
+					},
+				});
+				startCapabilityServer();
+				console.log("  Capabilities: enabled (relay broker)");
+				const liveMcpHouseholdReplyBindingResolver =
+					createWhatsAppHouseholdReplyBindingResolver(cfg);
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: liveMcpRuntimeConfig,
 					registry: hermesMcpAuthorityRegistry,
@@ -476,8 +546,11 @@ export function registerRelayCommand(program: Command): void {
 						}
 						return turn;
 					},
+					resolveHouseholdReplyBinding: liveMcpHouseholdReplyBindingResolver,
 					outboundDeliveryDispatcher: liveMcpOutboundDeliveryDispatcher,
 					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
+					isTurnBlocked: (turnConversationRef, nowMs) =>
+						providerChallengeTurnControl.isBlocked(turnConversationRef, nowMs),
 					...(liveMcpBrowserWriteCommitter
 						? { browserWriteCommitter: liveMcpBrowserWriteCommitter }
 						: {}),
@@ -506,6 +579,7 @@ export function registerRelayCommand(program: Command): void {
 						return createTelclaudeLiveMcpRelayClients({
 							ledger,
 							conversationStore: liveMcpConversationStore,
+							resolveHouseholdReplyBinding: liveMcpHouseholdReplyBindingResolver,
 							edgeRuntime: liveMcpEdgeRuntime,
 							browser: liveMcpBrowseExecutor,
 							...(liveMcpBrowserActSurface ? { browserAct: liveMcpBrowserActSurface } : {}),
@@ -523,6 +597,14 @@ export function registerRelayCommand(program: Command): void {
 										requestTelclaudeLiveMcpSideEffectApproval(
 											liveMcpSideEffectApprovals.controller,
 											record,
+											async (approval) => {
+												await sendConfiguredHouseholdProviderApprovalNotificationCard({
+													chatId: approval.chatId,
+													nonce: approval.nonce,
+													service: approval.record.service,
+													action: approval.record.action,
+												});
+											},
 										)
 								: undefined,
 						});
@@ -903,15 +985,21 @@ function createLiveMcpSideEffectApprovalKit(vaultSocketPath: string | undefined)
 			jtiStore,
 		}),
 		sideEffectApprovalTokenResolver,
-		providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
-			vaultClient,
-			subjectUserId: process.env.GOOGLE_USER_EMAIL,
-		}),
+		providerApprovalTokenIssuer: createLiveMcpProviderSidecarApprovalTokenIssuer(vaultClient),
 		close() {
 			setTelclaudeLiveMcpSideEffectApprovalBinding(null);
 			jtiStore.close();
 		},
 	};
+}
+
+export function createLiveMcpProviderSidecarApprovalTokenIssuer(
+	vaultClient: ProviderSidecarApprovalTokenSigner,
+) {
+	return createProviderSidecarApprovalTokenIssuer({
+		vaultClient,
+		subjectUserId: process.env.GOOGLE_USER_EMAIL,
+	});
 }
 
 async function denyRelayLiveMcpApproval() {

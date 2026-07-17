@@ -92,10 +92,17 @@ export type WhatsAppInboundCl1Result =
 	| {
 			readonly ok: true;
 			readonly duplicate: false;
+			readonly intercepted: false;
 			readonly event: InboundEvent;
 			readonly conversation: RelayConversation;
 			readonly turn: ReturnType<RelayConversationStore["mintInboundTurn"]>["turn"];
 			readonly identity: WhatsAppIdentityResolution;
+	  }
+	| {
+			readonly ok: true;
+			readonly duplicate: false;
+			readonly intercepted: true;
+			readonly templateId: string;
 	  }
 	| {
 			readonly ok: true;
@@ -128,6 +135,13 @@ export type CreateWhatsAppInboundCl1PipelineOptions = {
 	readonly nowMs?: () => number;
 	readonly maxSkewMs?: number;
 	readonly onInboundEvent?: (event: InboundEvent) => Promise<void>;
+	readonly interceptBeforePersistence?: (input: {
+		readonly event: WhatsAppInboundBridgeEvent;
+		readonly identity: WhatsAppIdentityResolution;
+		readonly conversation: RelayConversation | null;
+	}) => Promise<
+		{ readonly handled: false } | { readonly handled: true; readonly templateId: string }
+	>;
 };
 
 export function createOperatorWhatsAppIdentityResolver(
@@ -262,6 +276,19 @@ export function createWhatsAppInboundCl1Pipeline(
 					};
 				}
 			}
+			const intercepted = await options.interceptBeforePersistence?.({
+				event,
+				identity,
+				conversation: existing ?? null,
+			});
+			if (intercepted?.handled) {
+				return {
+					ok: true,
+					duplicate: false,
+					intercepted: true,
+					templateId: intercepted.templateId,
+				};
+			}
 			let decodedAttachments: {
 				readonly bytes: Uint8Array;
 				readonly mediaType: string;
@@ -360,7 +387,15 @@ export function createWhatsAppInboundCl1Pipeline(
 				},
 			});
 			await options.onInboundEvent?.(inboundEvent);
-			return { ok: true, duplicate: false, event: inboundEvent, conversation, turn, identity };
+			return {
+				ok: true,
+				duplicate: false,
+				intercepted: false,
+				event: inboundEvent,
+				conversation,
+				turn,
+				identity,
+			};
 		},
 	};
 }

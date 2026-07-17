@@ -1,5 +1,6 @@
 import { getChildLogger } from "../../../logging.js";
 import { consumeApproval, denyApproval } from "../../../security/approvals.js";
+import { redactSecrets } from "../../../security/output-filter.js";
 import type {
 	ApprovalCardAction,
 	ApprovalCardState,
@@ -18,9 +19,15 @@ type K = typeof CardKind.Approval;
 
 export const approvalRenderer: CardRenderer<K> = {
 	render(card: CardInstance<K>): CardRenderResult {
-		const s = card.state;
+		const s = {
+			...card.state,
+			title: redactSecrets(card.state.title),
+			body: redactSecrets(card.state.body),
+			...(card.state.explanation ? { explanation: redactSecrets(card.state.explanation) } : {}),
+		};
+		const safeCard = { ...card, state: s };
 
-		const terminal = renderTerminalState(card, s.title);
+		const terminal = renderTerminalState(safeCard, s.title);
 		if (terminal) {
 			// Add outcome detail for consumed approvals
 			if (card.status === "consumed") {
@@ -38,6 +45,9 @@ export const approvalRenderer: CardRenderer<K> = {
 
 		if (s.explanation) {
 			text += `\n\n\uD83D\uDCA1 _${esc(s.explanation)}_`;
+		}
+		if (s.notificationOnly) {
+			return { text, parseMode: "MarkdownV2", keyboard: null };
 		}
 
 		const kb = keyboard()
@@ -65,6 +75,14 @@ export const approvalRenderer: CardRenderer<K> = {
 
 	async execute(context: CardExecutionContext<K>): Promise<CardExecutionResult<K>> {
 		const { action, card } = context;
+		if (card.state.notificationOnly) {
+			return {
+				state: card.state,
+				callbackText: "Use the /approve command shown on the card.",
+				callbackAlert: true,
+				rerender: false,
+			};
+		}
 
 		switch (action.type) {
 			case "approve": {

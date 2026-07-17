@@ -61,4 +61,32 @@ describe("provider sidecar relay auth", () => {
 
 		expect(headers["x-relay-key-id"]).toBe("v1");
 	});
+
+	it("binds the server-stamped actor header to the exact signed request", () => {
+		const rawBody = '{"service":"clalit","challengeId":"opaque","code":"123456"}';
+		const secret = "sidecar-hmac-secret-with-at-least-32-bytes";
+		const headers = buildProviderSidecarHmacHeaders({
+			keyId: "v1",
+			method: "POST",
+			path: "/v1/challenge/respond",
+			rawBody,
+			secret,
+			actorUserId: "household:whatsapp:parent-a",
+			timestampMs: 1_700_000_000_123,
+			nonce: "0123456789abcdef012345",
+		});
+		const bodyHash = crypto.createHash("sha256").update(rawBody).digest("hex");
+		const canonical = [
+			"POST",
+			"/v1/challenge/respond",
+			bodyHash,
+			"1700000000123",
+			"0123456789abcdef012345",
+		].join("\n");
+		const expected = crypto
+			.createHmac("sha256", secret)
+			.update(`${canonical}\nACTOR\nhousehold:whatsapp:parent-a`)
+			.digest("base64url");
+		expect(headers["x-relay-actor-signature"]).toBe(expected);
+	});
 });

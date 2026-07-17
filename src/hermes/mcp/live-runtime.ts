@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import net from "node:net";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
+import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp-household-bindings.js";
 import type {
 	TelclaudeMcpAuthorityConnection,
 	TelclaudeMcpAuthorityRegistry,
@@ -168,6 +169,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly resolveHouseholdReplyBinding?: WhatsAppHouseholdReplyBindingResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	/** Commits an approved browser write (S3); omitted → tc_browse_act_execute fails closed. */
@@ -175,6 +177,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	/** Revalidates current browser credential/session binding before S3 execute. */
 	readonly browserWriteSessionValidator?: BrowserWriteSessionValidator;
 	readonly nowMs?: () => number;
+	readonly isTurnBlocked?: (turnConversationRef: string, nowMs?: number) => boolean;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
 };
 
@@ -247,6 +250,7 @@ export async function startTelclaudeLiveMcpRuntime(
 				sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 				resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 				resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+				resolveHouseholdReplyBinding: options.resolveHouseholdReplyBinding,
 				outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
 				providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 				...(options.browserWriteCommitter
@@ -256,6 +260,7 @@ export async function startTelclaudeLiveMcpRuntime(
 					? { browserWriteSessionValidator: options.browserWriteSessionValidator }
 					: {}),
 				nowMs: options.nowMs,
+				isTurnBlocked: options.isTurnBlocked,
 			});
 			const nodeServer = createTelclaudeLiveMcpNodeHttpServer(liveServer, {
 				path: options.config.path,

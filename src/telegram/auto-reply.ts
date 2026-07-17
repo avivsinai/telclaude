@@ -46,6 +46,7 @@ import {
 	buildTelegramMemoryPolicyPrompt,
 } from "../memory/telegram-memory.js";
 import { sendProviderOtp } from "../providers/external-provider.js";
+import { resolveHouseholdProviderEnrollmentSubject } from "../relay/provider-enrollment.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
 	getPendingAdminClaim,
@@ -1253,22 +1254,38 @@ async function dispatchTelegramControlCommand(
 		case "providers:enroll": {
 			const service = match.args[0]?.trim();
 			if (!service) {
-				await msg.reply("Usage: /providers enroll <service>");
+				await msg.reply("Usage: /providers enroll <service> [household-binding-id]");
 				return true;
 			}
-			const link = getIdentityLink(msg.chatId);
-			if (!link) {
-				await msg.reply(
-					"This chat is not linked to a local user. Use `telclaude identity deep-link <user-id>` first.",
-				);
-				return true;
+			const bindingId = match.args[1]?.trim();
+			let subjectUserId: string;
+			if (bindingId) {
+				const householdSubject = resolveHouseholdProviderEnrollmentSubject({
+					service,
+					bindingId,
+					config: cfg,
+				});
+				if (!householdSubject) {
+					await msg.reply("Household enrollment is unavailable or consent is not current.");
+					return true;
+				}
+				subjectUserId = householdSubject;
+			} else {
+				const link = getIdentityLink(msg.chatId);
+				if (!link) {
+					await msg.reply(
+						"This chat is not linked to a local user. Use `telclaude identity deep-link <user-id>` first.",
+					);
+					return true;
+				}
+				subjectUserId = link.localUserId;
 			}
 			await startProviderSessionEnrollmentCommand(bot.api, {
 				chatId: msg.chatId,
 				threadId: msg.messageThreadId,
 				service,
 				actorUserId: String(msg.senderId ?? msg.chatId),
-				subjectUserId: link.localUserId,
+				subjectUserId,
 			});
 			return true;
 		}

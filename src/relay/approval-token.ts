@@ -1,8 +1,8 @@
 /**
- * Approval token generation for provider action requests.
+ * Approval token generation for provider sidecar action requests.
  *
  * Generates Ed25519-signed tokens (v1.<claims_b64url>.<sig_b64url>)
- * that the relay passes to sidecars for action-type requests.
+ * that the relay passes to the intended sidecar for action-type requests.
  *
  * The agent never sees or handles approval tokens — the relay
  * generates them after user approval and injects them into the
@@ -19,6 +19,10 @@ const TOKEN_TTL_SECONDS = 60; // 1 minute — short-lived by design
 export type ApprovalTokenSigner = Pick<VaultClient, "signPayload">;
 
 export interface ApprovalTokenInput {
+	/** Provider identifier carried in the signed claims (legacy default: Google). */
+	providerId?: string;
+	/** Intended verifier carried in the signed claims (legacy default: google-services). */
+	audience?: string;
 	/** Actor user ID (e.g., "telegram:123") */
 	actorUserId: string;
 	/** Service ID (e.g., "gmail") */
@@ -51,13 +55,13 @@ export async function generateApprovalToken(
 	const claims = {
 		ver: 1,
 		iss: "telclaude-vault",
-		aud: "google-services",
+		aud: input.audience ?? "google-services",
 		iat: now,
 		exp: now + TOKEN_TTL_SECONDS,
 		jti: `jti-${crypto.randomUUID()}`,
 		approvalNonce: input.approvalNonce,
 		actorUserId: input.actorUserId,
-		providerId: "google",
+		providerId: input.providerId ?? "google",
 		service: input.service,
 		action: input.action,
 		subjectUserId: input.subjectUserId,

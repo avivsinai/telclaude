@@ -325,6 +325,29 @@ describe("Telclaude live MCP relay-side server", () => {
 		expect(result.structuredContent).toEqual({ balances: [] });
 	});
 
+	it.each([
+		["tc_provider_read", { service: "bank", action: "balances.list" }, "providerRead"],
+		["tc_memory_search", { query: "family" }, "memorySearch"],
+		[
+			"tc_outbound_prepare",
+			{ conversationToken: `conv_${"a".repeat(32)}`, body: "hello", mediaRefs: [] },
+			"outboundPrepare",
+		],
+	] as const)("rejects blocked-turn %s before any relay dependency call", async (toolName, args, callKey) => {
+		const turnRef = `turn_${"b".repeat(32)}`;
+		const harness = createHarness(cleanup, {
+			privateAuthority: { turnConversationRef: turnRef },
+			isTurnBlocked: (candidate) => candidate === turnRef,
+		});
+
+		expect(
+			await harness.server.handleJsonRpc(toolCall(toolName, args), harness.privateContext),
+		).toMatchObject({
+			error: { code: -32001, message: "MCP turn is closed by relay control" },
+		});
+		expect(harness.calls[callKey]).toEqual([]);
+	});
+
 	it("denies cross-domain memory, out-of-scope provider, and legacy outbound attempts", async () => {
 		const harness = createHarness(cleanup);
 
@@ -765,7 +788,11 @@ describe("Telclaude live MCP relay-side server", () => {
 
 function createHarness(
 	cleanup: Array<() => void | Promise<void>>,
-	options: { outboundDeliveryDispatcher?: OutboundDeliveryDispatcher } = {},
+	options: {
+		outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
+		privateAuthority?: Partial<TelclaudeMcpAuthority>;
+		isTurnBlocked?: (turnConversationRef: string, nowMs?: number) => boolean;
+	} = {},
 ) {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-live-mcp-"));
 	const jtiStore = new TelclaudeMcpSideEffectJtiStore(tempDir);
@@ -779,7 +806,7 @@ function createHarness(
 	const socialConnection = connection("social", "endpoint-social", "netns-social");
 	const privateGrant = registry.register({
 		connection: privateConnection,
-		authority: authority(),
+		authority: authority(options.privateAuthority),
 		nowMs: 100_000,
 	});
 	const capabilityConnection = connection("ops-cap", "endpoint-private", "netns-private");
@@ -917,6 +944,7 @@ function createHarness(
 					token: conversationRef,
 					conversationId: conversationRef,
 				}),
+			isTurnBlocked: options.isTurnBlocked,
 			...(outboundDeliveryDispatcher ? { outboundDeliveryDispatcher } : {}),
 			bindHost: "telclaude",
 			networkName: "telclaude-hermes-private",

@@ -15,6 +15,7 @@ import {
 	createWhatsAppHouseholdIdentityResolver,
 } from "./whatsapp-household-bindings.js";
 import {
+	type CreateWhatsAppInboundCl1PipelineOptions,
 	createOperatorWhatsAppIdentityResolver,
 	createWhatsAppInboundCl1Pipeline,
 	type WhatsAppIdentityResolution,
@@ -63,7 +64,16 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly nowMs?: () => number;
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
+	readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
 };
+
+let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | undefined;
+
+export function setDefaultWhatsAppInboundBridgeOptions(
+	options: WhatsAppInboundBridgeHttpOptions | null,
+): void {
+	defaultWhatsAppInboundBridgeOptions = options ?? undefined;
+}
 
 type WhatsAppInboundBridgeHttpFailure = {
 	readonly ok: false;
@@ -117,6 +127,9 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		conversationStore: resolved.conversationStore,
 		quarantineStore: resolved.quarantineStore,
 		resolveIdentity: resolved.resolveIdentity,
+		...(resolved.interceptBeforePersistence
+			? { interceptBeforePersistence: resolved.interceptBeforePersistence }
+			: {}),
 		...(resolved.nowMs ? { nowMs: resolved.nowMs } : {}),
 	});
 	const cl1 = await pipeline.ingest({
@@ -134,6 +147,13 @@ export async function handleWhatsAppInboundBridgePost(input: {
 				duplicateHandling: cl1.duplicateHandling,
 				reason: cl1.reason,
 			},
+		};
+	}
+	if (cl1.intercepted) {
+		return {
+			ok: true,
+			status: 202,
+			payload: { ok: true, duplicate: false, intercepted: true, templateId: cl1.templateId },
 		};
 	}
 	const dispatchProfile = resolved.resolveProfile(cl1.identity);
@@ -185,8 +205,10 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 			readonly nowMs?: () => number;
 			readonly cwd?: string;
 			readonly timeoutMs?: number;
+			readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
 	  }
 	| WhatsAppInboundBridgeHttpFailure {
+	options ??= defaultWhatsAppInboundBridgeOptions;
 	const env = process.env;
 	const signatureSecret = requiredOption(
 		options?.signatureSecret ?? env[TELCLAUDE_WHATSAPP_INBOUND_SECRET_ENV],
@@ -271,6 +293,9 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		conversationStore: options?.conversationStore ?? createRelayConversationStore(),
 		quarantineStore: options?.quarantineStore ?? createAttachmentQuarantineStore(),
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,
+		...(options?.interceptBeforePersistence
+			? { interceptBeforePersistence: options.interceptBeforePersistence }
+			: {}),
 		...(options?.nowMs ? { nowMs: options.nowMs } : {}),
 		...(options?.cwd ? { cwd: options.cwd } : {}),
 		...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),

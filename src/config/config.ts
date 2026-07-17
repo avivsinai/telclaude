@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 
 import JSON5 from "json5";
@@ -209,6 +210,45 @@ const WhatsAppAddressRefSchema = z.string().transform((value, ctx) => {
 	return normalized;
 });
 
+const Sha256RefSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+
+const HouseholdProviderConsentSchema = z
+	.object({
+		service: z.literal("clalit"),
+		state: z.enum(["granted", "revoked"]),
+		ceremonyVersion: z.literal("phase0.v1"),
+		ceremonyHash: Sha256RefSchema,
+		verifiedChannelHash: Sha256RefSchema,
+		categories: z
+			.object({
+				otpRelay: z.literal(true),
+				subjectOwnership: z.literal(true),
+				retentionDisclosure: z.literal(true),
+				emergencyUnderstanding: z.literal(true),
+			})
+			.strict(),
+		recordedAt: z.iso.datetime(),
+		operatorId: z.string().regex(/^operator:[a-z0-9-]{1,64}$/),
+		revokedAt: z.iso.datetime().optional(),
+	})
+	.strict()
+	.superRefine((receipt, ctx) => {
+		if (receipt.state === "revoked" && !receipt.revokedAt) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["revokedAt"],
+				message: "revoked household provider consent requires revokedAt",
+			});
+		}
+		if (receipt.state === "granted" && receipt.revokedAt) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["revokedAt"],
+				message: "granted household provider consent cannot include revokedAt",
+			});
+		}
+	});
+
 const WhatsAppHouseholdBindingSchema = z
 	.object({
 		bindingId: z.string().refine(isValidHouseholdBindingId, "invalid opaque household binding id"),
@@ -216,6 +256,7 @@ const WhatsAppHouseholdBindingSchema = z
 		replyAddress: WhatsAppAddressRefSchema,
 		displayName: z.string().trim().min(1).max(80),
 		subjectUserId: z.string().trim().min(1).max(80),
+		providerConsent: HouseholdProviderConsentSchema.optional(),
 	})
 	.superRefine((binding, ctx) => {
 		if (binding.replyAddress !== binding.address) {
@@ -233,7 +274,21 @@ const WhatsAppHouseholdBindingSchema = z
 					"household subjectUserId must be the opaque local key household:<binding-id>, never an ID or phone",
 			});
 		}
+		if (
+			binding.providerConsent &&
+			binding.providerConsent.verifiedChannelHash !== sha256Ref(binding.address)
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["providerConsent", "verifiedChannelHash"],
+				message: "household provider consent must bind the normalized WhatsApp address hash",
+			});
+		}
 	});
+
+function sha256Ref(value: string): `sha256:${string}` {
+	return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
+}
 
 const OperatorProfileConfigSchema = z
 	.object({

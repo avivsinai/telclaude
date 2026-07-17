@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { createLiveMcpProviderSidecarApprovalTokenIssuer } from "../../src/commands/relay.js";
 import { sortKeysDeep } from "../../src/crypto/canonical-hash.js";
 import { JtiStore, verifyApprovalToken } from "../../src/google-services/approval.js";
 import type { FetchRequest } from "../../src/google-services/types.js";
@@ -34,6 +35,7 @@ import type {
 	RelayConversationInboundTurn,
 } from "../../src/hermes/relay-conversation-store.js";
 import type { OutboundDeliveryDispatcher } from "../../src/relay/outbound-delivery-dispatcher.js";
+import type { ResolvedWhatsAppHouseholdReplyBinding } from "../../src/relay/whatsapp-household-bindings.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
@@ -419,13 +421,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 	it("rejects household execution when the live actor seat principal changed", async () => {
 		const harness = createLedgerHarness();
-		const outbound = harness.ledger.prepare(
-			outboundPrepareInput({
-				actorId: "household:whatsapp:parent-a",
-				profileId: "parent-a",
-				domain: "household",
-			}),
-		);
+		const outbound = harness.ledger.prepare(householdOutboundPrepareInput());
 		harness.accept("outbound-household-token", outbound);
 		const bridge = createBridge(
 			harness,
@@ -476,14 +472,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 	it("rejects household execution when the live turn sender principal changed", async () => {
 		const harness = createLedgerHarness();
 		const turnConversationRef = `turn_${"c".repeat(32)}`;
-		const outbound = harness.ledger.prepare(
-			outboundPrepareInput({
-				actorId: "household:whatsapp:parent-a",
-				profileId: "parent-a",
-				domain: "household",
-				turnConversationRef,
-			}),
-		);
+		const outbound = harness.ledger.prepare(householdOutboundPrepareInput({ turnConversationRef }));
 		harness.accept("outbound-household-turn-token", outbound);
 		const bridge = createBridge(
 			harness,
@@ -519,6 +508,110 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
 		});
 		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it.each([
+		{
+			name: "pairing was removed",
+			resolution: null,
+			code: "household_reply_binding_unavailable",
+		},
+		{
+			name: "binding id changed",
+			resolution: resolvedHouseholdReplyBinding({ bindingId: "parent-b" }),
+			code: "household_reply_binding_mismatch",
+		},
+		{
+			name: "subject changed",
+			resolution: resolvedHouseholdReplyBinding({ subjectUserId: "household:parent-b" }),
+			code: "household_reply_binding_mismatch",
+		},
+		{
+			name: "recipient number changed",
+			resolution: resolvedHouseholdReplyBinding({
+				principalId: "+15550000000",
+				replyPrincipalId: "+15550000000",
+			}),
+			code: "household_reply_binding_mismatch",
+		},
+	])("rejects household execution when $name before token consumption", async ({
+		resolution,
+		code,
+	}) => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"d".repeat(32)}`;
+		const outbound = harness.ledger.prepare(householdOutboundPrepareInput({ turnConversationRef }));
+		harness.accept("outbound-household-binding-token", outbound);
+		let bindingResolverCalls = 0;
+		let dispatcherCalls = 0;
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedInboundTurn: () =>
+					fixtureInboundTurn({
+						ref: turnConversationRef,
+						conversationToken: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId ?? "",
+						profileId: "parent-a",
+						domain: "household",
+						mcpDomain: "household",
+						senderActorId: "household:whatsapp:parent-a",
+						senderPrincipalId: "+15551234567",
+					}),
+				resolveAuthorizedOutboundConversation: () =>
+					fixtureConversation({
+						token: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId,
+						profileId: "parent-a",
+						domain: "household",
+						mcpDomain: "household",
+						edgeDomain: "household",
+						humanPairingProvenance: true,
+						members: [
+							{
+								actorId: "household:whatsapp:parent-a",
+								channel: "whatsapp",
+								principalId: "+15551234567",
+								principalHash:
+									"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+								role: "sender",
+								identityAssurance: "strong_link",
+								scopes: ["message:reply"],
+								revoked: false,
+							},
+						],
+					}),
+				resolveHouseholdReplyBinding: () => {
+					bindingResolverCalls += 1;
+					return resolution;
+				},
+				outboundDeliveryDispatcher: async (prepared) => {
+					dispatcherCalls += 1;
+					return sentOutboundDeliveryDispatcher(prepared);
+				},
+			},
+			{
+				actorId: "household:whatsapp:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+				domain: "household",
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				turnConversationRef,
+			},
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code,
+			reason: expect.any(String),
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(bindingResolverCalls).toBe(1);
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+		expect(dispatcherCalls).toBe(0);
 	});
 
 	it("accepts social MCP domain outbound records against public-social relay conversations", async () => {
@@ -899,6 +992,71 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		}
 	});
 
+	it("executes a Clalit renewal through the issuer configured by the live relay", async () => {
+		const harness = createLedgerHarness();
+		const provider = harness.ledger.prepare(
+			providerPrepareInput({
+				actorId: "household:whatsapp:parent-b",
+				approverActorId: "telegram:parent-a",
+				profileId: "parent-b",
+				domain: "household",
+				providerId: "clalit",
+				service: "clalit",
+				action: "prescription_renewal",
+				params: { prescriptionId: "synthetic-rx" },
+				subjectUserId: "household:parent-b",
+				providerAccountRef: "clalit:primary",
+			}),
+		);
+		harness.accept("provider-token", provider);
+		const vault = new PrefixSigningVault();
+		const providerCalls: unknown[] = [];
+		const bridge = createBridge(
+			harness,
+			{
+				providerProxy: async (request) => {
+					providerCalls.push(request);
+					expect(claimsFromApprovalToken(request.approvalToken ?? "")).toMatchObject({
+						aud: "israel-services",
+						providerId: "clalit",
+						service: "clalit",
+						action: "prescription_renewal",
+						subjectUserId: "household:parent-b",
+					});
+					return { status: "ok", data: { accepted: true } };
+				},
+				providerApprovalTokenIssuer: createLiveMcpProviderSidecarApprovalTokenIssuer(vault),
+			},
+			{
+				actorId: "household:whatsapp:parent-b",
+				profileId: "parent-b",
+				domain: "household",
+				memorySource: "household:parent-b",
+				writableNamespace: "household:parent-b",
+				providerScopes: ["clalit"],
+			},
+		);
+
+		await expect(bridge.tc_provider_execute_write({ actionRef: provider.ref })).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({ ref: provider.ref, status: "executed" }),
+		});
+		expect(providerCalls).toEqual([
+			expect.objectContaining({
+				providerId: "clalit",
+				body: JSON.stringify({
+					service: "clalit",
+					action: "prescription_renewal",
+					params: { prescriptionId: "synthetic-rx" },
+					subjectUserId: "household:parent-b",
+				}),
+				userId: "household:whatsapp:parent-b",
+				approvalToken: expect.stringMatching(/^v1\./),
+				approvalMode: "preapproved-ledger",
+			}),
+		]);
+	});
+
 	it("fails closed before provider sidecar execution when no sidecar token issuer is configured", async () => {
 		const harness = createLedgerHarness();
 		const provider = harness.ledger.prepare(providerPrepareInput());
@@ -1185,6 +1343,44 @@ function outboundPrepareInput(
 	};
 }
 
+function householdOutboundPrepareInput(
+	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
+): TelclaudeMcpOutboundSideEffectPrepareInput {
+	return outboundPrepareInput({
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		subjectUserId: "household:parent-a",
+		householdReplyBinding: {
+			bindingId: "parent-a",
+			subjectUserId: "household:parent-a",
+			senderPrincipalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			recipientPrincipalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			identityAssurance: "strong_link",
+		},
+		...overrides,
+	});
+}
+
+function resolvedHouseholdReplyBinding(
+	overrides: Partial<ResolvedWhatsAppHouseholdReplyBinding> = {},
+): ResolvedWhatsAppHouseholdReplyBinding {
+	return {
+		bindingId: "parent-a",
+		actorId: "household:whatsapp:parent-a",
+		subjectUserId: "household:parent-a",
+		profileId: "parent-a",
+		principalId: "+15551234567",
+		replyPrincipalId: "+15551234567",
+		identityAssurance: "strong_link",
+		pairingAttested: true,
+		revoked: false,
+		...overrides,
+	};
+}
+
 function fixtureConversation(overrides: Partial<RelayConversation> = {}): RelayConversation {
 	return {
 		token: "whatsapp:+15551234567",
@@ -1251,6 +1447,14 @@ function fixtureInboundTurn(
 
 function canonicalBinding(binding: TelclaudeMcpSideEffectApprovalBinding): string {
 	return JSON.stringify(sortKeysDeep(binding));
+}
+
+function claimsFromApprovalToken(token: string): Record<string, unknown> {
+	const [, claimsB64] = token.split(".");
+	return JSON.parse(Buffer.from(claimsB64, "base64url").toString("utf8")) as Record<
+		string,
+		unknown
+	>;
 }
 
 class PrefixSigningVault {

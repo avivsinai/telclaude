@@ -7,6 +7,7 @@ import {
 } from "../../relay/browser-write-confirm.js";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../relay/provider-proxy.js";
+import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp-household-bindings.js";
 import { redactSecrets } from "../../security/output-filter.js";
 import {
 	type AttachmentRef,
@@ -165,6 +166,7 @@ export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly resolveHouseholdReplyBinding?: WhatsAppHouseholdReplyBindingResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly browserWriteCommitter?: BrowserWriteCommitter;
 	readonly browserWriteSessionValidator?: BrowserWriteSessionValidator;
@@ -229,6 +231,7 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				nowMs,
 				options.resolveAuthorizedOutboundConversation,
 				options.resolveAuthorizedInboundTurn,
+				options.resolveHouseholdReplyBinding,
 			);
 			if (!checked.ok) return checked;
 			if (checked.record.channel === "whatsapp" && !options.outboundDeliveryDispatcher) {
@@ -529,6 +532,7 @@ async function outboundLedgerEffectRecord(
 	nowMs: number,
 	resolveAuthorizedOutboundConversation: TelclaudeMcpOutboundConversationResolver | undefined,
 	resolveAuthorizedInboundTurn: TelclaudeMcpInboundTurnAuthorityResolver | undefined,
+	resolveHouseholdReplyBinding: WhatsAppHouseholdReplyBindingResolver | undefined,
 ): Promise<
 	| { readonly ok: true; readonly record: TelclaudeMcpOutboundSideEffectRecord }
 	| TelclaudeMcpSideEffectTerminalFailure
@@ -563,6 +567,13 @@ async function outboundLedgerEffectRecord(
 		nowMs,
 	);
 	if (conversationFailure) return conversationFailure;
+	const householdBindingFailure = await liveHouseholdReplyBindingFailure(
+		record,
+		resolveHouseholdReplyBinding,
+		resolveAuthorizedOutboundConversation,
+		nowMs,
+	);
+	if (householdBindingFailure) return householdBindingFailure;
 	return { ok: true, record };
 }
 
@@ -833,6 +844,109 @@ async function liveOutboundConversationFailure(
 		return terminalFailure(
 			"outbound_recipient_not_targetable",
 			"outbound household recipient no longer matches the live actor seat",
+			record,
+		);
+	}
+	return null;
+}
+
+async function liveHouseholdReplyBindingFailure(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+	resolver: WhatsAppHouseholdReplyBindingResolver | undefined,
+	resolveAuthorizedOutboundConversation: TelclaudeMcpOutboundConversationResolver | undefined,
+	nowMs: number,
+): Promise<TelclaudeMcpSideEffectTerminalFailure | null> {
+	if (record.domain !== "household") return null;
+	if (!record.subjectUserId || !record.householdReplyBinding) {
+		return terminalFailure(
+			"household_reply_binding_mismatch",
+			"household reply evidence is missing",
+			record,
+		);
+	}
+	if (!resolver) {
+		return terminalFailure(
+			"household_reply_binding_unavailable",
+			"household reply binding resolver is not configured",
+			record,
+		);
+	}
+	let resolved: Awaited<ReturnType<WhatsAppHouseholdReplyBindingResolver>>;
+	try {
+		resolved = await resolver({
+			actorId: record.actorId,
+			subjectUserId: record.subjectUserId,
+			profileId: record.profileId,
+		});
+	} catch (error) {
+		return terminalFailure(
+			"household_reply_binding_unavailable",
+			redactSecrets(error instanceof Error ? error.message : String(error)),
+			record,
+		);
+	}
+	if (!resolved) {
+		return terminalFailure(
+			"household_reply_binding_unavailable",
+			"household reply binding is unavailable or revoked",
+			record,
+		);
+	}
+	const evidence = record.householdReplyBinding;
+	if (
+		resolved.revoked ||
+		!resolved.pairingAttested ||
+		resolved.identityAssurance !== "strong_link" ||
+		resolved.bindingId !== evidence.bindingId ||
+		resolved.actorId !== record.actorId ||
+		resolved.subjectUserId !== record.subjectUserId ||
+		resolved.subjectUserId !== evidence.subjectUserId ||
+		resolved.profileId !== record.profileId ||
+		resolved.principalId !== resolved.replyPrincipalId ||
+		record.resolvedDestination.kind !== "address" ||
+		record.resolvedDestination.addressRef !== resolved.replyPrincipalId
+	) {
+		return terminalFailure(
+			"household_reply_binding_mismatch",
+			"household reply binding changed after prepare",
+			record,
+		);
+	}
+	if (!resolveAuthorizedOutboundConversation) {
+		return terminalFailure(
+			"household_reply_binding_unavailable",
+			"household reply conversation resolver is not configured",
+			record,
+		);
+	}
+	let conversation: RelayConversation | null;
+	try {
+		conversation = await resolveAuthorizedOutboundConversation(record.conversationRef, nowMs);
+	} catch (error) {
+		return terminalFailure(
+			"household_reply_binding_unavailable",
+			redactSecrets(error instanceof Error ? error.message : String(error)),
+			record,
+		);
+	}
+	const actorSeat = conversation
+		? targetableRelayConversationMembers(conversation).find(
+				(member) => member.actorId === record.actorId,
+			)
+		: undefined;
+	if (
+		conversation?.humanPairingProvenance !== true ||
+		!actorSeat ||
+		actorSeat.revoked ||
+		actorSeat.identityAssurance !== "strong_link" ||
+		!actorSeat.scopes.includes("message:reply") ||
+		actorSeat.principalId !== resolved.principalId ||
+		actorSeat.principalHash !== evidence.senderPrincipalHash ||
+		actorSeat.principalHash !== evidence.recipientPrincipalHash
+	) {
+		return terminalFailure(
+			"household_reply_binding_mismatch",
+			"household reply binding no longer matches the live conversation",
 			record,
 		);
 	}

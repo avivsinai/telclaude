@@ -22,6 +22,7 @@ type ProviderSidecarHmacHeadersOptions = {
 	path: string;
 	rawBody: string;
 	secret: string;
+	actorUserId?: string;
 	timestampMs?: number;
 	nonce?: string;
 };
@@ -31,6 +32,7 @@ type ProviderSidecarRelayAuthOptions = {
 	method: string;
 	path: string;
 	rawBody: string;
+	actorUserId?: string;
 };
 
 type SecretCache = {
@@ -53,12 +55,20 @@ export function buildProviderSidecarHmacHeaders(
 		.createHmac("sha256", options.secret)
 		.update(canonical)
 		.digest("base64url");
+	const actorUserId = options.actorUserId?.trim();
+	const actorSignature = actorUserId
+		? crypto
+				.createHmac("sha256", options.secret)
+				.update(`${canonical}\nACTOR\n${actorUserId}`)
+				.digest("base64url")
+		: undefined;
 
 	return {
 		"x-relay-key-id": options.keyId,
 		"x-relay-timestamp": timestamp,
 		"x-relay-nonce": nonce,
 		"x-relay-signature": signature,
+		...(actorSignature ? { "x-relay-actor-signature": actorSignature } : {}),
 	};
 }
 
@@ -80,6 +90,7 @@ export async function buildProviderSidecarRelayAuthHeaders(
 		path: options.path,
 		rawBody: options.rawBody,
 		secret,
+		actorUserId: options.actorUserId,
 	});
 }
 
@@ -101,6 +112,7 @@ export async function buildRequiredProviderSidecarRelayAuthHeaders(
 		path: options.path,
 		rawBody: options.rawBody,
 		secret,
+		actorUserId: options.actorUserId,
 	});
 }
 

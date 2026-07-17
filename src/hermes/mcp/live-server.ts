@@ -1,6 +1,7 @@
 import http from "node:http";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
+import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp-household-bindings.js";
 import {
 	createTelclaudeMcpBridgeForRegisteredConnection,
 	type TelclaudeMcpAuthorityConnection,
@@ -113,6 +114,7 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly resolveHouseholdReplyBinding?: WhatsAppHouseholdReplyBindingResolver;
 	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	/**
@@ -127,6 +129,7 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly bindHost: string;
 	readonly networkName: string;
 	readonly nowMs?: () => number;
+	readonly isTurnBlocked?: (turnConversationRef: string, nowMs?: number) => boolean;
 };
 
 export type CreateTelclaudeLiveMcpNodeHttpServerOptions = {
@@ -177,6 +180,7 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 		sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 		resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 		resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+		resolveHouseholdReplyBinding: options.resolveHouseholdReplyBinding,
 		outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
 		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 		...(options.browserWriteCommitter
@@ -274,6 +278,12 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 				nowMs: options.nowMs?.(),
 			});
 			if (!registered.ok) return jsonError(id, -32001, registered.reason);
+			if (
+				registered.authority.turnConversationRef &&
+				options.isTurnBlocked?.(registered.authority.turnConversationRef, options.nowMs?.())
+			) {
+				return jsonError(id, -32001, "MCP turn is closed by relay control");
+			}
 
 			try {
 				const result = await callBridgeTool(

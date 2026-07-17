@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import os from "node:os";
@@ -216,6 +217,129 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		});
 
 		expect(dispatched).toEqual([]);
+	});
+
+	it("routes an armed household audio challenge before decode, persistence, or Hermes", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { createPendingProviderChallengeRegistry } = await import(
+			"../../src/relay/pending-provider-challenge.js"
+		);
+		const { createWhatsAppProviderChallengeInterceptor } = await import(
+			"../../src/relay/whatsapp-provider-challenge-interceptor.js"
+		);
+		const { createWhatsAppHouseholdIdentityResolver } = await import(
+			"../../src/relay/whatsapp-household-bindings.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const identity = createWhatsAppHouseholdIdentityResolver(householdDispatcherConfig)({
+			senderAddressRef: "whatsapp:+15557654321",
+			event: whatsappEvent(),
+		});
+		if (identity?.domain !== "household") throw new Error("household identity missing");
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		const conversation = conversationStore.resumeOrMint({
+			channel: "whatsapp",
+			conversationId: identity.conversationId,
+			threadId: identity.replyAddressRef,
+			profileId: identity.profileId,
+			domain: "household",
+			authorizationState: "authorized",
+			humanPairingProvenance: true,
+			members: [
+				{
+					actorId: identity.actorId,
+					principalId: identity.principalId,
+					role: "sender",
+					identityAssurance: "strong_link",
+				},
+			],
+			nowMs: NOW,
+		}).conversation;
+		const registry = createPendingProviderChallengeRegistry({ nowMs: () => NOW });
+		registry.arm({
+			origin: "relay_login_coordinator",
+			initiationRef: "provider_login_http_parent_a_1234",
+			initiatingTurnRef: `turn_${"d".repeat(32)}`,
+			binding: {
+				bindingId: identity.bindingId,
+				actorId: identity.actorId,
+				subjectUserId: identity.subjectUserId,
+				profileId: identity.profileId,
+				conversationToken: conversation.token,
+				conversationId: conversation.conversationId,
+				senderPrincipalHash: `sha256:${crypto.createHash("sha256").update(identity.principalId).digest("hex")}`,
+			},
+			service: "clalit",
+			providerChallengeId: "provider-secret-must-not-escape",
+			challengeType: "sms_otp",
+			sidecarExpiresAtMs: NOW + 60_000,
+			nowMs: NOW,
+		});
+		const respondToChallenge = vi.fn();
+		const sendControl = vi.fn(async () => undefined);
+		const quarantineStore = createAttachmentQuarantineStore({ now: () => NOW });
+		const quarantine = vi.spyOn(quarantineStore, "store");
+		const dispatch = vi.fn();
+		const event = whatsappEvent({
+			eventId: "wa-event-otp-audio",
+			messageId: "wa-msg-otp-audio",
+			cursorSequence: 2,
+			senderAddressRef: identity.principalId,
+			conversationKey: identity.expectedConversationKey,
+			text: undefined,
+			attachments: [{ mediaType: "audio/ogg", bytesBase64: "not-base64" }],
+		});
+
+		const result = await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				config: householdDispatcherConfig,
+				conversationStore,
+				quarantineStore,
+				nowMs: () => NOW,
+				dispatch,
+				interceptBeforePersistence: createWhatsAppProviderChallengeInterceptor({
+					registry,
+					nowMs: () => NOW,
+					respondToChallenge,
+					sendControl,
+				}),
+			},
+		});
+
+		expect(result).toMatchObject({
+			status: 202,
+			payload: {
+				ok: true,
+				duplicate: false,
+				intercepted: true,
+				templateId: "challenge_type_digits",
+			},
+		});
+		expect(JSON.stringify(result)).not.toContain("provider-secret-must-not-escape");
+		expect(quarantine).not.toHaveBeenCalled();
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(respondToChallenge).not.toHaveBeenCalled();
+		expect(sendControl).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "תכתבי את המספרים בהודעה" }),
+		);
+		expect(conversationStore.inspect(conversation.token)).toMatchObject({
+			threadMessageIds: [],
+			inboundCursor: null,
+			auditIds: [],
+		});
 	});
 
 	it("requires explicit inbound operator addresses and ignores the outbound allowlist", async () => {
@@ -513,6 +637,46 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 		expect(JSON.stringify(seenOptions)).toContain(cl1.conversation.token);
 	});
 
+	it("aborts an in-flight Hermes stream when the relay arms a challenge for its turn", async () => {
+		const { dispatchWhatsAppInboundToHermes } = await import(
+			"../../src/relay/whatsapp-inbound-dispatcher.js"
+		);
+		const { createProviderChallengeTurnControl } = await import(
+			"../../src/relay/provider-challenge-turn-control.js"
+		);
+		const cl1 = await mintCl1Event();
+		const turnControl = createProviderChallengeTurnControl({ nowMs: () => NOW });
+		let started: (() => void) | undefined;
+		const executing = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const dispatched = dispatchWhatsAppInboundToHermes({
+			...cl1,
+			config,
+			profile,
+			turnControl,
+			executeHermes: async function* (_prompt, options): AsyncIterable<StreamChunk> {
+				expect(options.signal).toBeInstanceOf(AbortSignal);
+				started?.();
+				await new Promise<void>((_resolve, reject) => {
+					options.signal?.addEventListener(
+						"abort",
+						() => reject(options.signal?.reason ?? new Error("aborted")),
+						{ once: true },
+					);
+				});
+			},
+		});
+		await executing;
+		turnControl.block(cl1.turn.ref, NOW + 1_000);
+
+		await expect(dispatched).resolves.toMatchObject({
+			ok: false,
+			code: "whatsapp_inbound_dispatch_exception",
+			retryable: true,
+		});
+	});
+
 	it("binds household execution to the opaque subject and exact memory namespace", async () => {
 		const { buildWhatsAppInboundHermesOptions } = await import(
 			"../../src/relay/whatsapp-inbound-dispatcher.js"
@@ -575,7 +739,9 @@ async function mintCl1Event(overrides: WhatsAppEventOverride = {}) {
 		event,
 		signature: signWhatsAppInboundBridgeEvent(event, SECRET),
 	});
-	if (!result.ok || result.duplicate) throw new Error("expected first-seen CL-1 event");
+	if (!result.ok || result.duplicate || result.intercepted) {
+		throw new Error("expected first-seen CL-1 event");
+	}
 	return {
 		event: result.event,
 		conversation: result.conversation,
@@ -614,7 +780,9 @@ async function mintHouseholdCl1Event() {
 		event,
 		signature: signWhatsAppInboundBridgeEvent(event, SECRET),
 	});
-	if (!result.ok || result.duplicate) throw new Error("expected first-seen household CL-1 event");
+	if (!result.ok || result.duplicate || result.intercepted) {
+		throw new Error("expected first-seen household CL-1 event");
+	}
 	return {
 		event: result.event,
 		conversation: result.conversation,
