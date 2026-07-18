@@ -160,7 +160,7 @@ describe("household kill-switch drills", () => {
 		expect(providerPrepareWrite).not.toHaveBeenCalled();
 	});
 
-	it("keeps media and emergency activation fail-closed globally and per binding", () => {
+	it("keeps media and emergency activation fail-closed across every activation gate", () => {
 		const globallyDisabled = householdConfig({
 			remindersGlobal: true,
 			parentAReminders: true,
@@ -193,6 +193,33 @@ describe("household kill-switch drills", () => {
 		expect(resolveHouseholdEmergencyActivation(perBindingDisabled)).toEqual({
 			enabled: false,
 			reason: "binding_disabled",
+		});
+
+		const missingDataControlAck = householdConfig({
+			remindersGlobal: true,
+			mediaGlobal: true,
+			parentAMedia: true,
+		});
+		delete missingDataControlAck.householdMedia.dataControlAck;
+		expect(resolveHouseholdMediaActivation(missingDataControlAck, "x".repeat(32))).toEqual({
+			enabled: false,
+			reason: "data_control_unacknowledged",
+		});
+
+		const explicitlyUnacknowledged = householdConfig({
+			remindersGlobal: true,
+			mediaGlobal: true,
+			parentAMedia: true,
+		});
+		explicitlyUnacknowledged.householdMedia.dataControlAck = {
+			acknowledged: false,
+			posture: "zdr",
+			recordedAt: "2026-07-18T12:00:00.000Z",
+			operatorId: "operator:phase0-admin",
+		};
+		expect(resolveHouseholdMediaActivation(explicitlyUnacknowledged, "x".repeat(32))).toEqual({
+			enabled: false,
+			reason: "data_control_unacknowledged",
 		});
 	});
 
@@ -564,7 +591,15 @@ function householdConfig(input: {
 }): TelclaudeConfig {
 	return {
 		householdReminders: { enabled: input.remindersGlobal },
-		householdMedia: { enabled: input.mediaGlobal ?? false },
+		householdMedia: {
+			enabled: input.mediaGlobal ?? false,
+			dataControlAck: {
+				acknowledged: true,
+				posture: "zdr",
+				recordedAt: "2026-07-18T12:00:00.000Z",
+				operatorId: "operator:phase0-admin",
+			},
+		},
 		householdEmergency: { enabled: input.emergencyGlobal ?? false },
 		profiles: [
 			{

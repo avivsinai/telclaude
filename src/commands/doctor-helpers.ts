@@ -855,7 +855,7 @@ async function resolveWebSearchConfigured(
 	}
 }
 
-function checkHermesWhatsAppReadiness(
+export function checkHermesWhatsAppReadiness(
 	outboundChannels: ReadonlySet<string>,
 	env: Partial<Record<string, string | undefined>>,
 ): CheckResult[] {

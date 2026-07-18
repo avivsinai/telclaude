@@ -159,12 +159,24 @@ describe("operator profile resolution", () => {
 		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15550000000", cfg)).toBeNull();
 	});
 
-	it("requires independent global, binding, and key gates for household media activation", async () => {
+	it("requires independent global, binding, data-control, and key gates for household media activation", async () => {
 		const { resolveHouseholdMediaActivation } = await import("../../src/config/profiles.js");
 		const key = "household-media-test-encryption-key-32chars";
-		const configFor = (globalEnabled: boolean, bindingEnabled: boolean) =>
+		const configFor = (globalEnabled: boolean, bindingEnabled: boolean, acknowledged?: boolean) =>
 			({
-				householdMedia: { enabled: globalEnabled },
+				householdMedia: {
+					enabled: globalEnabled,
+					...(acknowledged === undefined
+						? {}
+						: {
+								dataControlAck: {
+									acknowledged,
+									posture: "zdr",
+									recordedAt: "2026-07-18T12:00:00.000Z",
+									operatorId: "operator:test",
+								},
+							}),
+				},
 				profiles: [
 					{
 						whatsappHouseholdBindings: [{ bindingId: "parent-a", mediaEnabled: bindingEnabled }],
@@ -176,19 +188,27 @@ describe("operator profile resolution", () => {
 			enabled: false,
 			reason: "global_disabled",
 		});
-		expect(resolveHouseholdMediaActivation(configFor(true, false), key)).toEqual({
+		expect(resolveHouseholdMediaActivation(configFor(true, false, true), key)).toEqual({
 			enabled: false,
 			reason: "binding_disabled",
 		});
-		expect(resolveHouseholdMediaActivation(configFor(true, true), undefined)).toEqual({
+		expect(resolveHouseholdMediaActivation(configFor(true, true), key)).toEqual({
+			enabled: false,
+			reason: "data_control_unacknowledged",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, true, false), key)).toEqual({
+			enabled: false,
+			reason: "data_control_unacknowledged",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, true, true), undefined)).toEqual({
 			enabled: false,
 			reason: "key_unavailable",
 		});
-		expect(resolveHouseholdMediaActivation(configFor(true, true), "short")).toEqual({
+		expect(resolveHouseholdMediaActivation(configFor(true, true, true), "short")).toEqual({
 			enabled: false,
 			reason: "key_unavailable",
 		});
-		const active = resolveHouseholdMediaActivation(configFor(true, true), key);
+		const active = resolveHouseholdMediaActivation(configFor(true, true, true), key);
 		expect(active).toMatchObject({ enabled: true, encryptionKey: key });
 		expect(active.enabled && active.eligibleBindingIds).toEqual(new Set(["parent-a"]));
 	});
