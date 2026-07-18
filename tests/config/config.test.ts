@@ -89,6 +89,7 @@ describe("config defaults", () => {
 		fs.writeFileSync(configPath(), JSON.stringify({}));
 
 		const cfg = loadConfig();
+		expect(cfg.householdReminders).toEqual({ enabled: false });
 		expect(cfg.webhooks).toEqual({
 			enabled: false,
 			port: 3015,
@@ -464,6 +465,50 @@ describe("config defaults", () => {
 			}),
 		);
 		expect(() => loadConfig()).toThrow(/reminder.*channel|channel.*reminder/i);
+	});
+
+	it("keeps all configured household reminder delivery switches dark by default", () => {
+		setConfigPath(configPath());
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					address: "whatsapp:+15551234567",
+					replyAddress: "whatsapp:+15551234567",
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+				},
+			],
+		};
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		let cfg = loadConfig();
+		expect(cfg.householdReminders.enabled).toBe(false);
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.remindersEnabled).toBeUndefined();
+
+		resetConfigCache();
+		const binding = profile.whatsappHouseholdBindings?.[0];
+		if (!binding) throw new Error("household test binding missing");
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				householdReminders: { enabled: true },
+				profiles: [
+					{
+						...profile,
+						whatsappHouseholdBindings: [{ ...binding, remindersEnabled: true }],
+					},
+				],
+			}),
+		);
+		cfg = loadConfig();
+		expect(cfg.householdReminders.enabled).toBe(true);
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.remindersEnabled).toBe(true);
 	});
 
 	it("rejects reserved, duplicate, and unsafe operator profiles", () => {

@@ -308,7 +308,29 @@ describe("Telclaude live MCP schedule tools", () => {
 		})) as { status: string; confirmationPrompt: string };
 		expect(updated.status).toBe("paused_confirmation");
 		expect(updated.confirmationPrompt).toContain("1. אישור");
-		expect(listCronJobs({ includeDisabled: true })).toEqual([]);
+		const expectDisabledWakeUp = () => {
+			const jobs = listCronJobs({ includeDisabled: true });
+			expect(jobs).toHaveLength(1);
+			expect(jobs[0]).toMatchObject({
+				id: `household-reminder:${created.reminderId}`,
+				enabled: false,
+				nextRunAtMs: null,
+				ownerId: null,
+				deliveryTarget: { kind: "origin" },
+				action: {
+					kind: "household-reminder",
+					reminderId: created.reminderId,
+					revision: 1,
+				},
+			});
+			expect(jobs[0]?.action).toEqual({
+				kind: "household-reminder",
+				reminderId: created.reminderId,
+				revision: 1,
+			});
+			expect(JSON.stringify(jobs[0])).not.toMatch(/להביא|תזכורת:|body|chatId|channel|subject/);
+		};
+		expectDisabledWakeUp();
 		const updateProposal = getPendingHouseholdReminderProposal(context.authority, context.binding);
 		if (!updateProposal) throw new Error("test household update proposal missing");
 		expect(
@@ -324,7 +346,7 @@ describe("Telclaude live MCP schedule tools", () => {
 		})) as { status: string; confirmationPrompt: string };
 		expect(cancelled.status).toBe("paused_confirmation");
 		expect(cancelled.confirmationPrompt).toContain("לאשר את ביטול התזכורת");
-		expect(listCronJobs({ includeDisabled: true })).toEqual([]);
+		expectDisabledWakeUp();
 	});
 
 	it("declines recurring household input and keeps private schedule behavior unchanged", async () => {

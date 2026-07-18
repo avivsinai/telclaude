@@ -384,18 +384,137 @@ describe("household reminder store", () => {
 			revision: reminder.revision,
 			scheduledForMs: reminder.schedule.resolvedAtMs,
 			nowMs: NOW_MS + 10_000,
+			leaseMs: 1_000,
 		});
 		const duplicate = store.claimHouseholdReminderFire({
 			reminderId: reminder.id,
 			revision: reminder.revision,
 			scheduledForMs: reminder.schedule.resolvedAtMs,
 			nowMs: NOW_MS + 11_000,
+			leaseMs: 1_000,
 		});
 
 		expect(first.created).toBe(true);
 		expect(duplicate.created).toBe(false);
-		expect(duplicate.fire).toEqual(first.fire);
-		expect(first.fire).toMatchObject({ state: "claimed", attemptCount: 1 });
+		expect(first).toMatchObject({ created: true, acquired: true });
+		expect(duplicate).toMatchObject({ created: false, acquired: false, fire: first.fire });
+		expect(first.fire).toMatchObject({
+			state: "claimed",
+			attemptCount: 1,
+			leaseExpiresAtMs: NOW_MS + 11_000,
+		});
+
+		const resumed = store.claimHouseholdReminderFire({
+			reminderId: reminder.id,
+			revision: reminder.revision,
+			scheduledForMs: reminder.schedule.resolvedAtMs,
+			nowMs: NOW_MS + 11_001,
+			leaseMs: 1_000,
+		});
+		expect(resumed).toMatchObject({
+			created: false,
+			acquired: true,
+			fire: { attemptCount: 2, state: "claimed" },
+		});
+		const prepared = store.markHouseholdReminderFirePrepared({
+			fireId: resumed.fire.fireId,
+			attemptCount: 2,
+			outboundRef: "scheduled-effect:fire-1",
+			edgePreparedHash: `sha256:${"d".repeat(64)}`,
+			idempotencyKey: `sha256:${"e".repeat(64)}`,
+			whatsappMessageId: "TC-REMINDER-1",
+			nowMs: NOW_MS + 11_100,
+		});
+		expect(prepared).toMatchObject({ state: "prepared", outboundRef: "scheduled-effect:fire-1" });
+		expect(
+			store.markHouseholdReminderFireDispatched({
+				fireId: resumed.fire.fireId,
+				attemptCount: 2,
+				nowMs: NOW_MS + 11_200,
+			}),
+		).toMatchObject({ state: "dispatched" });
+		const completed = store.completeHouseholdReminderFire({
+			fireId: resumed.fire.fireId,
+			attemptCount: 2,
+			receiptStatus: "sent",
+			platformMessageIdHash: `sha256:${"f".repeat(64)}`,
+			nowMs: NOW_MS + 11_300,
+		});
+		expect(completed).toMatchObject({ state: "delivered" });
+		expect(completed).not.toHaveProperty("leaseExpiresAtMs");
+		expect(store.getHouseholdReminderForAuthority(reminder.id, AUTHORITY_A)?.status).toBe(
+			"completed",
+		);
+	});
+
+	it("atomically installs, pauses, restores, and replaces the typed reminder wake-up", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const { getCronJob } = await import("../../src/cron/store.js");
+		const created = store.prepareHouseholdReminderCreate({
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "לקחת מסמכים",
+			source: { kind: "parent" },
+			schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+			nowMs: NOW_MS,
+		});
+		const jobId = `household-reminder:${created.reminder.id}`;
+		expect(getCronJob(jobId)).toBeNull();
+
+		store.confirmHouseholdReminderProposal({
+			proposalRef: created.proposal.ref,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			nowMs: NOW_MS + 1_000,
+		});
+		expect(getCronJob(jobId)).toMatchObject({
+			enabled: true,
+			nextRunAtMs: Date.parse("2026-08-01T06:00:00.000Z"),
+			action: { kind: "household-reminder", reminderId: created.reminder.id, revision: 1 },
+		});
+
+		const update = store.prepareHouseholdReminderUpdate({
+			reminderId: created.reminder.id,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "לקחת גם הפניה",
+			schedule: schedule("2026-08-01T10:00", "2026-08-01T07:00:00.000Z", 180),
+			nowMs: NOW_MS + 2_000,
+		});
+		expect(getCronJob(jobId)).toMatchObject({ enabled: false, nextRunAtMs: null });
+		store.rejectHouseholdReminderProposal({
+			proposalRef: update.proposal.ref,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			nowMs: NOW_MS + 3_000,
+		});
+		expect(getCronJob(jobId)).toMatchObject({ enabled: true, action: { revision: 1 } });
+
+		const replacement = store.prepareHouseholdReminderUpdate({
+			reminderId: created.reminder.id,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "לקחת גם הפניה",
+			schedule: schedule("2026-08-01T10:00", "2026-08-01T07:00:00.000Z", 180),
+			nowMs: NOW_MS + 4_000,
+		});
+		store.confirmHouseholdReminderProposal({
+			proposalRef: replacement.proposal.ref,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			nowMs: NOW_MS + 5_000,
+		});
+		expect(getCronJob(jobId)).toMatchObject({
+			enabled: true,
+			nextRunAtMs: Date.parse("2026-08-01T07:00:00.000Z"),
+			action: { revision: 2 },
+		});
 	});
 
 	it("adds consent and fire-ledger columns to an earlier Wave 1 database", async () => {

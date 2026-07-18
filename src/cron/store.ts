@@ -26,6 +26,8 @@ type CronJobRow = {
 	action_prompt: string | null;
 	action_allowed_skills_json: string | null;
 	action_preprocess_json: string | null;
+	action_reminder_id: string | null;
+	action_reminder_revision: number | null;
 	owner_id: string | null;
 	delivery_target_kind: string | null;
 	delivery_chat_id: number | null;
@@ -74,6 +76,19 @@ function parseAction(row: CronJobRow): CronAction {
 			return { kind: "private-heartbeat" };
 		case "curator-scan":
 			return { kind: "curator-scan" };
+		case "household-reminder":
+			if (
+				!row.action_reminder_id ||
+				!Number.isInteger(row.action_reminder_revision) ||
+				(row.action_reminder_revision ?? 0) < 1
+			) {
+				throw new Error(`cron job ${row.id} is missing household reminder authority`);
+			}
+			return {
+				kind: "household-reminder",
+				reminderId: row.action_reminder_id,
+				revision: row.action_reminder_revision as number,
+			};
 		case "agent-prompt":
 			if (!row.action_prompt) {
 				throw new Error(`cron job ${row.id} is missing action prompt`);
@@ -233,6 +248,8 @@ function encodeAction(action: CronAction): {
 	actionPrompt: string | null;
 	actionAllowedSkillsJson: string | null;
 	actionPreprocessJson: string | null;
+	actionReminderId: string | null;
+	actionReminderRevision: number | null;
 } {
 	switch (action.kind) {
 		case "social-heartbeat":
@@ -242,6 +259,8 @@ function encodeAction(action: CronAction): {
 				actionPrompt: null,
 				actionAllowedSkillsJson: null,
 				actionPreprocessJson: null,
+				actionReminderId: null,
+				actionReminderRevision: null,
 			};
 		case "private-heartbeat":
 			return {
@@ -250,6 +269,8 @@ function encodeAction(action: CronAction): {
 				actionPrompt: null,
 				actionAllowedSkillsJson: null,
 				actionPreprocessJson: null,
+				actionReminderId: null,
+				actionReminderRevision: null,
 			};
 		case "curator-scan":
 			return {
@@ -258,6 +279,18 @@ function encodeAction(action: CronAction): {
 				actionPrompt: null,
 				actionAllowedSkillsJson: null,
 				actionPreprocessJson: null,
+				actionReminderId: null,
+				actionReminderRevision: null,
+			};
+		case "household-reminder":
+			return {
+				actionKind: "household-reminder",
+				actionServiceId: null,
+				actionPrompt: null,
+				actionAllowedSkillsJson: null,
+				actionPreprocessJson: null,
+				actionReminderId: action.reminderId,
+				actionReminderRevision: action.revision,
 			};
 		case "agent-prompt":
 			return {
@@ -268,6 +301,8 @@ function encodeAction(action: CronAction): {
 					action.allowedSkills === undefined ? null : JSON.stringify(action.allowedSkills),
 				actionPreprocessJson:
 					action.preprocess === undefined ? null : JSON.stringify(action.preprocess),
+				actionReminderId: null,
+				actionReminderRevision: null,
 			};
 		default: {
 			const exhaustiveCheck: never = action;
@@ -326,6 +361,15 @@ function validateAddInput(input: CronAddInput, nowMs: number): number | null {
 			throw new Error("allowed skill names must be non-empty single-line strings");
 		}
 	}
+	if (input.action.kind === "household-reminder") {
+		if (!input.action.reminderId.trim()) throw new Error("household reminder id is required");
+		if (!Number.isInteger(input.action.revision) || input.action.revision < 1) {
+			throw new Error("household reminder revision must be a positive integer");
+		}
+		if (input.schedule.kind !== "at") {
+			throw new Error("household reminder wake-ups must use an at schedule");
+		}
+	}
 	if (input.deliveryTarget?.kind === "home" && !input.ownerId?.trim()) {
 		throw new Error("home delivery requires ownerId");
 	}
@@ -375,6 +419,8 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		actionPrompt,
 		actionAllowedSkillsJson,
 		actionPreprocessJson,
+		actionReminderId,
+		actionReminderRevision,
 	} = encodeAction(input.action);
 	const { deliveryTargetKind, deliveryChatId, deliveryThreadId } = encodeDeliveryTarget(
 		input.deliveryTarget,
@@ -387,6 +433,7 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 			id, name, enabled, running,
 			schedule_kind, schedule_at, schedule_every_ms, schedule_cron,
 			action_kind, action_service_id, action_prompt, action_allowed_skills_json, action_preprocess_json,
+			action_reminder_id, action_reminder_revision,
 			owner_id, delivery_target_kind, delivery_chat_id, delivery_thread_id,
 			next_run_at, last_run_at, last_status, last_error,
 			created_at, updated_at
@@ -394,7 +441,7 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		VALUES (
 			?, ?, ?, 0,
 			?, ?, ?, ?,
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, NULL, NULL, NULL,
 			?, ?
@@ -412,6 +459,8 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		actionPrompt,
 		actionAllowedSkillsJson,
 		actionPreprocessJson,
+		actionReminderId,
+		actionReminderRevision,
 		ownerId,
 		deliveryTargetKind,
 		deliveryChatId,
@@ -426,6 +475,80 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		throw new Error("Failed to create cron job");
 	}
 	return created;
+}
+
+export function upsertHouseholdReminderCronWakeup(input: {
+	readonly reminderId: string;
+	readonly revision: number;
+	readonly resolvedAtMs: number;
+	readonly nowMs: number;
+}): CronJob {
+	const reminderId = input.reminderId.trim();
+	if (!reminderId) throw new Error("household reminder id is required");
+	if (!Number.isInteger(input.revision) || input.revision < 1) {
+		throw new Error("household reminder revision must be a positive integer");
+	}
+	if (!Number.isSafeInteger(input.resolvedAtMs) || input.resolvedAtMs <= input.nowMs) {
+		throw new Error("household reminder wake-up must be in the future");
+	}
+	const id = `household-reminder:${reminderId}`;
+	getDb()
+		.prepare(
+			`INSERT INTO cron_jobs (
+			 id, name, enabled, running,
+			 schedule_kind, schedule_at, schedule_every_ms, schedule_cron,
+			 action_kind, action_service_id, action_prompt, action_allowed_skills_json,
+			 action_preprocess_json, action_reminder_id, action_reminder_revision,
+			 owner_id, delivery_target_kind, delivery_chat_id, delivery_thread_id,
+			 next_run_at, last_run_at, last_status, last_error, created_at, updated_at
+			) VALUES (?, 'household reminder wake-up', 1, 0,
+			 'at', ?, NULL, NULL,
+			 'household-reminder', NULL, NULL, NULL, NULL, ?, ?,
+			 NULL, 'origin', NULL, NULL,
+			 ?, NULL, NULL, NULL, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				 name = excluded.name, enabled = 1,
+			 schedule_kind = 'at', schedule_at = excluded.schedule_at,
+			 schedule_every_ms = NULL, schedule_cron = NULL,
+			 action_kind = 'household-reminder', action_service_id = NULL,
+			 action_prompt = NULL, action_allowed_skills_json = NULL,
+			 action_preprocess_json = NULL,
+			 action_reminder_id = excluded.action_reminder_id,
+			 action_reminder_revision = excluded.action_reminder_revision,
+			 owner_id = NULL, delivery_target_kind = 'origin',
+			 delivery_chat_id = NULL, delivery_thread_id = NULL,
+			 next_run_at = excluded.next_run_at,
+			 last_run_at = NULL, last_status = NULL, last_error = NULL,
+			 updated_at = excluded.updated_at`,
+		)
+		.run(
+			id,
+			input.resolvedAtMs,
+			reminderId,
+			input.revision,
+			input.resolvedAtMs,
+			input.nowMs,
+			input.nowMs,
+		);
+	const job = getCronJob(id);
+	if (!job) throw new Error("household reminder wake-up persistence failure");
+	return job;
+}
+
+export function pauseHouseholdReminderCronWakeup(
+	reminderIdInput: string,
+	nowMs = Date.now(),
+): boolean {
+	const reminderId = reminderIdInput.trim();
+	if (!reminderId) throw new Error("household reminder id is required");
+	return (
+		getDb()
+			.prepare(
+				`UPDATE cron_jobs SET enabled = 0, next_run_at = NULL, updated_at = ?
+				 WHERE id = ? AND action_kind = 'household-reminder' AND action_reminder_id = ?`,
+			)
+			.run(nowMs, `household-reminder:${reminderId}`, reminderId).changes > 0
+	);
 }
 
 export function removeCronJob(id: string): boolean {
@@ -588,6 +711,7 @@ export function completeClaimedCronJob(params: {
 	finishedAtMs?: number;
 	status: "success" | "error" | "skipped";
 	message: string;
+	retryAtMs?: number;
 }): CronJob | null {
 	const db = getDb();
 	const finishedAtMs = params.finishedAtMs ?? Date.now();
@@ -596,16 +720,45 @@ export function completeClaimedCronJob(params: {
 		// Re-read the current enabled state inside the transaction. A disable issued
 		// mid-run (setCronJobEnabled) must not be resurrected from the claim-time
 		// snapshot in params.job.
-		const current = db.prepare("SELECT enabled FROM cron_jobs WHERE id = ?").get(params.job.id) as
-			| { enabled: number }
+		const current = db
+			.prepare("SELECT enabled, action_kind, action_reminder_revision FROM cron_jobs WHERE id = ?")
+			.get(params.job.id) as
+			| { enabled: number; action_kind: string; action_reminder_revision: number | null }
 			| undefined;
+		const wakeupWasReplaced =
+			params.job.action.kind === "household-reminder" &&
+			current !== undefined &&
+			(current.action_kind !== "household-reminder" ||
+				current.action_reminder_revision !== params.job.action.revision);
+		if (wakeupWasReplaced) {
+			db.prepare(
+				`INSERT INTO cron_runs (job_id, started_at, finished_at, status, message)
+				 VALUES (?, ?, ?, ?, ?)`,
+			).run(params.job.id, params.startedAtMs, finishedAtMs, params.status, params.message);
+			db.prepare("UPDATE cron_jobs SET running = 0, updated_at = ? WHERE id = ?").run(
+				finishedAtMs,
+				params.job.id,
+			);
+			return;
+		}
 
 		let enabled = current ? current.enabled === 1 : params.job.enabled;
 		let nextRunAtMs: number | null = null;
 
 		if (params.job.schedule.kind === "at") {
-			enabled = false;
-			nextRunAtMs = null;
+			const retryAtMs = params.retryAtMs;
+			if (
+				enabled &&
+				params.job.action.kind === "household-reminder" &&
+				params.status === "error" &&
+				Number.isSafeInteger(retryAtMs) &&
+				(retryAtMs as number) > finishedAtMs
+			) {
+				nextRunAtMs = retryAtMs as number;
+			} else {
+				enabled = false;
+				nextRunAtMs = null;
+			}
 		} else if (enabled) {
 			nextRunAtMs = computeNextRunAtMs(params.job.schedule, finishedAtMs);
 		}

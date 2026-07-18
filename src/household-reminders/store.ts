@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import {
+	pauseHouseholdReminderCronWakeup,
+	upsertHouseholdReminderCronWakeup,
+} from "../cron/store.js";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { getDb } from "../storage/db.js";
 import { validateJerusalemOneShotSchedule } from "./time.js";
@@ -231,6 +235,7 @@ export function prepareHouseholdReminderUpdate(input: {
 		) {
 			throw new Error("household reminder changed while preparing update");
 		}
+		pauseHouseholdReminderCronWakeup(current.id, nowMs);
 	})();
 	return { reminder: requireReminder(current.id, current.revision), proposal };
 }
@@ -269,6 +274,7 @@ export function prepareHouseholdReminderCancellation(input: {
 		) {
 			throw new Error("household reminder changed while preparing cancellation");
 		}
+		pauseHouseholdReminderCronWakeup(current.id, nowMs);
 	})();
 	return { reminder: requireReminder(current.id, current.revision), proposal };
 }
@@ -374,6 +380,16 @@ export function confirmHouseholdReminderProposal(input: {
 			reminder = requireReminder(row.reminder_id, row.base_revision);
 		}
 		resolveProposal(row.ref, "confirmed", nowMs);
+		if (reminder.status === "scheduled") {
+			upsertHouseholdReminderCronWakeup({
+				reminderId: reminder.id,
+				revision: reminder.revision,
+				resolvedAtMs: reminder.schedule.resolvedAtMs,
+				nowMs,
+			});
+		} else {
+			pauseHouseholdReminderCronWakeup(reminder.id, nowMs);
+		}
 		return { ok: true as const, reminder };
 	})();
 }
@@ -413,9 +429,18 @@ export function rejectHouseholdReminderProposal(input: {
 			return { ok: false as const, code: "invalid_state" as const };
 		}
 		resolveProposal(row.ref, "rejected", nowMs);
+		const reminder = requireReminder(row.reminder_id, row.base_revision);
+		if (reminder.status === "scheduled") {
+			upsertHouseholdReminderCronWakeup({
+				reminderId: reminder.id,
+				revision: reminder.revision,
+				resolvedAtMs: reminder.schedule.resolvedAtMs,
+				nowMs,
+			});
+		}
 		return {
 			ok: true as const,
-			reminder: requireReminder(row.reminder_id, row.base_revision),
+			reminder,
 		};
 	})();
 }
@@ -438,6 +463,14 @@ export function getHouseholdReminderForAuthority(
 			authority.profileId,
 		) as ReminderRow | undefined;
 	return row ? rowToReminder(row) : null;
+}
+
+/** Internal scheduler read. Never expose through MCP or caller-selected authority. */
+export function getHouseholdReminderRevisionForFire(
+	reminderId: string,
+	revision: number,
+): HouseholdReminder | null {
+	return getReminderRevision(nonEmpty(reminderId, "reminderId"), positiveInt(revision, "revision"));
 }
 
 export function getConfirmedHouseholdReminderPolicySnapshot(
@@ -471,7 +504,10 @@ export function getConfirmedHouseholdReminderPolicySnapshot(
 		| ProposalRow
 		| undefined;
 	if (!proposalRow) return null;
-	const verified = verifyProposalPayload(proposalRow);
+	// Fire-time authorization replays the exact tuple accepted at confirmation.
+	// Do not reinterpret it through current tzdata: legislation/database updates
+	// may change the wall-time mapping after the durable instant was frozen.
+	const verified = verifyFrozenProposalPayload(proposalRow);
 	if (
 		!verified.ok ||
 		!verified.payload ||
@@ -542,11 +578,19 @@ export function claimHouseholdReminderFire(input: {
 	readonly revision: number;
 	readonly scheduledForMs: number;
 	readonly nowMs?: number;
-}): { readonly created: boolean; readonly fire: HouseholdReminderFire } {
+	readonly leaseMs?: number;
+	readonly maxAttempts?: number;
+}): {
+	readonly created: boolean;
+	readonly acquired: boolean;
+	readonly fire: HouseholdReminderFire;
+} {
 	const reminderId = nonEmpty(input.reminderId, "reminderId");
 	const revision = positiveInt(input.revision, "revision");
 	const scheduledForMs = timestamp(input.scheduledForMs, "scheduledForMs");
 	const nowMs = normalizeNow(input.nowMs);
+	const leaseMs = positiveInt(input.leaseMs ?? 60_000, "leaseMs");
+	const maxAttempts = positiveInt(input.maxAttempts ?? 3, "maxAttempts");
 	const db = getDb();
 	return db.transaction(() => {
 		const reminder = getReminderRevision(reminderId, revision);
@@ -563,17 +607,189 @@ export function claimHouseholdReminderFire(input: {
 			.prepare(
 				`INSERT OR IGNORE INTO household_reminder_fires (
 				 fire_id, reminder_id, revision, scheduled_for_ms, state,
-				 attempt_count, created_at_ms, updated_at_ms
-				) VALUES (?, ?, ?, ?, 'claimed', 1, ?, ?)`,
+				 attempt_count, lease_expires_at_ms, created_at_ms, updated_at_ms
+			) VALUES (?, ?, ?, ?, 'claimed', 1, ?, ?, ?)`,
 			)
-			.run(fireId, reminderId, revision, scheduledForMs, nowMs, nowMs);
-		const row = db
+			.run(fireId, reminderId, revision, scheduledForMs, nowMs + leaseMs, nowMs, nowMs);
+		let row = db
 			.prepare(
 				`SELECT * FROM household_reminder_fires
 				 WHERE reminder_id = ? AND revision = ? AND scheduled_for_ms = ?`,
 			)
 			.get(reminderId, revision, scheduledForMs) as FireRow;
-		return { created: result.changes === 1, fire: rowToFire(row) };
+		const created = result.changes === 1;
+		let acquired = created;
+		if (
+			!created &&
+			row.attempt_count < maxAttempts &&
+			["claimed", "prepared", "dispatched", "retryable_failed"].includes(row.state) &&
+			(row.lease_expires_at_ms === null || row.lease_expires_at_ms < nowMs)
+		) {
+			const resumed = db
+				.prepare(
+					`UPDATE household_reminder_fires
+					 SET state = 'claimed', attempt_count = attempt_count + 1,
+					     lease_expires_at_ms = ?, failure_class = NULL, updated_at_ms = ?
+					 WHERE fire_id = ? AND attempt_count = ? AND state = ?`,
+				)
+				.run(nowMs + leaseMs, nowMs, row.fire_id, row.attempt_count, row.state);
+			acquired = resumed.changes === 1;
+			if (acquired) {
+				row = db
+					.prepare("SELECT * FROM household_reminder_fires WHERE fire_id = ?")
+					.get(fireId) as FireRow;
+			}
+		}
+		return { created, acquired, fire: rowToFire(row) };
+	})();
+}
+
+export function getHouseholdReminderFire(fireId: string): HouseholdReminderFire | null {
+	const row = getDb()
+		.prepare("SELECT * FROM household_reminder_fires WHERE fire_id = ?")
+		.get(nonEmpty(fireId, "fireId")) as FireRow | undefined;
+	return row ? rowToFire(row) : null;
+}
+
+export function markHouseholdReminderFirePrepared(input: {
+	readonly fireId: string;
+	readonly attemptCount: number;
+	readonly outboundRef: string;
+	readonly edgePreparedHash: Sha256Ref;
+	readonly idempotencyKey: string;
+	readonly whatsappMessageId: string;
+	readonly nowMs?: number;
+}): HouseholdReminderFire | null {
+	const nowMs = normalizeNow(input.nowMs);
+	const current = getHouseholdReminderFire(input.fireId);
+	if (
+		current?.state !== "claimed" ||
+		current.attemptCount !== positiveInt(input.attemptCount, "attemptCount") ||
+		(current.leaseExpiresAtMs ?? 0) < nowMs
+	)
+		return null;
+	for (const [existing, expected] of [
+		[current.outboundRef, nonEmpty(input.outboundRef, "outboundRef")],
+		[current.edgePreparedHash, sha256Ref(input.edgePreparedHash)],
+		[current.idempotencyKey, nonEmpty(input.idempotencyKey, "idempotencyKey")],
+		[current.whatsappMessageId, nonEmpty(input.whatsappMessageId, "whatsappMessageId")],
+	] as const) {
+		if (existing !== undefined && existing !== expected) return null;
+	}
+	const changed = getDb()
+		.prepare(
+			`UPDATE household_reminder_fires SET state = 'prepared',
+			 outbound_ref = ?, edge_prepared_hash = ?, idempotency_key = ?, whatsapp_message_id = ?,
+			 updated_at_ms = ? WHERE fire_id = ? AND state = 'claimed' AND attempt_count = ?`,
+		)
+		.run(
+			input.outboundRef,
+			input.edgePreparedHash,
+			input.idempotencyKey,
+			input.whatsappMessageId,
+			nowMs,
+			input.fireId,
+			input.attemptCount,
+		);
+	return changed.changes === 1 ? getHouseholdReminderFire(input.fireId) : null;
+}
+
+export function markHouseholdReminderFireDispatched(input: {
+	readonly fireId: string;
+	readonly attemptCount: number;
+	readonly nowMs?: number;
+}): HouseholdReminderFire | null {
+	const nowMs = normalizeNow(input.nowMs);
+	const changed = getDb()
+		.prepare(
+			`UPDATE household_reminder_fires SET state = 'dispatched', updated_at_ms = ?
+		 WHERE fire_id = ? AND state = 'prepared' AND attempt_count = ?
+		 AND lease_expires_at_ms >= ?`,
+		)
+		.run(
+			nowMs,
+			nonEmpty(input.fireId, "fireId"),
+			positiveInt(input.attemptCount, "attemptCount"),
+			nowMs,
+		);
+	return changed.changes === 1 ? getHouseholdReminderFire(input.fireId) : null;
+}
+
+export function completeHouseholdReminderFire(input: {
+	readonly fireId: string;
+	readonly attemptCount: number;
+	readonly receiptStatus: string;
+	readonly platformMessageIdHash?: Sha256Ref;
+	readonly nowMs?: number;
+}): HouseholdReminderFire | null {
+	const nowMs = normalizeNow(input.nowMs);
+	return getDb().transaction(() => {
+		const row = getDb()
+			.prepare("SELECT * FROM household_reminder_fires WHERE fire_id = ?")
+			.get(nonEmpty(input.fireId, "fireId")) as FireRow | undefined;
+		if (row?.state !== "dispatched" || row.attempt_count !== input.attemptCount) return null;
+		const changed = getDb()
+			.prepare(
+				`UPDATE household_reminder_fires SET state = 'delivered', lease_expires_at_ms = NULL,
+			 receipt_status = ?, platform_message_id_hash = ?, updated_at_ms = ?
+			 WHERE fire_id = ? AND state = 'dispatched' AND attempt_count = ?`,
+			)
+			.run(
+				nonEmpty(input.receiptStatus, "receiptStatus"),
+				input.platformMessageIdHash ?? null,
+				nowMs,
+				row.fire_id,
+				input.attemptCount,
+			);
+		if (changed.changes !== 1) return null;
+		setReminderStatus(row.reminder_id, row.revision, "scheduled", "completed", nowMs);
+		pauseHouseholdReminderCronWakeup(row.reminder_id, nowMs);
+		return getHouseholdReminderFire(row.fire_id);
+	})();
+}
+
+export function failHouseholdReminderFire(input: {
+	readonly fireId: string;
+	readonly attemptCount: number;
+	readonly failureClass: string;
+	readonly retryable: boolean;
+	readonly maxAttempts?: number;
+	readonly nowMs?: number;
+}): HouseholdReminderFire | null {
+	const nowMs = normalizeNow(input.nowMs);
+	const maxAttempts = positiveInt(input.maxAttempts ?? 3, "maxAttempts");
+	const nextState =
+		input.retryable && input.attemptCount < maxAttempts ? "retryable_failed" : "dead_lettered";
+	return getDb().transaction(() => {
+		const row = getDb()
+			.prepare("SELECT * FROM household_reminder_fires WHERE fire_id = ?")
+			.get(nonEmpty(input.fireId, "fireId")) as FireRow | undefined;
+		if (
+			!row ||
+			!["claimed", "prepared", "dispatched"].includes(row.state) ||
+			row.attempt_count !== positiveInt(input.attemptCount, "attemptCount")
+		)
+			return null;
+		const changed = getDb()
+			.prepare(
+				`UPDATE household_reminder_fires SET state = ?, lease_expires_at_ms = NULL,
+			 failure_class = ?, updated_at_ms = ?
+			 WHERE fire_id = ? AND state = ? AND attempt_count = ?`,
+			)
+			.run(
+				nextState,
+				nonEmpty(input.failureClass, "failureClass"),
+				nowMs,
+				row.fire_id,
+				row.state,
+				input.attemptCount,
+			);
+		if (changed.changes !== 1) return null;
+		if (nextState === "dead_lettered") {
+			setReminderStatus(row.reminder_id, row.revision, "scheduled", "failed_terminal", nowMs);
+			pauseHouseholdReminderCronWakeup(row.reminder_id, nowMs);
+		}
+		return getHouseholdReminderFire(row.fire_id);
 	})();
 }
 
@@ -997,6 +1213,15 @@ function expireProposal(row: ProposalRow, nowMs: number): boolean {
 	const next = row.action === "create" ? "cancelled" : "scheduled";
 	if (!setReminderStatus(row.reminder_id, row.base_revision, expected, next, nowMs)) return false;
 	resolveProposal(row.ref, "expired", nowMs);
+	const reminder = requireReminder(row.reminder_id, row.base_revision);
+	if (reminder.status === "scheduled") {
+		upsertHouseholdReminderCronWakeup({
+			reminderId: reminder.id,
+			revision: reminder.revision,
+			resolvedAtMs: reminder.schedule.resolvedAtMs,
+			nowMs,
+		});
+	}
 	return true;
 }
 
@@ -1027,6 +1252,77 @@ function verifyProposalPayload(
 	} catch {
 		return { ok: false };
 	}
+}
+
+function verifyFrozenProposalPayload(
+	row: ProposalRow,
+): { readonly ok: true; readonly payload: ReminderPayload } | { readonly ok: false } {
+	try {
+		if (!row.proposed_payload_json || row.action === "cancel") return { ok: false };
+		const stored = JSON.parse(row.proposed_payload_json) as ReminderPayload;
+		const text = normalizeReminderText(stored.text);
+		const label = stored.label ? normalizeLabel(stored.label) : undefined;
+		const source = normalizeSource(stored.source);
+		const schedule = normalizeFrozenSchedule(stored.schedule);
+		const payload: ReminderPayload = {
+			text,
+			...(label ? { label } : {}),
+			source,
+			schedule,
+			contentHash: canonicalSha256({
+				domain: "telclaude.household-reminder-content.v1",
+				text,
+				label: label ?? null,
+				source,
+			}),
+			scheduleHash: canonicalSha256({
+				domain: "telclaude.household-reminder-schedule.v1",
+				...schedule,
+			}),
+		};
+		const proposalHash = canonicalSha256({
+			domain: "telclaude.household-reminder-proposal.v1",
+			action: row.action,
+			reminderId: row.reminder_id,
+			baseRevision: row.base_revision,
+			proposedRevision: row.proposed_revision,
+			authority: {
+				actorId: row.actor_id,
+				subjectUserId: row.subject_user_id,
+				profileId: row.profile_id,
+			},
+			bindingFingerprint: row.binding_fingerprint,
+			consentHash: row.consent_hash,
+			payload,
+		});
+		return proposalHash === row.proposal_hash ? { ok: true, payload } : { ok: false };
+	} catch {
+		return { ok: false };
+	}
+}
+
+function normalizeFrozenSchedule(
+	schedule: HouseholdReminderOneShotSchedule,
+): HouseholdReminderOneShotSchedule {
+	if (
+		schedule.timeZone !== "Asia/Jerusalem" ||
+		!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(schedule.localDateTime) ||
+		!Number.isInteger(schedule.offsetMinutes) ||
+		Math.abs(schedule.offsetMinutes) > 24 * 60
+	) {
+		throw new Error("stored household reminder schedule is invalid");
+	}
+	const resolvedAtMs = timestamp(schedule.resolvedAtMs, "resolvedAtMs");
+	if (schedule.resolvedAt !== new Date(resolvedAtMs).toISOString()) {
+		throw new Error("stored household reminder instant is invalid");
+	}
+	return {
+		timeZone: "Asia/Jerusalem",
+		localDateTime: schedule.localDateTime,
+		resolvedAtMs,
+		resolvedAt: schedule.resolvedAt,
+		offsetMinutes: schedule.offsetMinutes,
+	};
 }
 
 function isScheduleWithinWindow(

@@ -406,6 +406,8 @@ function initializeSchema(database: Database.Database): void {
 			action_prompt TEXT,
 			action_allowed_skills_json TEXT,
 			action_preprocess_json TEXT,
+			action_reminder_id TEXT,
+			action_reminder_revision INTEGER,
 			owner_id TEXT,
 			delivery_target_kind TEXT NOT NULL DEFAULT 'origin',
 			delivery_chat_id INTEGER,
@@ -795,6 +797,18 @@ function initializeSchema(database: Database.Database): void {
 		"cron_jobs",
 		"action_preprocess_json",
 		"ALTER TABLE cron_jobs ADD COLUMN action_preprocess_json TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_reminder_id",
+		"ALTER TABLE cron_jobs ADD COLUMN action_reminder_id TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_reminder_revision",
+		"ALTER TABLE cron_jobs ADD COLUMN action_reminder_revision INTEGER",
 	);
 	ensureColumn(database, "cron_jobs", "owner_id", "ALTER TABLE cron_jobs ADD COLUMN owner_id TEXT");
 	ensureColumn(

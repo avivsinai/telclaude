@@ -510,6 +510,49 @@ describe("outbound delivery dispatcher", () => {
 		]);
 	});
 
+	it("contains failure-classification hooks so they cannot veto or mutate dispatch", async () => {
+		let connectorCalls = 0;
+		const original = preparedOutbound({
+			channel: "whatsapp",
+			resolvedDestination: {
+				kind: "address",
+				addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+				conversationId: "relay-conversation-token",
+			},
+		});
+		const connector = {
+			channel: "whatsapp" as const,
+			async send() {
+				connectorCalls += 1;
+				return {
+					ok: false as const,
+					code: "whatsapp_transport_timeout",
+					reason: "timed out",
+					retryable: true,
+				};
+			},
+		};
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (classificationContext, failure) => {
+				(classificationContext as { outboundRef: string }).outboundRef = "mutated";
+				(failure as { retryable: boolean }).retryable = false;
+				throw new Error("classification sink unavailable");
+			},
+		});
+
+		await expect(dispatch(original)).resolves.toMatchObject({
+			outboundRef: original.outboundRef,
+			deliveryStatus: "failed",
+			retry: { idempotencyKey: original.idempotencyKey },
+		});
+		expect(connectorCalls).toBe(1);
+		expect(original.outboundRef).not.toBe("mutated");
+	});
+
 	it("fails closed before WhatsApp sidecar I/O when the prepared recipient is not the operator allowlist recipient", async () => {
 		let sidecarCalls = 0;
 		const failures: unknown[] = [];

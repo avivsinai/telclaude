@@ -12,6 +12,7 @@ import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp
 import { redactSecrets } from "../../security/output-filter.js";
 import {
 	type AttachmentRef,
+	type DeliveryReceipt,
 	DeliveryReceiptSchema,
 	EdgeAdapterSchemaVersions,
 	type PreparedOutbound,
@@ -109,8 +110,21 @@ export type TelclaudeMcpLedgerExecuteDependencies = Pick<
 	): Promise<TelclaudeMcpBrowserWriteExecuteResult>;
 	scheduledOutboundExecute(request: {
 		readonly outboundRef: string;
-	}): Promise<TelclaudeMcpSideEffectAuthorizeResult>;
+		/**
+		 * Final durable fire CAS. It runs after immediate policy revalidation and
+		 * before the transport dispatcher; a loser cannot send.
+		 */
+		readonly beforeDispatch: () => boolean | Promise<boolean>;
+	}): Promise<TelclaudeMcpScheduledOutboundExecuteResult>;
 };
+
+export type TelclaudeMcpScheduledOutboundExecuteResult =
+	| {
+			readonly ok: true;
+			readonly record: TelclaudeMcpSideEffectRecord;
+			readonly receipt: DeliveryReceipt;
+	  }
+	| Extract<TelclaudeMcpSideEffectAuthorizeResult, { ok: false }>;
 
 export type TelclaudeMcpProviderSidecarApprovalTokenRequest = {
 	readonly record: TelclaudeMcpProviderSideEffectRecord;
@@ -346,11 +360,27 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 					options.ledger.get(request.outboundRef) ?? record,
 				);
 			}
+			let fireClaimed = false;
+			try {
+				fireClaimed = await request.beforeDispatch();
+			} catch {
+				// A failed durable CAS is classification-only here: it cannot authorize
+				// or alter the prepared outbound, and the dispatcher is never reached.
+			}
+			if (!fireClaimed) {
+				options.ledger.markFailed(request.outboundRef, "scheduled_outbound_fire_cas_failed");
+				return terminalFailure(
+					"scheduled_outbound_fire_cas_failed",
+					"scheduled outbound fire is no longer dispatchable",
+					options.ledger.get(request.outboundRef) ?? record,
+				);
+			}
 			const delivered = await executeOutboundDelivery(options.outboundDeliveryDispatcher, record);
 			if (!delivered.ok) {
 				return releaseAndReport(options.ledger, request.outboundRef, delivered);
 			}
-			return options.ledger.markExecuted(request.outboundRef, approvalId);
+			const executed = options.ledger.markExecuted(request.outboundRef, approvalId);
+			return executed.ok ? { ...executed, receipt: delivered.receipt } : executed;
 		},
 		async browserWriteExecute(request) {
 			const nowMs = options.nowMs?.() ?? Date.now();
@@ -1063,7 +1093,14 @@ async function liveHouseholdReplyBindingFailure(
 async function executeOutboundDelivery(
 	dispatcher: OutboundDeliveryDispatcher,
 	record: TelclaudeMcpDeliverySideEffectRecord,
-): Promise<TelclaudeMcpSideEffectAuthorizeResult> {
+): Promise<
+	| {
+			readonly ok: true;
+			readonly record: TelclaudeMcpSideEffectRecord;
+			readonly receipt: DeliveryReceipt;
+	  }
+	| Extract<TelclaudeMcpSideEffectAuthorizeResult, { ok: false }>
+> {
 	const prepared = preparedOutboundForDelivery(record);
 	let receipt: ReturnType<typeof DeliveryReceiptSchema.parse>;
 	try {
@@ -1089,7 +1126,7 @@ async function executeOutboundDelivery(
 			record,
 		);
 	}
-	return { ok: true, record };
+	return { ok: true, record, receipt };
 }
 
 function preparedOutboundForDelivery(

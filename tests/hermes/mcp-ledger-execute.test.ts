@@ -742,6 +742,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const scheduled = harness.ledger.prepare(scheduledOutboundPrepareInput());
 		harness.accept("scheduled-token", scheduled);
 		const dispatched: PreparedOutbound[] = [];
+		const ordering: string[] = [];
 		let authorizeCalls = 0;
 		let immediateRevalidationCalls = 0;
 		const scheduledOutboundAuthorizer = Object.assign(
@@ -756,6 +757,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			{
 				revalidate: async () => {
 					immediateRevalidationCalls += 1;
+					ordering.push("revalidate");
 					return { ok: true as const };
 				},
 			},
@@ -764,6 +766,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			ledger: harness.ledger,
 			scheduledOutboundAuthorizer,
 			outboundDeliveryDispatcher: async (prepared) => {
+				ordering.push("dispatch");
 				dispatched.push(prepared);
 				return sentOutboundDeliveryDispatcher(prepared);
 			},
@@ -771,9 +774,19 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 
 		await expect(
-			dependencies.scheduledOutboundExecute({ outboundRef: scheduled.ref }),
+			dependencies.scheduledOutboundExecute({
+				outboundRef: scheduled.ref,
+				beforeDispatch: () => {
+					ordering.push("fire-cas");
+					return true;
+				},
+			}),
 		).resolves.toEqual({
 			ok: true,
+			receipt: expect.objectContaining({
+				outboundRef: scheduled.edgePreparedRef,
+				deliveryStatus: "sent",
+			}),
 			record: expect.objectContaining({
 				ref: scheduled.ref,
 				kind: "scheduled-outbound",
@@ -783,6 +796,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 		expect(authorizeCalls).toBe(1);
 		expect(immediateRevalidationCalls).toBe(1);
+		expect(ordering).toEqual(["revalidate", "fire-cas", "dispatch"]);
 		expect(dispatched).toEqual([
 			expect.objectContaining({
 				outboundRef: scheduled.edgePreparedRef,
@@ -825,7 +839,10 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 
 		await expect(
-			dependencies.scheduledOutboundExecute({ outboundRef: scheduled.ref }),
+			dependencies.scheduledOutboundExecute({
+				outboundRef: scheduled.ref,
+				beforeDispatch: () => true,
+			}),
 		).resolves.toMatchObject({
 			ok: false,
 			code: "reminder_binding_drift",
@@ -834,6 +851,42 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 		expect(dispatcherCalls).toBe(0);
 		expect(harness.ledger.get(scheduled.ref)).toMatchObject({ status: "failed" });
+	});
+
+	it("fails a claimed scheduled outbound before transport when the fire CAS loses", async () => {
+		const harness = createLedgerHarness();
+		const scheduled = harness.ledger.prepare(scheduledOutboundPrepareInput());
+		harness.accept("scheduled-token", scheduled);
+		let dispatcherCalls = 0;
+		const dependencies = createTelclaudeMcpLedgerExecuteDependencies({
+			ledger: harness.ledger,
+			scheduledOutboundAuthorizer: Object.assign(
+				async () => ({
+					ok: true as const,
+					approvalToken: "scheduled-token",
+					approvalId: "scheduled-token",
+				}),
+				{ revalidate: async () => ({ ok: true as const }) },
+			),
+			outboundDeliveryDispatcher: async (prepared) => {
+				dispatcherCalls += 1;
+				return sentOutboundDeliveryDispatcher(prepared);
+			},
+			nowMs: harness.nowMs,
+		});
+
+		await expect(
+			dependencies.scheduledOutboundExecute({
+				outboundRef: scheduled.ref,
+				beforeDispatch: () => false,
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			code: "scheduled_outbound_fire_cas_failed",
+			retryable: false,
+			record: { ref: scheduled.ref, status: "failed" },
+		});
+		expect(dispatcherCalls).toBe(0);
 	});
 
 	it("keeps scheduled execution out of the MCP bridge and rejects standard records", async () => {
@@ -847,7 +900,10 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 		expect(bridge).not.toHaveProperty("tc_scheduled_outbound_execute");
 		await expect(
-			dependencies.scheduledOutboundExecute({ outboundRef: standard.ref }),
+			dependencies.scheduledOutboundExecute({
+				outboundRef: standard.ref,
+				beforeDispatch: () => true,
+			}),
 		).resolves.toMatchObject({
 			ok: false,
 			code: "effect_kind_mismatch",
@@ -1491,20 +1547,16 @@ function scheduledOutboundPrepareInput(): TelclaudeMcpScheduledOutboundSideEffec
 			body: requestedBody,
 			mediaRefs: [],
 		}),
-		idempotencyKey:
-			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		idempotencyKey: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		householdReminderPolicy: {
 			reminderId: "reminder-1",
 			fireId: "reminder-fire-1",
 			revision: 1,
 			confirmedProposalHash:
 				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			scheduleHash:
-				"sha256:2222222222222222222222222222222222222222222222222222222222222222",
-			contentHash:
-				"sha256:3333333333333333333333333333333333333333333333333333333333333333",
-			bindingFingerprint:
-				"sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			scheduleHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			contentHash: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			bindingFingerprint: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
 			actorId: "household:whatsapp:parent-a",
 			subjectUserId: "household:parent-a",
 			profileId: "parent-a",

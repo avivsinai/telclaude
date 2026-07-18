@@ -84,6 +84,7 @@ async function executeClaimedJob(
 			startedAtMs,
 			status: result.ok ? "success" : "error",
 			message: result.message,
+			...(result.retryAtMs === undefined ? {} : { retryAtMs: result.retryAtMs }),
 		});
 		if (!result.ok) {
 			logger.warn(

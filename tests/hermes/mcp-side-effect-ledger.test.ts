@@ -192,8 +192,7 @@ describe("Telclaude MCP side-effect ledger", () => {
 		expect(prepared).not.toHaveProperty("approverActorId");
 		expect(prepared).not.toHaveProperty("turnConversationRef");
 		expect(binding).toMatchObject({
-			domainSeparator:
-				"telclaude.hermes.mcp.side-effect.scheduled-outbound.approval.v1",
+			domainSeparator: "telclaude.hermes.mcp.side-effect.scheduled-outbound.approval.v1",
 			kind: "scheduled-outbound",
 			householdReminderPolicy: scheduledOutboundInput().householdReminderPolicy,
 			preparedMediaRefs: [],
@@ -219,6 +218,24 @@ describe("Telclaude MCP side-effect ledger", () => {
 			"scheduled outbound paramsHash does not match current policy/prepared outbound",
 			"scheduled outbound bodyHash does not match current policy/prepared outbound",
 		]);
+	});
+
+	it("uses a distinct deterministic scheduled ref namespace without consuming standard refs", () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "test" }),
+			nowMs: () => 1_000,
+			makeRef: () => "effect-standard-ref",
+		});
+		const scheduled = ledger.prepare(
+			scheduledOutboundInput({ ref: "scheduled-effect:reminder-fire-opaque" }),
+		);
+		expect(scheduled.ref).toBe("scheduled-effect:reminder-fire-opaque");
+		expect(() =>
+			ledger.prepare(scheduledOutboundInput({ ref: "effect-standard-ref" as never })),
+		).toThrow(/scheduled-effect namespace/);
+
+		const standard = ledger.prepare(outboundInput());
+		expect(standard.ref).toBe("effect-standard-ref");
 	});
 
 	it("rejects standard or human authority fields and non-household media-bearing scheduled sends", () => {
@@ -701,12 +718,9 @@ function scheduledOutboundInput(
 			revision: 1,
 			confirmedProposalHash:
 				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			scheduleHash:
-				"sha256:2222222222222222222222222222222222222222222222222222222222222222",
-			contentHash:
-				"sha256:3333333333333333333333333333333333333333333333333333333333333333",
-			bindingFingerprint:
-				"sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			scheduleHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			contentHash: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			bindingFingerprint: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
 			actorId: "household:whatsapp:parent-a",
 			subjectUserId: "household:parent-a",
 			profileId: "parent-a",

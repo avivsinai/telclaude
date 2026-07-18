@@ -291,6 +291,8 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 
 export type TelclaudeMcpScheduledOutboundSideEffectPrepareInput = {
 	readonly kind: "scheduled-outbound";
+	/** Server-owned deterministic fire ref; never accepted from an MCP caller. */
+	readonly ref?: `scheduled-effect:${string}`;
 	readonly source: "household-reminder-system.v1";
 	readonly actorId: string;
 	readonly profileId: string;
@@ -872,7 +874,7 @@ function prepareRecord(
 		case "outbound":
 			return prepareOutboundRecord(input, makeRef, nowMs, defaultTtlMs);
 		case "scheduled-outbound":
-			return prepareScheduledOutboundRecord(input, makeRef, nowMs, defaultTtlMs);
+			return prepareScheduledOutboundRecord(input, nowMs, defaultTtlMs);
 		case "browser-write":
 			return prepareBrowserWriteRecord(input, makeRef, nowMs, defaultTtlMs);
 		default:
@@ -882,7 +884,6 @@ function prepareRecord(
 
 function prepareScheduledOutboundRecord(
 	input: TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
-	makeRef: () => string,
 	nowMs: number,
 	defaultTtlMs: number,
 ): TelclaudeMcpScheduledOutboundSideEffectRecord {
@@ -913,7 +914,7 @@ function prepareScheduledOutboundRecord(
 		profileId,
 	});
 	const base = {
-		ref: requiredTrimmed(makeRef(), "ref"),
+		ref: normalizeScheduledOutboundRef(input.ref ?? `scheduled-effect:${crypto.randomUUID()}`),
 		kind: "scheduled-outbound" as const,
 		source: "household-reminder-system.v1" as const,
 		actorId,
@@ -952,6 +953,14 @@ function prepareScheduledOutboundRecord(
 		createdAtMs: nowMs,
 		expiresAtMs: nowMs + ttlMs,
 	});
+}
+
+function normalizeScheduledOutboundRef(value: string): `scheduled-effect:${string}` {
+	const normalized = requiredTrimmed(value, "ref");
+	if (!/^scheduled-effect:[A-Za-z0-9._:-]{1,240}$/.test(normalized)) {
+		throw new Error("scheduled outbound ref must use the scheduled-effect namespace");
+	}
+	return normalized as `scheduled-effect:${string}`;
 }
 
 function prepareBrowserWriteRecord(

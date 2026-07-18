@@ -36,6 +36,7 @@ export type ResolvedWhatsAppHouseholdBinding = {
 	readonly reminderConsent?: NonNullable<
 		OperatorProfileConfig["whatsappHouseholdBindings"]
 	>[number]["reminderConsent"];
+	readonly remindersEnabled?: boolean;
 	readonly profile: EffectiveOperatorProfile;
 };
 
@@ -132,6 +133,9 @@ export function resolveWhatsAppHouseholdBinding(
 			displayName: binding.displayName,
 			...(binding.providerConsent ? { providerConsent: { ...binding.providerConsent } } : {}),
 			...(binding.reminderConsent ? { reminderConsent: { ...binding.reminderConsent } } : {}),
+			...(binding.remindersEnabled === undefined
+				? {}
+				: { remindersEnabled: binding.remindersEnabled }),
 			profile,
 		};
 	}
