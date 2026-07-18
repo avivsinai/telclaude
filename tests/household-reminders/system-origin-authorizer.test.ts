@@ -5,18 +5,16 @@ import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
-import {
-	createHouseholdReminderSystemOriginAuthorizer,
-} from "../../src/household-reminders/system-origin-authorizer.js";
-import {
-	createHouseholdReminderSystemOriginPolicyRevalidator,
-	householdReminderScheduledOutboundIdempotencyKey,
-} from "../../src/household-reminders/system-origin-policy.js";
 import type { HouseholdReminderContext } from "../../src/household-reminders/binding.js";
 import {
 	householdReminderBindingFingerprint,
 	householdReminderConsentHash,
 } from "../../src/household-reminders/store.js";
+import { createHouseholdReminderSystemOriginAuthorizer } from "../../src/household-reminders/system-origin-authorizer.js";
+import {
+	createHouseholdReminderSystemOriginPolicyRevalidator,
+	householdReminderScheduledOutboundIdempotencyKey,
+} from "../../src/household-reminders/system-origin-policy.js";
 import type { HouseholdReminder } from "../../src/household-reminders/types.js";
 
 const HASH = (char: string) => `sha256:${char.repeat(64)}` as `sha256:${string}`;
@@ -54,17 +52,51 @@ describe("household reminder system-origin authorization", () => {
 		expect(vault.signCalls).toHaveLength(2);
 	});
 
+	it("authorizes an appointment-derived fire from exact stored observation evidence", async () => {
+		const fixture = makeFixture({ authorizationKind: "appointment-derived" });
+		const vault = new MockVaultClient();
+		const authorize = createHouseholdReminderSystemOriginAuthorizer({
+			revalidate: fixture.revalidate,
+			vaultClient: vault,
+			nowSeconds: () => 100,
+			makeJti: () => "derived-reminder-system",
+		});
+
+		await expect(authorize(fixture.record)).resolves.toMatchObject({
+			ok: true,
+			approvalId: "derived-reminder-system",
+		});
+		expect(fixture.record.householdReminderPolicy).toMatchObject({
+			authorizationKind: "appointment-derived",
+			sourceObservationHash: HASH("6"),
+		});
+		expect(vault.signCalls).toHaveLength(1);
+	});
+
 	it.each([
 		["global kill switch", { switches: { globalEnabled: false } }, "reminder_policy_disabled"],
-		["household kill switch", { switches: { householdEnabled: false } }, "reminder_policy_disabled"],
+		[
+			"household kill switch",
+			{ switches: { householdEnabled: false } },
+			"reminder_policy_disabled",
+		],
 		["parent kill switch", { switches: { parentEnabled: false } }, "reminder_policy_disabled"],
 		["missing fire", { fire: null }, "reminder_fire_not_authorized"],
 		["wrong fire state", { fire: { state: "claimed" } }, "reminder_fire_not_authorized"],
 		["revoked consent", { context: null }, "reminder_context_not_authorized"],
-		["changed recipient", { context: { recipientPrincipalHash: HASH("9") } }, "reminder_binding_drift"],
+		[
+			"changed recipient",
+			{ context: { recipientPrincipalHash: HASH("9") } },
+			"reminder_binding_drift",
+		],
 		["changed body", { renderedBody: "תזכורת: תוכן אחר" }, "reminder_outbound_drift"],
 		["changed destination", { destination: "+972509999999" }, "reminder_outbound_drift"],
 		["changed confirmation", { confirmedProposalHash: HASH("8") }, "reminder_confirmation_drift"],
+		[
+			"changed derived observation",
+			{ authorizationKind: "appointment-derived", snapshotObservationHash: HASH("8") },
+			"reminder_source_observation_drift",
+		],
 		["changed schedule", { scheduleHash: HASH("7") }, "reminder_revision_drift"],
 	] as const)("fails closed on %s without signing", async (_label, mutation, expectedCode) => {
 		const fixture = makeFixture(mutation);
@@ -106,15 +138,22 @@ type FixtureMutation = {
 	readonly renderedBody?: string;
 	readonly destination?: string;
 	readonly confirmedProposalHash?: `sha256:${string}`;
+	readonly authorizationKind?: "parent-confirmed" | "appointment-derived";
+	readonly snapshotObservationHash?: `sha256:${string}`;
 	readonly scheduleHash?: `sha256:${string}`;
 };
 
 function makeFixture(mutation: FixtureMutation = {}) {
 	const baselineContext = contextFixture(HASH("5"));
+	const authorizationKind = mutation.authorizationKind ?? "parent-confirmed";
 	const reminder = reminderFixture({
 		scheduleHash: mutation.scheduleHash,
 		bindingFingerprint: householdReminderBindingFingerprint(baselineContext.binding),
 		consentHash: householdReminderConsentHash(baselineContext.consent),
+		source:
+			authorizationKind === "appointment-derived"
+				? { kind: "clalit-appointment", observationHash: HASH("6") }
+				: { kind: "parent" },
 	});
 	const context =
 		mutation.context === null
@@ -180,7 +219,9 @@ function makeFixture(mutation: FixtureMutation = {}) {
 			reminderId: reminder.id,
 			fireId: "reminder-fire-1",
 			revision: reminder.revision,
-			confirmedProposalHash: HASH("1"),
+			...(authorizationKind === "parent-confirmed"
+				? { authorizationKind, confirmedProposalHash: HASH("1") }
+				: { authorizationKind, sourceObservationHash: HASH("6") }),
 			scheduleHash: HASH("2"),
 			contentHash: reminder.contentHash,
 			bindingFingerprint: reminder.bindingFingerprint,
@@ -200,13 +241,18 @@ function makeFixture(mutation: FixtureMutation = {}) {
 	});
 	const record = ledger.prepare(input);
 	const revalidate = createHouseholdReminderSystemOriginPolicyRevalidator({
-		readConfirmedPolicySnapshot: () => ({
+		readPolicySnapshot: () => ({
 			reminder,
-			confirmation: {
-				proposalRef: "proposal-1",
-				proposalHash: mutation.confirmedProposalHash ?? HASH("1"),
-				action: "create",
-			},
+			authorization:
+				authorizationKind === "parent-confirmed"
+					? {
+							kind: "parent-confirmed" as const,
+							proposalHash: mutation.confirmedProposalHash ?? HASH("1"),
+						}
+					: {
+							kind: "appointment-derived" as const,
+							observationHash: mutation.snapshotObservationHash ?? HASH("6"),
+						},
 		}),
 		readFire: () => fire,
 		resolveContext: () => context,
@@ -233,6 +279,7 @@ function reminderFixture(
 		readonly scheduleHash?: `sha256:${string}`;
 		readonly bindingFingerprint?: `sha256:${string}`;
 		readonly consentHash?: `sha256:${string}`;
+		readonly source?: HouseholdReminder["source"];
 	} = {},
 ) {
 	return {
@@ -253,7 +300,7 @@ function reminderFixture(
 		consentHash: overrides.consentHash ?? HASH("6"),
 		text: "להביא מסמכים",
 		locale: "he-IL",
-		source: { kind: "parent" },
+		source: overrides.source ?? { kind: "parent" },
 		schedule: {
 			timeZone: "Asia/Jerusalem",
 			localDateTime: "2026-08-01T09:00",

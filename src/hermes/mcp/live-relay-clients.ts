@@ -13,6 +13,8 @@ import {
 } from "../../household-reminders/binding.js";
 import { householdReminderProposalPrompt } from "../../household-reminders/copy.js";
 import {
+	cancelAppointmentDerivedHouseholdReminder,
+	getHouseholdReminderForAuthority,
 	listHouseholdReminders,
 	prepareHouseholdReminderCancellation,
 	prepareHouseholdReminderCreate,
@@ -1224,6 +1226,24 @@ export function createTelclaudeLiveMcpRelayClients(
 						params: { reminderId: request.jobId },
 					},
 				);
+				const current = getHouseholdReminderForAuthority(request.jobId, context.authority);
+				if (current?.status === "scheduled" && current.source.kind === "clalit-appointment") {
+					const cancelled = cancelAppointmentDerivedHouseholdReminder({
+						...context,
+						reminderId: request.jobId,
+					});
+					await auditFromRequest(request, "schedule.cancel", {
+						reminderId: cancelled.id,
+						revision: cancelled.revision,
+						status: cancelled.status,
+						sourceKind: cancelled.source.kind,
+					});
+					return {
+						...householdReminderView(cancelled),
+						confirmationRequired: false,
+						message: "התזכורת בוטלה.",
+					};
+				}
 				const prepared = prepareHouseholdReminderCancellation({
 					...context,
 					reminderId: request.jobId,

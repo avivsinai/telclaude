@@ -1608,6 +1608,7 @@ function scheduledOutboundPrepareInput(): TelclaudeMcpScheduledOutboundSideEffec
 			reminderId: "reminder-1",
 			fireId: "reminder-fire-1",
 			revision: 1,
+			authorizationKind: "parent-confirmed",
 			confirmedProposalHash:
 				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			scheduleHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",

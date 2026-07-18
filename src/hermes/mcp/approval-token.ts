@@ -76,23 +76,30 @@ const HouseholdReplyBindingSchema = z
 		identityAssurance: z.literal("strong_link"),
 	})
 	.strict();
-const HouseholdReminderPolicySchema = z
-	.object({
-		reminderId: NonEmptyString,
-		fireId: NonEmptyString,
-		revision: z.number().int().min(1),
+const HouseholdReminderPolicyBaseSchema = z.object({
+	reminderId: NonEmptyString,
+	fireId: NonEmptyString,
+	revision: z.number().int().min(1),
+	scheduleHash: Sha256RefSchema,
+	contentHash: Sha256RefSchema,
+	bindingFingerprint: Sha256RefSchema,
+	actorId: NonEmptyString,
+	subjectUserId: NonEmptyString,
+	profileId: NonEmptyString,
+	recipientPrincipalHash: PrincipalHashSchema,
+	systemPolicyPrincipal: z.literal("telclaude:household-reminder-system"),
+	systemPolicyVersion: z.literal("phase0.v1"),
+});
+const HouseholdReminderPolicySchema = z.discriminatedUnion("authorizationKind", [
+	HouseholdReminderPolicyBaseSchema.extend({
+		authorizationKind: z.literal("parent-confirmed"),
 		confirmedProposalHash: Sha256RefSchema,
-		scheduleHash: Sha256RefSchema,
-		contentHash: Sha256RefSchema,
-		bindingFingerprint: Sha256RefSchema,
-		actorId: NonEmptyString,
-		subjectUserId: NonEmptyString,
-		profileId: NonEmptyString,
-		recipientPrincipalHash: PrincipalHashSchema,
-		systemPolicyPrincipal: z.literal("telclaude:household-reminder-system"),
-		systemPolicyVersion: z.literal("phase0.v1"),
-	})
-	.strict();
+	}).strict(),
+	HouseholdReminderPolicyBaseSchema.extend({
+		authorizationKind: z.literal("appointment-derived"),
+		sourceObservationHash: Sha256RefSchema,
+	}).strict(),
+]);
 
 const ProviderBindingSchema = z
 	.object({

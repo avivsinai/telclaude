@@ -10,7 +10,10 @@ import {
 	releaseInteractiveChoiceLease,
 } from "../relay/interactive-choice-lease.js";
 import { getDb } from "../storage/db.js";
-import type { HouseholdReminderConfirmationTemplateId } from "./copy.js";
+import {
+	type HouseholdReminderConfirmationTemplateId,
+	householdAppointmentDerivedReminderNotice,
+} from "./copy.js";
 import { validateJerusalemOneShotSchedule } from "./time.js";
 import type {
 	HouseholdReminder,
@@ -28,10 +31,7 @@ import type {
 const DEFAULT_PROPOSAL_TTL_MS = 10 * 60 * 1_000;
 const SHA256_REF_RE = /^sha256:[a-f0-9]{64}$/;
 
-type HouseholdReminderAckTemplateId = Exclude<
-	HouseholdReminderConfirmationTemplateId,
-	"choice_required"
->;
+type HouseholdReminderAckTemplateId = HouseholdReminderConfirmationTemplateId;
 
 type ReminderPayload = {
 	readonly text: string;
@@ -151,6 +151,19 @@ export type HouseholdReminderConfirmedPolicySnapshot = {
 	};
 };
 
+export type HouseholdReminderPolicySnapshot = {
+	readonly reminder: HouseholdReminder;
+	readonly authorization:
+		| {
+				readonly kind: "parent-confirmed";
+				readonly proposalHash: Sha256Ref;
+		  }
+		| {
+				readonly kind: "appointment-derived";
+				readonly observationHash: Sha256Ref;
+		  };
+};
+
 export type HouseholdReminderInterceptionReceipt = {
 	readonly receiptId: string;
 	readonly eventIdHash: Sha256Ref;
@@ -229,6 +242,109 @@ export function prepareHouseholdReminderCreate(input: {
 		reminder: requireReminder(reminderId, 1),
 		proposal,
 	};
+}
+
+export function createAppointmentDerivedHouseholdReminder(input: {
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly text: string;
+	readonly label?: string;
+	readonly observationHash: Sha256Ref;
+	readonly addresseeGender: "f" | "m";
+	readonly schedule: HouseholdReminderOneShotSchedule;
+	readonly nowMs?: number;
+}): {
+	readonly reminder: HouseholdReminder;
+	readonly created: boolean;
+	readonly notice?: string;
+} {
+	if (!input.consent) throw new Error("appointment-derived household reminder consent is required");
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const nowMs = normalizeNow(input.nowMs);
+	const payload = normalizePayload({
+		...input,
+		source: { kind: "clalit-appointment" as const, observationHash: input.observationHash },
+		nowMs,
+	});
+	if (payload.source.kind !== "clalit-appointment") {
+		throw new Error("appointment-derived household reminder source is invalid");
+	}
+	const observationHash = payload.source.observationHash;
+	const reminderId = `reminder-derived-${canonicalSha256({
+		domain: "telclaude.appointment-derived-reminder-id.v1",
+		authority,
+		observationHash,
+	}).slice("sha256:".length)}`;
+	const bindingFingerprint = householdReminderBindingFingerprint(binding);
+
+	const created = getDb().transaction(() => {
+		const existing = getReminderRevision(reminderId, 1);
+		if (existing) {
+			if (
+				existing.source.kind !== "clalit-appointment" ||
+				existing.source.observationHash !== observationHash ||
+				existing.bindingFingerprint !== bindingFingerprint ||
+				existing.consentHash !== consentHash ||
+				existing.contentHash !== payload.contentHash ||
+				existing.scheduleHash !== payload.scheduleHash
+			) {
+				throw new Error("appointment-derived household reminder observation changed");
+			}
+			return false;
+		}
+		insertReminder({
+			id: reminderId,
+			revision: 1,
+			authority,
+			binding,
+			bindingFingerprint,
+			consentHash,
+			payload,
+			status: "scheduled",
+			createdAtMs: nowMs,
+			updatedAtMs: nowMs,
+		});
+		upsertHouseholdReminderCronWakeup({
+			reminderId,
+			revision: 1,
+			resolvedAtMs: payload.schedule.resolvedAtMs,
+			nowMs,
+		});
+		return true;
+	})();
+	const reminder = requireReminder(reminderId, 1);
+	return {
+		reminder,
+		created,
+		...(created
+			? { notice: householdAppointmentDerivedReminderNotice(input.addresseeGender) }
+			: {}),
+	};
+}
+
+export function cancelAppointmentDerivedHouseholdReminder(input: {
+	readonly reminderId: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly nowMs?: number;
+}): HouseholdReminder {
+	const { authority, binding, consentHash } = normalizeContext(input);
+	const current = getHouseholdReminderForAuthority(input.reminderId, authority);
+	if (current?.status !== "scheduled" || current.source.kind !== "clalit-appointment") {
+		throw new Error("appointment-derived household reminder not found");
+	}
+	assertCurrentBinding(current, binding);
+	if (current.consentHash !== consentHash) throw new Error("household reminder consent changed");
+	const nowMs = normalizeNow(input.nowMs);
+	getDb().transaction(() => {
+		if (!setReminderStatus(current.id, current.revision, "scheduled", "cancelled", nowMs)) {
+			throw new Error("appointment-derived household reminder changed while cancelling");
+		}
+		pauseHouseholdReminderCronWakeup(current.id, nowMs);
+	})();
+	return requireReminder(current.id, current.revision);
 }
 
 export function prepareHouseholdReminderUpdate(input: {
@@ -694,6 +810,44 @@ export function getConfirmedHouseholdReminderPolicySnapshot(
 			action: proposalRow.action as "create" | "update",
 		},
 	};
+}
+
+export function getHouseholdReminderPolicySnapshot(
+	reminderIdInput: string,
+	revisionInput: number,
+	authorityInput: HouseholdReminderAuthority,
+): HouseholdReminderPolicySnapshot | null {
+	const reminderId = nonEmpty(reminderIdInput, "reminderId");
+	const revision = positiveInt(revisionInput, "revision");
+	const authority = normalizeAuthority(authorityInput);
+	const reminder = getReminderRevision(reminderId, revision);
+	if (
+		!reminder ||
+		reminder.authority.actorId !== authority.actorId ||
+		reminder.authority.subjectUserId !== authority.subjectUserId ||
+		reminder.authority.profileId !== authority.profileId
+	) {
+		return null;
+	}
+	if (reminder.source.kind === "clalit-appointment") {
+		return {
+			reminder,
+			authorization: {
+				kind: "appointment-derived",
+				observationHash: reminder.source.observationHash,
+			},
+		};
+	}
+	const confirmed = getConfirmedHouseholdReminderPolicySnapshot(reminderId, revision, authority);
+	return confirmed
+		? {
+				reminder: confirmed.reminder,
+				authorization: {
+					kind: "parent-confirmed",
+					proposalHash: confirmed.confirmation.proposalHash,
+				},
+			}
+		: null;
 }
 
 export function listHouseholdReminders(

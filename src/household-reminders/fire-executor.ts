@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { TelclaudeConfig } from "../config/config.js";
 import { resolveWhatsAppHouseholdBindingById } from "../config/profiles.js";
 import type { CronActionResult } from "../cron/types.js";
+import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { EdgeAdapterSchemaVersions } from "../hermes/edge-adapter-contract.js";
 import type { TelclaudeEdgeRuntime } from "../hermes/edge-adapter-runtime.js";
 import type { TelclaudeMcpLedgerExecuteDependencies } from "../hermes/mcp/ledger-execute.js";
@@ -25,7 +26,7 @@ import {
 	claimHouseholdReminderFire,
 	completeHouseholdReminderFire,
 	failHouseholdReminderFire,
-	getConfirmedHouseholdReminderPolicySnapshot,
+	getHouseholdReminderPolicySnapshot,
 	getHouseholdReminderRevisionForFire,
 	householdReminderBindingFingerprint,
 	householdReminderConsentHash,
@@ -159,7 +160,7 @@ export function createHouseholdReminderFirePreparation(
 	dependencies: HouseholdReminderFirePreparationDependencies,
 ): HouseholdReminderFireExecutorDependencies["prepare"] {
 	return async ({ reminder, fire, body }) => {
-		const snapshot = getConfirmedHouseholdReminderPolicySnapshot(
+		const snapshot = getHouseholdReminderPolicySnapshot(
 			reminder.id,
 			reminder.revision,
 			reminder.authority,
@@ -235,7 +236,15 @@ export function createHouseholdReminderFirePreparation(
 				reminderId: reminder.id,
 				fireId: fire.fireId,
 				revision: reminder.revision,
-				confirmedProposalHash: snapshot.confirmation.proposalHash,
+				...(snapshot.authorization.kind === "parent-confirmed"
+					? {
+							authorizationKind: "parent-confirmed" as const,
+							confirmedProposalHash: snapshot.authorization.proposalHash,
+						}
+					: {
+							authorizationKind: "appointment-derived" as const,
+							sourceObservationHash: snapshot.authorization.observationHash,
+						}),
 				scheduleHash: reminder.scheduleHash,
 				contentHash: reminder.contentHash,
 				bindingFingerprint: reminder.bindingFingerprint,
@@ -435,10 +444,14 @@ function reusableScheduledRecord(
 		record.edgePreparedRef !== input.edgePreparedRef ||
 		record.edgePreparedHash !== input.edgePreparedHash ||
 		record.idempotencyKey !== input.idempotencyKey ||
-		JSON.stringify(record.resolvedDestination) !== JSON.stringify(input.resolvedDestination) ||
-		JSON.stringify(record.householdReminderPolicy) !== JSON.stringify(input.householdReminderPolicy)
+		!sameJson(record.resolvedDestination, input.resolvedDestination) ||
+		!sameJson(record.householdReminderPolicy, input.householdReminderPolicy)
 	) {
 		throw new Error("scheduled household reminder record changed");
 	}
 	return record;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+	return JSON.stringify(sortKeysDeep(left)) === JSON.stringify(sortKeysDeep(right));
 }

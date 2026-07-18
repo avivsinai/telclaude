@@ -379,7 +379,7 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 		name: "tc_schedule_cancel",
 		description:
 			"Cancel a scheduled reminder/task by job id (requires the schedule.write capability scope). " +
-			"You can only cancel a job you own; cancelling another owner's job is denied. For a household authority this creates a pending cancellation proposal; the reminder is paused but not cancelled until the parent replies 1 to the fixed 1/2 confirmation prompt.",
+			"You can only cancel a job you own; cancelling another owner's job is denied. For a household authority, an appointment-derived reminder is cancelled immediately; a parent-created reminder creates a pending cancellation proposal and remains un-cancelled until the parent confirms.",
 		inputSchema: objectSchema(
 			{
 				jobId: {

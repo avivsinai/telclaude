@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+	householdAppointmentDerivedReminderNotice,
 	householdReminderConfirmationCopy,
 	householdReminderProposalPrompt,
 } from "../../src/household-reminders/copy.js";
 import type { HouseholdReminder } from "../../src/household-reminders/types.js";
 
 describe("household reminder gendered fixed copy", () => {
-	it("selects exact male and female confirmation guidance", () => {
-		expect(householdReminderConfirmationCopy("choice_required", "f")).toBe(
-			"כדי להמשיך, שלחי בדיוק 1 או 2.\n1. אישור\n2. ביטול",
+	it("selects exact male and female appointment-derived notices", () => {
+		expect(householdAppointmentDerivedReminderNotice("f")).toBe(
+			"אזכיר לך יום לפני התור. לביטול כתבי לי.",
 		);
-		expect(householdReminderConfirmationCopy("choice_required", "m")).toBe(
-			"כדי להמשיך, שלח בדיוק 1 או 2.\n1. אישור\n2. ביטול",
+		expect(householdAppointmentDerivedReminderNotice("m")).toBe(
+			"אזכיר לך יום לפני התור. לביטול כתוב לי.",
 		);
 	});
 
