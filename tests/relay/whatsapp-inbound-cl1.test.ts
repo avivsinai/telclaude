@@ -571,6 +571,108 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 			auditIds: [],
 		});
 	});
+
+	it("runs a matched emergency before the absorbing chain, ensures first conversation, and continues", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { createWhatsAppInboundCl1Pipeline, signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		const emergency = vi.fn(async ({ ensureConversation }) => {
+			const conversation = ensureConversation();
+			expect(conversation).toMatchObject({ conversationId: "whatsapp:household:parent-a" });
+			return { matched: true as const, class: "chest_pain" as const, replySent: true };
+		});
+		const intercept = vi.fn(async () => ({
+			handled: true as const,
+			templateId: "challenge_invalid_format",
+		}));
+		const delivered = vi.fn(async () => undefined);
+		const pipeline = createWhatsAppInboundCl1Pipeline({
+			signatureSecret: SECRET,
+			conversationStore,
+			quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+			resolveIdentity: () => householdIdentity(),
+			nowMs: () => NOW,
+			handleHouseholdEmergency: emergency,
+			interceptBeforePersistence: intercept,
+			onInboundEvent: delivered,
+		});
+		const event = whatsappEvent({
+			text: "כאב בחזה",
+			conversationKey: "15551234567@s.whatsapp.net",
+		});
+
+		await expect(
+			pipeline.ingest({ event, signature: signWhatsAppInboundBridgeEvent(event, SECRET) }),
+		).resolves.toMatchObject({ ok: true, duplicate: false, intercepted: false });
+		expect(emergency).toHaveBeenCalledTimes(1);
+		expect(intercept).not.toHaveBeenCalled();
+		expect(delivered).toHaveBeenCalledTimes(1);
+
+		await pipeline.ingest({ event, signature: signWhatsAppInboundBridgeEvent(event, SECRET) });
+		expect(emergency).toHaveBeenCalledTimes(1);
+		expect(delivered).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not commit dedup state until attachments validate, so a corrected retry reaches Gabriel", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { createWhatsAppInboundCl1Pipeline, signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		const emergency = vi.fn(async ({ ensureConversation }) => {
+			ensureConversation();
+			return { matched: true as const };
+		});
+		const delivered = vi.fn(async () => undefined);
+		const pipeline = createWhatsAppInboundCl1Pipeline({
+			signatureSecret: SECRET,
+			conversationStore,
+			quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+			resolveIdentity: () => householdIdentity(),
+			nowMs: () => NOW,
+			handleHouseholdEmergency: emergency,
+			onInboundEvent: delivered,
+		});
+		const malformed = whatsappEvent({
+			text: "כאב בחזה",
+			conversationKey: "15551234567@s.whatsapp.net",
+			attachments: [{ mediaType: "image/jpeg", bytesBase64: "not-base64" }],
+		});
+		await expect(
+			pipeline.ingest({
+				event: malformed,
+				signature: signWhatsAppInboundBridgeEvent(malformed, SECRET),
+			}),
+		).resolves.toMatchObject({ ok: false, code: "whatsapp_inbound_attachment_invalid" });
+		const [authorityOnly] = conversationStore.list({ channel: "whatsapp", domain: "household" });
+		expect(authorityOnly).toMatchObject({
+			threadMessageIds: [],
+			inboundCursor: null,
+			auditIds: [],
+		});
+
+		const corrected = { ...malformed, attachments: [] };
+		await expect(
+			pipeline.ingest({
+				event: corrected,
+				signature: signWhatsAppInboundBridgeEvent(corrected, SECRET),
+			}),
+		).resolves.toMatchObject({ ok: true, duplicate: false, intercepted: false });
+		expect(emergency).toHaveBeenCalledTimes(2);
+		expect(delivered).toHaveBeenCalledTimes(1);
+	});
 });
 
 type WhatsAppEventOverride = Partial<ReturnType<typeof whatsappEvent>>;
@@ -599,4 +701,28 @@ function makeEffectRefs(): () => string {
 function makeApprovalIds(): () => string {
 	let id = 0;
 	return () => `approval-${++id}`;
+}
+
+function householdIdentity() {
+	return {
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		principalId: OPERATOR_PHONE,
+		displayName: "Parent A",
+		identityAssurance: "strong_link" as const,
+		authorizationScopes: ["message:read", "message:reply"],
+		actorScopes: [
+			{ scope: "message:reply", actions: ["reply"], grantedAt: new Date(0).toISOString() },
+		],
+		humanPairingProvenance: true as const,
+		domain: "household" as const,
+		bindingId: "parent-a",
+		addresseeGender: "f" as const,
+		subjectUserId: "household:parent-a",
+		memorySource: "household:parent-a" as const,
+		writableNamespace: "household:parent-a" as const,
+		replyAddressRef: OPERATOR_PHONE,
+		expectedConversationKey: "15551234567@s.whatsapp.net",
+		conversationId: "whatsapp:household:parent-a",
+	};
 }

@@ -45,6 +45,7 @@ import type {
 } from "../../relay/browser-act-relay-surface.js";
 import type { BrowseRequest, BrowseResult } from "../../relay/browser-broker.js";
 import { browserAuthorityDomainFromMcp } from "../../relay/browser-cookie-store.js";
+import { containsUrgentHealthSignalV1 } from "../../relay/household-emergency-lexicon.js";
 import {
 	type MediaActionConfirmation,
 	type MediaActionConfirmationGate,
@@ -1926,35 +1927,9 @@ function assertProviderOperationPolicy(
 		action: request.action,
 		mode,
 	});
-	if (request.service === "clalit" && containsUrgentHealthSignal(request)) {
+	if (request.service === "clalit" && containsUrgentHealthSignalV1(JSON.stringify(request))) {
 		throw new Error("provider policy denied: urgent_health_escalation_required");
 	}
-}
-
-// M5's deterministic pre-model health routing is the primary emergency boundary;
-// keep this relay-side check as defense in depth for direct or malformed MCP calls.
-function containsUrgentHealthSignal(value: unknown): boolean {
-	const text = JSON.stringify(value).toLowerCase();
-	return [
-		"emergency",
-		"urgent",
-		"chest pain",
-		"shortness of breath",
-		"stroke",
-		"heart attack",
-		"suicidal",
-		"חירום",
-		"דחוף",
-		"כאבים בחזה",
-		"כאב בחזה",
-		"קוצר נשימה",
-		"קשיי נשימה",
-		"שבץ",
-		"אירוע מוחי",
-		"התקף לב",
-		"אוטם שריר הלב",
-		"אובדני",
-	].some((term) => text.includes(term));
 }
 
 function providerWriteApproverFor(

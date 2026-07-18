@@ -21,8 +21,8 @@ import {
 import { startTelclaudeLiveMcpRuntime } from "../../src/hermes/mcp/live-runtime.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
 import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
-import { createMediaActionConfirmationStore } from "../../src/relay/media-action-confirmation-store.js";
 import { createAttachmentQuarantineStore } from "../../src/relay/attachment-quarantine-store.js";
+import { createMediaActionConfirmationStore } from "../../src/relay/media-action-confirmation-store.js";
 import type { AttachmentRef } from "../../src/storage/attachment-refs.js";
 import { getDb, resetDatabase } from "../../src/storage/db.js";
 
@@ -297,6 +297,41 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		).rejects.toThrow("household Phase 0 provider action denied");
 		expect(providerCalls).toHaveLength(1);
 		expect(ledger.list()).toHaveLength(1);
+	});
+
+	it.each([
+		["cardiac", "לחץ בחזה"],
+		["stroke", "חצי גוף חלש ודיבור מעורפל"],
+		["breathing", "אני לא יכולה לנשום"],
+		["collapse", "נפלתי והתעלפתי"],
+		["bleeding", "דימום חזק"],
+		["suicidal ideation", "אני לא רוצה לחיות ורוצה לפגוע בעצמי"],
+		["explicit emergency", "הצילו, זה מקרה חירום"],
+		["unconscious", "מחוסר הכרה"],
+		["English breathing", "I cannot breathe"],
+		["English bleeding", "I have heavy bleeding"],
+	] as const)("keeps shared urgent-health defense in depth for %s", async (_emergencyClass, symptoms) => {
+		const providerProxy = vi.fn(async () => ({
+			status: "ok" as const,
+			data: { appointments: [] },
+		}));
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			providerProxy,
+		});
+
+		await expect(
+			clients.providerRead(
+				providerRead({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointments",
+					params: { symptoms },
+				}),
+			),
+		).rejects.toThrow("urgent_health_escalation_required");
+		expect(providerProxy).not.toHaveBeenCalled();
 	});
 
 	it("keeps provider-write and household schedule results byte-identical with no eligible media", async () => {

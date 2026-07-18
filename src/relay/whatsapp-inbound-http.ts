@@ -71,6 +71,7 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
 	readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
+	readonly handleHouseholdEmergency?: CreateWhatsAppInboundCl1PipelineOptions["handleHouseholdEmergency"];
 	readonly providerChallengeInterceptor?: WhatsAppProviderChallengeInterceptor;
 	readonly reminderConfirmationInterceptor?: WhatsAppReminderConfirmationInterceptor;
 	readonly mediaActionConfirmationInterceptor?: WhatsAppMediaActionConfirmationInterceptor;
@@ -160,6 +161,9 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		resolveIdentity: resolved.resolveIdentity,
 		...(resolved.interceptBeforePersistence
 			? { interceptBeforePersistence: resolved.interceptBeforePersistence }
+			: {}),
+		...(resolved.handleHouseholdEmergency
+			? { handleHouseholdEmergency: resolved.handleHouseholdEmergency }
 			: {}),
 		...(resolved.nowMs ? { nowMs: resolved.nowMs } : {}),
 	});
@@ -258,6 +262,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 			readonly cwd?: string;
 			readonly timeoutMs?: number;
 			readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
+			readonly handleHouseholdEmergency?: CreateWhatsAppInboundCl1PipelineOptions["handleHouseholdEmergency"];
 	  }
 	| WhatsAppInboundBridgeHttpFailure {
 	options ??= defaultWhatsAppInboundBridgeOptions;
@@ -354,6 +359,9 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,
 		...(options?.processInboundMedia ? { processInboundMedia: options.processInboundMedia } : {}),
 		...(composedInterceptor ? { interceptBeforePersistence: composedInterceptor } : {}),
+		...(options?.handleHouseholdEmergency
+			? { handleHouseholdEmergency: options.handleHouseholdEmergency }
+			: {}),
 		...(options?.nowMs ? { nowMs: options.nowMs } : {}),
 		...(options?.cwd ? { cwd: options.cwd } : {}),
 		...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
