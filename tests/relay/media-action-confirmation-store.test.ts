@@ -195,6 +195,8 @@ describe("media action confirmation store", () => {
 	});
 
 	it("rolls media arming back behind a reminder and cascades encrypted content on expiry", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const { claimInteractiveChoiceLease } = await import(
 			"../../src/relay/interactive-choice-lease.js"
 		);
@@ -268,9 +270,47 @@ describe("media action confirmation store", () => {
 				.prepare("SELECT COUNT(*) AS count FROM household_media_action_confirmation_content")
 				.get(),
 		).toEqual({ count: 0 });
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "confirmation_expired", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "confirmation_shown", count: 1 },
+		]);
+	});
+
+	it("does not recount store-owned expiry when the released lease is replaced", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		const { claimInteractiveChoiceLease } = await import(
+			"../../src/relay/interactive-choice-lease.js"
+		);
+		const { createMediaActionConfirmationStore } = await import(
+			"../../src/relay/media-action-confirmation-store.js"
+		);
+		metrics.configureHouseholdMetrics({ enabled: true });
+		const store = createMediaActionConfirmationStore({
+			encryptionKey: ENCRYPTION_KEY,
+			makeConfirmationId: () => "media-confirmation-store-expiry",
+			makeJti: () => "store-expiry-jti",
+		});
+		armProviderAction(store, `turn_${"2".repeat(32)}`);
+
+		expect(
+			store.peekPendingForOwner({ owner: OWNER_A, nowMs: NOW_MS + 10 * 60_000 + 1 }),
+		).toBeNull();
+		claimInteractiveChoiceLease({
+			...OWNER_A,
+			kind: "reminder",
+			ownerRef: "reminder-after-store-expiry",
+			createdAtMs: NOW_MS + 10 * 60_000 + 2,
+			expiresAtMs: NOW_MS + 20 * 60_000,
+		});
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "confirmation_expired", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "confirmation_shown", count: 1 },
+		]);
 	});
 
 	it("confirms once into an exact fresh-turn capability and replays only the durable receipt", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const { createMediaActionConfirmationStore } = await import(
 			"../../src/relay/media-action-confirmation-store.js"
 		);
@@ -329,6 +369,29 @@ describe("media action confirmation store", () => {
 			freshTurnRef: `turn_${"4".repeat(32)}`,
 		});
 		expect(mintFreshTurn).toHaveBeenCalledTimes(1);
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "confirmation_confirmed", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "confirmation_shown", count: 1 },
+		]);
+
+		getDb().exec("DROP TABLE household_metrics");
+		const failingMetricsStore = createMediaActionConfirmationStore({
+			encryptionKey: ENCRYPTION_KEY,
+			nowMs: () => NOW_MS + 20,
+			makeConfirmationId: () => "media-confirmation-metrics-fail",
+			makeJti: () => "metrics-fail-action-jti",
+		});
+		armProviderAction(failingMetricsStore, `turn_${"8".repeat(32)}`);
+		expect(
+			failingMetricsStore.resolveChoice({
+				owner: OWNER_A,
+				eventId: "event-metrics-fail",
+				messageId: "message-metrics-fail",
+				choice: "confirm",
+				mintFreshTurn: () => ({ ref: `turn_${"9".repeat(32)}` }),
+				nowMs: NOW_MS + 21,
+			}),
+		).toMatchObject({ status: "confirmed", newlyResolved: true });
 	});
 
 	it("allows exactly one exact action on the fresh turn and denies changes or replay", async () => {
@@ -399,6 +462,8 @@ describe("media action confirmation store", () => {
 	});
 
 	it("rejects durably without minting or dispatch payload and re-gates a later derived turn", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const { createMediaActionConfirmationStore } = await import(
 			"../../src/relay/media-action-confirmation-store.js"
 		);
@@ -427,6 +492,11 @@ describe("media action confirmation store", () => {
 			newlyResolved: true,
 		});
 		expect(mintFreshTurn).not.toHaveBeenCalled();
+		expect(
+			metrics
+				.collectHouseholdMetricRollups()
+				.find((metric) => metric.metricKind === "confirmation_rejected"),
+		).toEqual({ bindingKey: "parent-a", metricKind: "confirmation_rejected", count: 1 });
 
 		const laterTurnRef = `turn_${"9".repeat(32)}`;
 		const action = armProviderAction(store, laterTurnRef, "media-confirmation-later");

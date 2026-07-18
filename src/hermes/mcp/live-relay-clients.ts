@@ -8,6 +8,10 @@ import { addCronJob, getCronJob, listCronJobs, removeCronJob } from "../../cron/
 import type { CronJob, CronSchedule } from "../../cron/types.js";
 import { upsertCuratorItem } from "../../curator/store.js";
 import {
+	householdMetricBindingKeyFromSubject,
+	recordHouseholdMetric,
+} from "../../household-metrics/store.js";
+import {
 	type HouseholdReminderContext,
 	resolveHouseholdReminderContext,
 } from "../../household-reminders/binding.js";
@@ -520,6 +524,10 @@ export function createTelclaudeLiveMcpRelayClients(
 	return {
 		async providerRead(request) {
 			assertAuthorityMemoryBoundary(request);
+			const bindingKey =
+				request.domain === "household"
+					? householdMetricBindingKeyFromSubject(request.subjectUserId ?? "")
+					: null;
 			const operation = resolveTelclaudeProviderOperation(request);
 			assertProviderOperationPolicy(operation, request.domain, "read");
 			const body = providerFetchBody({
@@ -534,8 +542,13 @@ export function createTelclaudeLiveMcpRelayClients(
 				userId: request.actorId,
 			});
 			if (response.status === "error") {
-				throw new Error(`provider read failed: ${providerErrorCode(response)}`);
+				const errorCode = providerErrorCode(response);
+				if (bindingKey && errorCode === "auth_required") {
+					recordHouseholdMetric("auth_required", bindingKey);
+				}
+				throw new Error(`provider read failed: ${errorCode}`);
 			}
+			if (bindingKey) recordHouseholdMetric("read_succeeded", bindingKey);
 			return response.data ?? {};
 		},
 
@@ -580,6 +593,13 @@ export function createTelclaudeLiveMcpRelayClients(
 				...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
 			});
 			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
+			const bindingKey =
+				request.domain === "household"
+					? householdMetricBindingKeyFromSubject(request.subjectUserId ?? "")
+					: null;
+			if (bindingKey && operation.action === "prescription_renewal") {
+				recordHouseholdMetric("prescription_renewal_prepared", bindingKey);
+			}
 			return { actionRef: record.ref, approvalRequestId: record.approvalRequestId };
 		},
 

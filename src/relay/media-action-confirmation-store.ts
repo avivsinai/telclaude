@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import { recordHouseholdMetric } from "../household-metrics/store.js";
 import { getDb } from "../storage/db.js";
 import type { DerivedMediaEnvelopeV1 } from "./inbound-media-processor.js";
 import {
@@ -330,6 +331,7 @@ export function createMediaActionConfirmationStore(options: {
 		const actionDigest = digest("telclaude.media-confirmation.action.v1", action);
 		const existing = readPendingForTurnAction(turnRef, actionDigest);
 		if (existing && existing.expires_at_ms > atMs) {
+			recordHouseholdMetric("confirmation_shown", existing.binding_id, atMs);
 			return { required: true, confirmation: rowToConfirmation(existing) };
 		}
 		if (existing) expireConfirmation(existing, atMs);
@@ -412,6 +414,7 @@ export function createMediaActionConfirmationStore(options: {
 				);
 			const row = readConfirmation(confirmationId);
 			if (!row) throw new Error("media action confirmation persistence failed");
+			recordHouseholdMetric("confirmation_shown", row.binding_id, atMs);
 			return { required: true as const, confirmation: rowToConfirmation(row) };
 		})();
 	}
@@ -719,6 +722,15 @@ function resolveConfirmationRow(
 			row.confirmation_id,
 		);
 	if (updated.changes !== 1) throw new Error("media confirmation resolution race denied");
+	recordHouseholdMetric(
+		resolution.status === "confirmed"
+			? "confirmation_confirmed"
+			: resolution.status === "rejected"
+				? "confirmation_rejected"
+				: "confirmation_expired",
+		row.binding_id,
+		resolution.atMs,
+	);
 	getDb()
 		.prepare("DELETE FROM household_media_action_confirmation_content WHERE confirmation_id = ?")
 		.run(row.confirmation_id);

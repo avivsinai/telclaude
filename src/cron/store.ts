@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { resolveNextJerusalemDigestAt } from "../household-metrics/digest.js";
 import { getDb } from "../storage/db.js";
 import { computeNextRunAtMs } from "./parse.js";
 import type {
@@ -28,6 +29,7 @@ type CronJobRow = {
 	action_preprocess_json: string | null;
 	action_reminder_id: string | null;
 	action_reminder_revision: number | null;
+	action_digest_at_hour: number | null;
 	owner_id: string | null;
 	delivery_target_kind: string | null;
 	delivery_chat_id: number | null;
@@ -88,6 +90,18 @@ function parseAction(row: CronJobRow): CronAction {
 				kind: "household-reminder",
 				reminderId: row.action_reminder_id,
 				revision: row.action_reminder_revision as number,
+			};
+		case "household-metrics-digest":
+			if (
+				!Number.isInteger(row.action_digest_at_hour) ||
+				(row.action_digest_at_hour ?? -1) < 0 ||
+				(row.action_digest_at_hour ?? 24) > 23
+			) {
+				throw new Error(`cron job ${row.id} has an invalid household digest hour`);
+			}
+			return {
+				kind: "household-metrics-digest",
+				atHour: row.action_digest_at_hour as number,
 			};
 		case "agent-prompt":
 			if (!row.action_prompt) {
@@ -250,6 +264,7 @@ function encodeAction(action: CronAction): {
 	actionPreprocessJson: string | null;
 	actionReminderId: string | null;
 	actionReminderRevision: number | null;
+	actionDigestAtHour: number | null;
 } {
 	switch (action.kind) {
 		case "social-heartbeat":
@@ -261,6 +276,7 @@ function encodeAction(action: CronAction): {
 				actionPreprocessJson: null,
 				actionReminderId: null,
 				actionReminderRevision: null,
+				actionDigestAtHour: null,
 			};
 		case "private-heartbeat":
 			return {
@@ -271,6 +287,7 @@ function encodeAction(action: CronAction): {
 				actionPreprocessJson: null,
 				actionReminderId: null,
 				actionReminderRevision: null,
+				actionDigestAtHour: null,
 			};
 		case "curator-scan":
 			return {
@@ -281,6 +298,7 @@ function encodeAction(action: CronAction): {
 				actionPreprocessJson: null,
 				actionReminderId: null,
 				actionReminderRevision: null,
+				actionDigestAtHour: null,
 			};
 		case "household-reminder":
 			return {
@@ -291,6 +309,18 @@ function encodeAction(action: CronAction): {
 				actionPreprocessJson: null,
 				actionReminderId: action.reminderId,
 				actionReminderRevision: action.revision,
+				actionDigestAtHour: null,
+			};
+		case "household-metrics-digest":
+			return {
+				actionKind: "household-metrics-digest",
+				actionServiceId: null,
+				actionPrompt: null,
+				actionAllowedSkillsJson: null,
+				actionPreprocessJson: null,
+				actionReminderId: null,
+				actionReminderRevision: null,
+				actionDigestAtHour: action.atHour,
 			};
 		case "agent-prompt":
 			return {
@@ -303,6 +333,7 @@ function encodeAction(action: CronAction): {
 					action.preprocess === undefined ? null : JSON.stringify(action.preprocess),
 				actionReminderId: null,
 				actionReminderRevision: null,
+				actionDigestAtHour: null,
 			};
 		default: {
 			const exhaustiveCheck: never = action;
@@ -421,6 +452,7 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		actionPreprocessJson,
 		actionReminderId,
 		actionReminderRevision,
+		actionDigestAtHour,
 	} = encodeAction(input.action);
 	const { deliveryTargetKind, deliveryChatId, deliveryThreadId } = encodeDeliveryTarget(
 		input.deliveryTarget,
@@ -433,7 +465,7 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 			id, name, enabled, running,
 			schedule_kind, schedule_at, schedule_every_ms, schedule_cron,
 			action_kind, action_service_id, action_prompt, action_allowed_skills_json, action_preprocess_json,
-			action_reminder_id, action_reminder_revision,
+			action_reminder_id, action_reminder_revision, action_digest_at_hour,
 			owner_id, delivery_target_kind, delivery_chat_id, delivery_thread_id,
 			next_run_at, last_run_at, last_status, last_error,
 			created_at, updated_at
@@ -441,7 +473,7 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		VALUES (
 			?, ?, ?, 0,
 			?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, NULL, NULL, NULL,
 			?, ?
@@ -461,6 +493,7 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		actionPreprocessJson,
 		actionReminderId,
 		actionReminderRevision,
+		actionDigestAtHour,
 		ownerId,
 		deliveryTargetKind,
 		deliveryChatId,
@@ -549,6 +582,58 @@ export function pauseHouseholdReminderCronWakeup(
 			)
 			.run(nowMs, `household-reminder:${reminderId}`, reminderId).changes > 0
 	);
+}
+
+export function syncHouseholdMetricsDigestCron(input: {
+	readonly enabled: boolean;
+	readonly atHour: number;
+	readonly nowMs?: number;
+}): CronJob | null {
+	const nowMs = input.nowMs ?? Date.now();
+	if (!input.enabled) {
+		getDb()
+			.prepare(
+				`UPDATE cron_jobs SET enabled = 0, running = 0, next_run_at = NULL, updated_at = ?
+				 WHERE id = 'household-metrics-digest'
+				   AND action_kind = 'household-metrics-digest'`,
+			)
+			.run(nowMs);
+		return getCronJob("household-metrics-digest");
+	}
+	const nextRunAtMs = resolveNextJerusalemDigestAt(nowMs, input.atHour);
+	getDb()
+		.prepare(
+			`INSERT INTO cron_jobs (
+			 id, name, enabled, running,
+			 schedule_kind, schedule_at, schedule_every_ms, schedule_cron,
+			 action_kind, action_service_id, action_prompt, action_allowed_skills_json,
+			 action_preprocess_json, action_reminder_id, action_reminder_revision,
+			 action_digest_at_hour, owner_id, delivery_target_kind,
+			 delivery_chat_id, delivery_thread_id, next_run_at,
+			 last_run_at, last_status, last_error, created_at, updated_at
+			) VALUES (
+			 'household-metrics-digest', 'household metrics daily digest', ?, 0,
+			 'at', ?, NULL, NULL,
+			 'household-metrics-digest', NULL, NULL, NULL, NULL, NULL, NULL,
+			 ?, NULL, 'origin', NULL, NULL, ?, NULL, NULL, NULL, ?, ?
+			)
+			ON CONFLICT(id) DO UPDATE SET
+			 name = excluded.name, enabled = excluded.enabled, running = 0,
+			 schedule_kind = 'at', schedule_at = excluded.schedule_at,
+			 schedule_every_ms = NULL, schedule_cron = NULL,
+			 action_kind = 'household-metrics-digest', action_service_id = NULL,
+			 action_prompt = NULL, action_allowed_skills_json = NULL,
+			 action_preprocess_json = NULL, action_reminder_id = NULL,
+			 action_reminder_revision = NULL,
+			 action_digest_at_hour = excluded.action_digest_at_hour,
+			 owner_id = NULL, delivery_target_kind = 'origin',
+			 delivery_chat_id = NULL, delivery_thread_id = NULL,
+			 next_run_at = excluded.next_run_at, updated_at = excluded.updated_at`,
+		)
+		.run(1, nextRunAtMs, input.atHour, nextRunAtMs, nowMs, nowMs);
+	const job = getCronJob("household-metrics-digest");
+	if (!job) throw new Error("household metrics digest cron persistence failure");
+	return job;
 }
 
 export function removeCronJob(id: string): boolean {
@@ -745,7 +830,15 @@ export function completeClaimedCronJob(params: {
 		let enabled = current ? current.enabled === 1 : params.job.enabled;
 		let nextRunAtMs: number | null = null;
 
-		if (params.job.schedule.kind === "at") {
+		let nextScheduleAtMs: number | null = null;
+		if (
+			enabled &&
+			params.job.schedule.kind === "at" &&
+			params.job.action.kind === "household-metrics-digest"
+		) {
+			nextRunAtMs = resolveNextJerusalemDigestAt(finishedAtMs, params.job.action.atHour);
+			nextScheduleAtMs = nextRunAtMs;
+		} else if (params.job.schedule.kind === "at") {
 			const retryAtMs = params.retryAtMs;
 			if (
 				enabled &&
@@ -772,6 +865,7 @@ export function completeClaimedCronJob(params: {
 			`UPDATE cron_jobs
 			 SET enabled = ?,
 			     running = 0,
+			     schedule_at = COALESCE(?, schedule_at),
 			     next_run_at = ?,
 			     last_run_at = ?,
 			     last_status = ?,
@@ -780,6 +874,7 @@ export function completeClaimedCronJob(params: {
 			 WHERE id = ?`,
 		).run(
 			enabled ? 1 : 0,
+			nextScheduleAtMs,
 			nextRunAtMs,
 			finishedAtMs,
 			params.status,

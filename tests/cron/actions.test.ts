@@ -96,4 +96,40 @@ describe("executeCronAction social heartbeat", () => {
 		expect(executeScheduledAgentPromptActionMock).not.toHaveBeenCalled();
 		expect(handlePrivateHeartbeatMock).not.toHaveBeenCalled();
 	});
+
+	it("runs the deterministic household metrics digest only when both dark gates are enabled", async () => {
+		const executeHouseholdMetricsDigest = vi.fn(async () => ({
+			ok: true,
+			message: "household metrics digest sent for 2026-07-17",
+		}));
+		const job = {
+			id: "household-metrics-digest",
+			action: { kind: "household-metrics-digest" },
+		} as CronActionJob;
+
+		await expect(
+			executeCronAction(job, {} as CronActionConfig, undefined, {
+				executeHouseholdMetricsDigest,
+			}),
+		).resolves.toEqual({
+			ok: false,
+			message: "household metrics digest is disabled in config",
+		});
+		expect(executeHouseholdMetricsDigest).not.toHaveBeenCalled();
+
+		await expect(
+			executeCronAction(
+				job,
+				{
+					householdMetrics: { enabled: true, dailyDigest: { enabled: true, atHour: 8 } },
+				} as CronActionConfig,
+				undefined,
+				{ executeHouseholdMetricsDigest },
+			),
+		).resolves.toEqual({
+			ok: true,
+			message: "household metrics digest sent for 2026-07-17",
+		});
+		expect(executeHouseholdMetricsDigest).toHaveBeenCalledTimes(1);
+	});
 });

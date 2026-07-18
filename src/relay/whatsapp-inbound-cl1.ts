@@ -14,6 +14,7 @@ import {
 	type RelayConversationStore,
 	relayConversationToConversationRef,
 } from "../hermes/relay-conversation-store.js";
+import { recordHouseholdMetric } from "../household-metrics/store.js";
 import { assessRisk, wrapExternalContent } from "../security/external-content.js";
 import { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 import {
@@ -456,6 +457,9 @@ export function createWhatsAppInboundCl1Pipeline(
 				},
 			});
 			await options.onInboundEvent?.(inboundEvent);
+			if (identity.domain === "household") {
+				recordHouseholdMetric("inbound_received", identity.bindingId, event.receivedAtMs);
+			}
 			return {
 				ok: true,
 				duplicate: false,

@@ -10,7 +10,11 @@ import {
 } from "../config/profiles.js";
 import { executeCronAction } from "../cron/actions.js";
 import { startCronScheduler } from "../cron/scheduler.js";
-import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
+import {
+	getCronCoverage,
+	getCronStatusSummary,
+	syncHouseholdMetricsDigestCron,
+} from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { TelclaudeEdgeRuntime } from "../hermes/edge-adapter-runtime.js";
@@ -48,6 +52,8 @@ import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effe
 import { createTelclaudeMcpSideEffectLedger } from "../hermes/mcp/side-effect-ledger.js";
 import { setHermesPrivateRuntimeMcpAuthorityActivation } from "../hermes/private-execute.js";
 import { createRelayConversationStore } from "../hermes/relay-conversation-store.js";
+import { createHouseholdMetricsDigestExecutor } from "../household-metrics/digest.js";
+import { configureHouseholdMetrics } from "../household-metrics/store.js";
 import { resolveHouseholdReminderContext } from "../household-reminders/binding.js";
 import {
 	createHouseholdReminderFireExecutor,
@@ -254,6 +260,7 @@ export function registerRelayCommand(program: Command): void {
 
 			try {
 				const cfg = loadConfig();
+				configureHouseholdMetrics({ enabled: cfg.householdMetrics.enabled });
 				const householdEmergencyActivation = resolveHouseholdEmergencyActivation(cfg);
 				const householdMediaActivation = resolveConfiguredHouseholdMediaActivation(cfg);
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
@@ -909,6 +916,13 @@ export function registerRelayCommand(program: Command): void {
 				ensureActivityLogTable();
 
 				const cronEnabled = cfg.cron.enabled !== false;
+				syncHouseholdMetricsDigestCron({
+					enabled: cfg.householdMetrics.enabled && cfg.householdMetrics.dailyDigest.enabled,
+					atHour: cfg.householdMetrics.dailyDigest.atHour,
+				});
+				const householdMetricsDigestExecutor = createHouseholdMetricsDigestExecutor({
+					sendAdminAlert,
+				});
 				let cronCoverage = {
 					allSocial: false,
 					socialServiceIds: [] as string[],
@@ -921,6 +935,7 @@ export function registerRelayCommand(program: Command): void {
 						executor: (job, signal) =>
 							executeCronAction(job, cfg, signal, {
 								executeHouseholdReminder: householdReminderFireExecutor,
+								executeHouseholdMetricsDigest: householdMetricsDigestExecutor,
 							}),
 					});
 					schedulerHandles.push(scheduler);

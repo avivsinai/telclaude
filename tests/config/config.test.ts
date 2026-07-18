@@ -91,6 +91,10 @@ describe("config defaults", () => {
 		const cfg = loadConfig();
 		expect(cfg.householdReminders).toEqual({ enabled: false });
 		expect(cfg.householdMedia).toEqual({ enabled: false });
+		expect(cfg.householdMetrics).toEqual({
+			enabled: false,
+			dailyDigest: { enabled: false, atHour: 8 },
+		});
 		expect(cfg.webhooks).toEqual({
 			enabled: false,
 			port: 3015,

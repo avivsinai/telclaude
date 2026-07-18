@@ -22,6 +22,7 @@ import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerHermesCommand } from "./commands/hermes.js";
 import { registerHermesSkillsCommand } from "./commands/hermes-skills.js";
+import { registerHouseholdStatsCommand } from "./commands/household.js";
 import { registerKeygenCommand } from "./commands/keygen.js";
 import { registerIdentitySubcommands } from "./commands/link.js";
 import { registerMemoryCommands } from "./commands/memory.js";
@@ -95,6 +96,10 @@ registerSessionsCommand(program);
 // --- identity ---
 const identity = program.command("identity").description("Manage identity links");
 registerIdentitySubcommands(identity);
+
+// --- household ---
+const household = program.command("household").description("Inspect household product state");
+registerHouseholdStatsCommand(household);
 
 // --- auth ---
 const auth = program.command("auth").description("Authentication and authorization");

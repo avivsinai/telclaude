@@ -29,6 +29,10 @@ export type CronAction =
 			revision: number;
 	  }
 	| {
+			kind: "household-metrics-digest";
+			atHour: number;
+	  }
+	| {
 			kind: "agent-prompt";
 			prompt: string;
 			/**

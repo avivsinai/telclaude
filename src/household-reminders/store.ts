@@ -4,6 +4,7 @@ import {
 	upsertHouseholdReminderCronWakeup,
 } from "../cron/store.js";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import { recordHouseholdMetric } from "../household-metrics/store.js";
 import {
 	claimInteractiveChoiceLease,
 	InteractiveChoiceBusyError,
@@ -1613,6 +1614,15 @@ function resolveProposal(
 		)
 		.run(status, nowMs, row.ref);
 	if (resolved.changes !== 1) throw new Error("household reminder proposal resolution failed");
+	recordHouseholdMetric(
+		status === "confirmed"
+			? "proposal_confirmed"
+			: status === "rejected"
+				? "proposal_rejected"
+				: "proposal_expired",
+		row.binding_id,
+		nowMs,
+	);
 	if (
 		!releaseInteractiveChoiceLease({
 			actorId: row.actor_id,

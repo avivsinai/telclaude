@@ -354,7 +354,12 @@ export async function proxyProviderRequest(
 
 	if (!response.ok) {
 		const errorData = data as Record<string, unknown>;
-		const errorCode = errorData.errorCode as string | undefined;
+		const errorCode =
+			typeof errorData.errorCode === "string"
+				? errorData.errorCode
+				: response.status === 401 && errorData.status === "auth_required"
+					? "auth_required"
+					: undefined;
 
 		// Intercept approval_required: create pending approval for /approve flow
 		if (

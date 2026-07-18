@@ -300,6 +300,8 @@ function summarizeAction(action: CronAction): {
 				actionKind: action.kind,
 				actionSummary: `household reminder (${action.reminderId}, revision=${action.revision})`,
 			};
+		case "household-metrics-digest":
+			return { actionKind: action.kind, actionSummary: "household metrics digest" };
 	}
 }
 
