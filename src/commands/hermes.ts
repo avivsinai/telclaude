@@ -57,6 +57,13 @@ import {
 	runHermesHostilePeerProbe,
 } from "../hermes/hostile-peer-probes.js";
 import {
+	DEFAULT_HOUSEHOLD_MEDIA_EVIDENCE_PATH,
+	HOUSEHOLD_MEDIA_PROBE_ID,
+	householdMediaProbeEvidenceFailure,
+	runHouseholdMediaProbe,
+	writeHouseholdMediaProbeEvidence,
+} from "../hermes/household-media-probe.js";
+import {
 	DEFAULT_HOUSEHOLD_REMINDER_EVIDENCE_PATH,
 	HOUSEHOLD_REMINDER_PROBE_ID,
 	householdReminderProbeEvidenceFailure,
@@ -503,6 +510,21 @@ function allHermesFeatureProbeDefinitions(): readonly FeatureProbeDefinition[] {
 			evidence_path: DEFAULT_SIDE_EFFECT_LEDGER_EVIDENCE_PATH,
 			lockfile_key: "featureProbes.sideeffect.ledger",
 			security_scope: "side-effect-ledger",
+			approval_equivalent: true,
+			failure_outcome: "disable",
+		},
+		{
+			surface_id: HOUSEHOLD_MEDIA_PROBE_ID,
+			documented_seam:
+				"Telclaude owns household attachment quarantine, bounded derivation, exact confirmation, one-shot execution, outbound metadata binding, and WhatsApp filename delivery outside Hermes.",
+			probe_command: `pnpm dev hermes probe ${HOUSEHOLD_MEDIA_PROBE_ID} --allow-run --out ${DEFAULT_HOUSEHOLD_MEDIA_EVIDENCE_PATH}`,
+			expected_result:
+				"Two isolated household authorities complete voice and document derivation, exact confirmation, one-shot execution, and safe named-PDF delivery with signed sanitized evidence.",
+			negative_probe:
+				"Cross-parent custody, unsupported media, active documents, action mutation, confirmation replay, execution replay, metadata drift, and incomplete activation gates fail closed.",
+			evidence_path: DEFAULT_HOUSEHOLD_MEDIA_EVIDENCE_PATH,
+			lockfile_key: "featureProbes.household.media",
+			security_scope: "household-media",
 			approval_equivalent: true,
 			failure_outcome: "disable",
 		},
@@ -3617,6 +3639,40 @@ export function registerHermesCommand(program: Command): void {
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}
 				process.exitCode = householdReminderProbeEvidenceFailure(report, {
+					allowStaleAttestations: true,
+				})
+					? 1
+					: 0;
+				return;
+			}
+
+			if (surface === HOUSEHOLD_MEDIA_PROBE_ID) {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
+				const report = await runHouseholdMediaProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_HOUSEHOLD_MEDIA_EVIDENCE_PATH);
+					writeHouseholdMediaProbeEvidence(report, outPath, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = householdMediaProbeEvidenceFailure(report, {
 					allowStaleAttestations: true,
 				})
 					? 1

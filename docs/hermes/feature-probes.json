@@ -427,6 +427,22 @@
       "status": "pass"
     },
     {
+      "surface_id": "household.media",
+      "documented_seam": "Telclaude owns household attachment quarantine, bounded derivation, exact confirmation, one-shot execution, outbound metadata binding, and WhatsApp filename delivery outside Hermes.",
+      "probe_command": "pnpm dev hermes probe household.media --allow-run --out artifacts/hermes/probes/household-media.json",
+      "expected_result": "Two isolated household authorities complete voice and document derivation, exact confirmation, one-shot execution, and safe named-PDF delivery with signed sanitized evidence.",
+      "negative_probe": "Cross-parent custody, unsupported media, active documents, action mutation, confirmation replay, execution replay, metadata drift, and incomplete activation gates fail closed.",
+      "evidence_path": "artifacts/hermes/probes/household-media.json",
+      "lockfile_key": "featureProbes.household.media",
+      "security_scope": "household-media",
+      "approval_equivalent": true,
+      "failure_outcome": "disable",
+      "hermes_pin": {
+        "version": "0.15.1"
+      },
+      "status": "pass"
+    },
+    {
       "surface_id": "browser.profiles",
       "documented_seam": "Telclaude browser/computer broker owns browser profile custody, computer target authorization, and outbound network egress mediation.",
       "probe_command": "pnpm dev hermes probe browser.profiles --allow-run --out artifacts/hermes/probes/browser-profiles.json",

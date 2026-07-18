@@ -22,4 +22,21 @@ describe("Hermes adapter signature files", () => {
 			]),
 		);
 	});
+
+	it("binds the household media signature to every M3 custody and execution owner", () => {
+		expect(hermesAdapterSignatureFilesForSurface("household.media")).toEqual(
+			expect.arrayContaining([
+				"src/config/profiles.ts",
+				"src/relay/attachment-quarantine-store.ts",
+				"src/relay/inbound-media-processor.ts",
+				"src/relay/media-action-confirmation-store.ts",
+				"src/hermes/mcp/live-relay-clients.ts",
+				"src/relay/outbound-delivery-dispatcher.ts",
+				"src/relay/whatsapp-edge-channel-connector.ts",
+				"src/whatsapp-bridge/contract.ts",
+				"src/hermes/household-media-probe.ts",
+				"src/hermes/household-media-attestation.ts",
+			]),
+		);
+	});
 });

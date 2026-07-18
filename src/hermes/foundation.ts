@@ -29,6 +29,7 @@ import {
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
 import { HOSTILE_PEER_PROBE_ID, hostilePeerProbeEvidenceFailure } from "./hostile-peer-probes.js";
+import { householdMediaProbeEvidenceFailure } from "./household-media-probe.js";
 import { householdReminderProbeEvidenceFailure } from "./household-reminder-probe.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import {
@@ -143,6 +144,7 @@ export const FeatureProbeSchema = z
 				"side-effect-ledger",
 				"workflow-ledger",
 				"household-reminder",
+				"household-media",
 			])
 			.optional(),
 		approval_equivalent: z.boolean().optional(),
@@ -557,6 +559,38 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/household-reminder-probe.ts",
 		"src/hermes/household-reminder-attestation.ts",
 	],
+	"household.media": [
+		"src/config/config.ts",
+		"src/config/profiles.ts",
+		"src/storage/db.ts",
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/mcp/approval-token.ts",
+		"src/hermes/mcp/side-effect-ledger.ts",
+		"src/hermes/mcp/ledger-execute.ts",
+		"src/hermes/mcp/live-relay-clients.ts",
+		"src/relay/attachment-content-sniffer.ts",
+		"src/relay/attachment-quarantine-store.ts",
+		"src/relay/attachment-quarantine-sweeper.ts",
+		"src/relay/whatsapp-inbound-cl1.ts",
+		"src/relay/inbound-media-processor.ts",
+		"src/relay/document-understanding-adapter.ts",
+		"src/relay/media-confidence-policy.ts",
+		"src/relay/derived-media-action-classifier.ts",
+		"src/relay/interactive-choice-lease.ts",
+		"src/relay/media-action-confirmation-store.ts",
+		"src/relay/media-action-confirmation-dispatcher.ts",
+		"src/relay/media-action-confirmation-control-policy.ts",
+		"src/relay/media-action-confirmation-control-sender.ts",
+		"src/relay/media-action-confirmation-copy.ts",
+		"src/relay/whatsapp-media-action-confirmation-interceptor.ts",
+		"src/relay/outbound-delivery-dispatcher.ts",
+		"src/relay/whatsapp-edge-channel-connector.ts",
+		"src/whatsapp-bridge/contract.ts",
+		"src/whatsapp-bridge/index.ts",
+		"src/whatsapp-bridge/idempotency-journal.ts",
+		"src/hermes/household-media-probe.ts",
+		"src/hermes/household-media-attestation.ts",
+	],
 	"browser.profiles": [
 		"src/hermes/browser-computer-broker-probes.ts",
 		"src/hermes/edge-adapter-contract.ts",
@@ -595,6 +629,11 @@ const P0_PARITY_DIGEST_FILES = [
 	"tests/hermes/household-reminder-attestation.test.ts",
 	"tests/integration/household-reminder-phase0.test.ts",
 	"tests/household-reminders/time.test.ts",
+	"src/hermes/household-media-probe.ts",
+	"src/hermes/household-media-attestation.ts",
+	"tests/hermes/household-media-probe.test.ts",
+	"tests/hermes/household-media-attestation.test.ts",
+	"tests/integration/household-media-phase0.test.ts",
 	"src/hermes/workflow-run-ledger.ts",
 	"src/hermes/workflow-probes.ts",
 	"src/hermes/browser-computer-broker-probes.ts",
@@ -1161,6 +1200,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "household.reminders") {
 			return [collectHouseholdReminderProbeEvidence(probe, options)];
+		}
+		if (probe.surface_id === "household.media") {
+			return [collectHouseholdMediaProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "providers.approval-binding") {
 			return [collectProviderApprovalBindingProbeEvidence(probe, options)];
@@ -2225,6 +2267,43 @@ function collectHouseholdReminderProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed the signed Phase 0 acceptance matrix`,
+	};
+}
+
+function collectHouseholdMediaProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = householdMediaProbeEvidenceFailure(evidence, options);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed the signed Phase 0 media acceptance matrix`,
 	};
 }
 

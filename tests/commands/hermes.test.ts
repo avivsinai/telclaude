@@ -1517,6 +1517,45 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("writes signed sanitized household media acceptance evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-household-media-probe-"));
+		const evidencePath = path.join(tempDir, "household-media.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"household.media",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			probeId: string;
+			status: string;
+			observations: Record<string, unknown>;
+			runnerAttestation?: { evidenceSha256?: string };
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(artifact).toMatchObject({
+			probeId: "household.media",
+			status: "pass",
+			observations: {
+				parentCount: 2,
+				executedActionCount: 2,
+				namedPdfDeliveryCount: 2,
+				artifactSanitized: true,
+			},
+			runnerAttestation: {
+				evidenceSha256: expect.stringMatching(/^sha256:/),
+			},
+		});
+		expect(JSON.stringify(artifact)).not.toMatch(
+			/OpusHead|raw-parent|private\/tmp|quarantineId|providerId|EXIF|filename|bytes|actorId|subjectUserId|conversationId/i,
+		);
+	});
+
 	it("refuses to run signed probe surfaces without the operator relay signing key", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-signed-probe-missing-key-"));
 		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
@@ -1527,6 +1566,7 @@ describe("Hermes wrapper foundation", () => {
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 			for (const [surface, filename] of [
 				["edge.whatsapp", "edge-whatsapp.json"],
+				["household.media", "household-media.json"],
 				["household.reminders", "household-reminders.json"],
 				["sideeffect.ledger", "sideeffect-ledger.json"],
 				["providers.approval-binding", "providers-approval-binding.json"],
@@ -1577,6 +1617,7 @@ describe("Hermes wrapper foundation", () => {
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 			for (const [surface, filename] of [
 				["edge.whatsapp", "edge-whatsapp.json"],
+				["household.media", "household-media.json"],
 				["household.reminders", "household-reminders.json"],
 				["workflow.cron", "workflow-cron.json"],
 				["workflow.longrun", "workflow-longrun.json"],
