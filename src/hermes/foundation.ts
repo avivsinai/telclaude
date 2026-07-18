@@ -29,6 +29,7 @@ import {
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
 import { HOSTILE_PEER_PROBE_ID, hostilePeerProbeEvidenceFailure } from "./hostile-peer-probes.js";
+import { householdReminderProbeEvidenceFailure } from "./household-reminder-probe.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import {
 	NO_FORK_RUNNER_ATTESTATION_RUNNER,
@@ -141,6 +142,7 @@ export const FeatureProbeSchema = z
 				"served-mcp-provider-tools",
 				"side-effect-ledger",
 				"workflow-ledger",
+				"household-reminder",
 			])
 			.optional(),
 		approval_equivalent: z.boolean().optional(),
@@ -525,6 +527,36 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/mcp/approval-token.ts",
 		"src/hermes/mcp/side-effect-ledger-probe.ts",
 	],
+	"household.reminders": [
+		"src/config/config.ts",
+		"src/config/profiles.ts",
+		"src/storage/db.ts",
+		"src/cron/types.ts",
+		"src/cron/store.ts",
+		"src/cron/actions.ts",
+		"src/cron/scheduler.ts",
+		"src/cron/index.ts",
+		"src/household-reminders/types.ts",
+		"src/household-reminders/binding.ts",
+		"src/household-reminders/copy.ts",
+		"src/household-reminders/store.ts",
+		"src/household-reminders/time.ts",
+		"src/household-reminders/render.ts",
+		"src/household-reminders/fire-executor.ts",
+		"src/household-reminders/system-origin-authorizer.ts",
+		"src/household-reminders/system-origin-policy.ts",
+		"src/hermes/mcp/side-effect-ledger.ts",
+		"src/hermes/mcp/ledger-execute.ts",
+		"src/relay/outbound-delivery-dispatcher.ts",
+		"src/relay/whatsapp-reminder-confirmation-interceptor.ts",
+		"src/relay/reminder-confirmation-control-policy.ts",
+		"src/relay/reminder-confirmation-control-sender.ts",
+		"src/whatsapp-bridge/contract.ts",
+		"src/whatsapp-bridge/idempotency-journal.ts",
+		"src/whatsapp-bridge/index.ts",
+		"src/hermes/household-reminder-probe.ts",
+		"src/hermes/household-reminder-attestation.ts",
+	],
 	"browser.profiles": [
 		"src/hermes/browser-computer-broker-probes.ts",
 		"src/hermes/edge-adapter-contract.ts",
@@ -557,6 +589,12 @@ const P0_PARITY_DIGEST_FILES = [
 	"src/hermes/edge-adapter-contract.ts",
 	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
+	"src/hermes/household-reminder-probe.ts",
+	"src/hermes/household-reminder-attestation.ts",
+	"tests/hermes/household-reminder-probe.test.ts",
+	"tests/hermes/household-reminder-attestation.test.ts",
+	"tests/integration/household-reminder-phase0.test.ts",
+	"tests/household-reminders/time.test.ts",
 	"src/hermes/workflow-run-ledger.ts",
 	"src/hermes/workflow-probes.ts",
 	"src/hermes/browser-computer-broker-probes.ts",
@@ -1120,6 +1158,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "sideeffect.ledger") {
 			return [collectSideEffectLedgerProbeEvidence(probe, options)];
+		}
+		if (probe.surface_id === "household.reminders") {
+			return [collectHouseholdReminderProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "providers.approval-binding") {
 			return [collectProviderApprovalBindingProbeEvidence(probe, options)];
@@ -2147,6 +2188,43 @@ function collectProviderApprovalBindingProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed provider approval-binding controls`,
+	};
+}
+
+function collectHouseholdReminderProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = householdReminderProbeEvidenceFailure(evidence, options);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed the signed Phase 0 acceptance matrix`,
 	};
 }
 

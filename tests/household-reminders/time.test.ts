@@ -35,6 +35,28 @@ describe("household reminder Jerusalem one-shot resolution", () => {
 		).toThrow(/ambiguous/i);
 	});
 
+	it("accepts the instants immediately adjacent to both DST transitions", () => {
+		const springNow = Date.parse("2026-03-25T00:00:00.000Z");
+		expect(resolveJerusalemOneShot("2026-03-27T01:59", { nowMs: springNow })).toMatchObject({
+			resolvedAt: "2026-03-26T23:59:00.000Z",
+			offsetMinutes: 120,
+		});
+		expect(resolveJerusalemOneShot("2026-03-27T03:00", { nowMs: springNow })).toMatchObject({
+			resolvedAt: "2026-03-27T00:00:00.000Z",
+			offsetMinutes: 180,
+		});
+
+		const autumnNow = Date.parse("2026-10-23T00:00:00.000Z");
+		expect(resolveJerusalemOneShot("2026-10-25T00:59", { nowMs: autumnNow })).toMatchObject({
+			resolvedAt: "2026-10-24T21:59:00.000Z",
+			offsetMinutes: 180,
+		});
+		expect(resolveJerusalemOneShot("2026-10-25T02:00", { nowMs: autumnNow })).toMatchObject({
+			resolvedAt: "2026-10-25T00:00:00.000Z",
+			offsetMinutes: 120,
+		});
+	});
+
 	it("rejects past, invalid, sub-minute, and over-horizon values", () => {
 		const nowMs = Date.parse("2026-01-01T00:00:00.000Z");
 		expect(() => resolveJerusalemOneShot("2025-12-31T23:00", { nowMs })).toThrow(/future/i);

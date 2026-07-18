@@ -411,6 +411,22 @@
       "status": "pass"
     },
     {
+      "surface_id": "household.reminders",
+      "documented_seam": "Telclaude owns household reminder confirmation, frozen scheduling, system-origin authorization, durable delivery, and replay receipts outside Hermes.",
+      "probe_command": "pnpm dev hermes probe household.reminders --allow-run --out artifacts/hermes/probes/household-reminders.json",
+      "expected_result": "Two isolated household authorities complete create, edit, cancel, revoke, frozen-instant fire, receipt, and restart recovery with one WhatsApp delivery and no Telegram or Hermes delivery.",
+      "negative_probe": "Cross-household access, DST gap or overlap, revoked consent, duplicate receipt, pending restart drift, and idempotency digest mismatch fail closed.",
+      "evidence_path": "artifacts/hermes/probes/household-reminders.json",
+      "lockfile_key": "featureProbes.household.reminders",
+      "security_scope": "household-reminder",
+      "approval_equivalent": true,
+      "failure_outcome": "disable",
+      "hermes_pin": {
+        "version": "0.15.1"
+      },
+      "status": "pass"
+    },
+    {
       "surface_id": "browser.profiles",
       "documented_seam": "Telclaude browser/computer broker owns browser profile custody, computer target authorization, and outbound network egress mediation.",
       "probe_command": "pnpm dev hermes probe browser.profiles --allow-run --out artifacts/hermes/probes/browser-profiles.json",
