@@ -74,6 +74,8 @@ function cronActionLabel(action: CronAction): string {
 			return action.serviceId ?? "Social heartbeat";
 		case "household-reminder":
 			return "Household reminder";
+		case "household-metrics-digest":
+			return "Household metrics digest";
 	}
 }
 

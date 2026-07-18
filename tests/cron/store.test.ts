@@ -187,6 +187,46 @@ describe("cron store", () => {
 		expect(getCronJob(created.id)).toMatchObject({ enabled: false, nextRunAtMs: null });
 	});
 
+	it("keeps one Jerusalem daily household metrics digest job and rolls it to the next wall-clock day", async () => {
+		const { claimDueCronJobs, completeClaimedCronJob, getCronJob, syncHouseholdMetricsDigestCron } =
+			await import("../../src/cron/store.js");
+		const now = Date.parse("2026-07-18T05:00:00.000Z");
+
+		const created = syncHouseholdMetricsDigestCron({ enabled: true, atHour: 8, nowMs: now });
+		if (!created) throw new Error("enabled digest job was not created");
+		expect(created).toMatchObject({
+			id: "household-metrics-digest",
+			enabled: true,
+			action: { kind: "household-metrics-digest", atHour: 8 },
+			schedule: { kind: "at", at: "2026-07-19T05:00:00.000Z" },
+			nextRunAtMs: Date.parse("2026-07-19T05:00:00.000Z"),
+		});
+
+		const [claimed] = claimDueCronJobs(Date.parse("2026-07-19T05:00:00.000Z"));
+		const claimedAtMs = claimed.nextRunAtMs;
+		if (claimedAtMs === null) throw new Error("digest claim is missing its scheduled instant");
+		completeClaimedCronJob({
+			job: claimed,
+			startedAtMs: claimedAtMs,
+			finishedAtMs: claimedAtMs + 1_000,
+			status: "success",
+			message: "sent",
+		});
+		expect(getCronJob(created.id)).toMatchObject({
+			enabled: true,
+			schedule: { kind: "at", at: "2026-07-20T05:00:00.000Z" },
+			nextRunAtMs: Date.parse("2026-07-20T05:00:00.000Z"),
+		});
+
+		expect(
+			syncHouseholdMetricsDigestCron({
+				enabled: false,
+				atHour: 8,
+				nowMs: now + 2_000,
+			}),
+		).toMatchObject({ enabled: false, nextRunAtMs: null });
+	});
+
 	it("claims and completes due jobs", async () => {
 		const { addCronJob, claimDueCronJobs, completeClaimedCronJob, getCronJob } = await import(
 			"../../src/cron/store.js"

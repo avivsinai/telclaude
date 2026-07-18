@@ -14,6 +14,7 @@ export type CronActionDependencies = {
 		input: { readonly reminderId: string; readonly revision: number },
 		signal: AbortSignal,
 	) => Promise<CronActionResult>;
+	readonly executeHouseholdMetricsDigest?: () => Promise<CronActionResult>;
 };
 
 export async function executeCronAction(
@@ -119,6 +120,13 @@ export async function executeCronAction(
 						ok: false,
 						message: "household reminder executor is unavailable",
 					};
+		case "household-metrics-digest":
+			if (!cfg.householdMetrics?.enabled || !cfg.householdMetrics.dailyDigest.enabled) {
+				return { ok: false, message: "household metrics digest is disabled in config" };
+			}
+			return dependencies.executeHouseholdMetricsDigest
+				? dependencies.executeHouseholdMetricsDigest()
+				: { ok: false, message: "household metrics digest executor is unavailable" };
 		case "curator-scan": {
 			const result = runCuratorScan({ producerKind: "system" });
 			return {

@@ -858,6 +858,17 @@ const TelclaudeConfigSchema = z.object({
 	householdReminders: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
 	householdMedia: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
 	householdEmergency: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
+	householdMetrics: z
+		.object({
+			enabled: z.boolean().default(false),
+			dailyDigest: z
+				.object({
+					enabled: z.boolean().default(false),
+					atHour: z.number().int().min(0).max(23).default(8),
+				})
+				.default({ enabled: false, atHour: 8 }),
+		})
+		.default({ enabled: false, dailyDigest: { enabled: false, atHour: 8 } }),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
 	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),

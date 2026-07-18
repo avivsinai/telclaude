@@ -221,6 +221,9 @@ function formatAction(action: CronAction): string {
 	if (action.kind === "household-reminder") {
 		return `household reminder (${action.reminderId}, revision=${action.revision})`;
 	}
+	if (action.kind === "household-metrics-digest") {
+		return "household metrics digest";
+	}
 	if (action.serviceId) {
 		return `social heartbeat (${action.serviceId})`;
 	}

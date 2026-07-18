@@ -159,5 +159,17 @@ describe("cron command formatting", () => {
 				"reminder-opaque",
 			]),
 		).rejects.toMatchObject({ code: "commander.unknownOption" });
+
+		await expect(
+			program.parseAsync([
+				"node",
+				"telclaude",
+				"cron",
+				"add",
+				"--at",
+				"2026-08-01T06:00:00.000Z",
+				"--household-metrics-digest",
+			]),
+		).rejects.toMatchObject({ code: "commander.unknownOption" });
 	});
 });

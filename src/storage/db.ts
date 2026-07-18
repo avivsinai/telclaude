@@ -449,6 +449,7 @@ function initializeSchema(database: Database.Database): void {
 			action_preprocess_json TEXT,
 			action_reminder_id TEXT,
 			action_reminder_revision INTEGER,
+			action_digest_at_hour INTEGER,
 			owner_id TEXT,
 			delivery_target_kind TEXT NOT NULL DEFAULT 'origin',
 			delivery_chat_id INTEGER,
@@ -680,6 +681,18 @@ function initializeSchema(database: Database.Database): void {
 		);
 		CREATE INDEX IF NOT EXISTS idx_household_reminder_fires_state
 			ON household_reminder_fires(state, updated_at_ms);
+
+		-- Content-free household product counters. Binding keys are operator-assigned
+		-- opaque slugs; no message, address, subject, or error content is stored.
+		CREATE TABLE IF NOT EXISTS household_metrics (
+			metric_kind TEXT NOT NULL,
+			binding_key TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			count INTEGER NOT NULL DEFAULT 0 CHECK(count >= 0),
+			PRIMARY KEY(metric_kind, binding_key, window_start)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_metrics_window
+			ON household_metrics(window_start, binding_key);
 
 		-- Plan approvals (two-phase execution preview for FULL_ACCESS)
 		CREATE TABLE IF NOT EXISTS plan_approvals (
@@ -970,6 +983,12 @@ function initializeSchema(database: Database.Database): void {
 		"cron_jobs",
 		"action_reminder_revision",
 		"ALTER TABLE cron_jobs ADD COLUMN action_reminder_revision INTEGER",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_digest_at_hour",
+		"ALTER TABLE cron_jobs ADD COLUMN action_digest_at_hour INTEGER",
 	);
 	ensureColumn(database, "cron_jobs", "owner_id", "ALTER TABLE cron_jobs ADD COLUMN owner_id TEXT");
 	ensureColumn(
