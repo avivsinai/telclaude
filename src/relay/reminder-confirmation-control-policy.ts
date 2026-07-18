@@ -32,6 +32,7 @@ export type ReminderConfirmationControlPolicyStore = {
 		readonly bindingId: string;
 		readonly conversationToken: string;
 		readonly expectedAddress: string;
+		readonly deliveryRef?: string;
 	}): PreparedOutbound;
 	claim(prepared: PreparedOutbound): boolean;
 	complete(prepared: PreparedOutbound, sent: boolean): void;
@@ -79,7 +80,10 @@ export function createReminderConfirmationControlPolicyStore(options: {
 			) {
 				throw new Error("reminder control destination is not binding-owned");
 			}
-			const ref = `${required(input.bindingId, "bindingId")}:${required(makeRef(), "ref")}`;
+			const deliveryRef = input.deliveryRef
+				? requiredInterceptionReceiptRef(input.deliveryRef)
+				: required(makeRef(), "ref");
+			const ref = `${required(input.bindingId, "bindingId")}:${deliveryRef}`;
 			const now = nowMs();
 			const authorized = PreparedOutboundSchema.parse({
 				...prepared,
@@ -131,7 +135,9 @@ export function createReminderConfirmationControlPolicyStore(options: {
 			}
 			return {
 				conversationToken: conversation.token,
-				threadMessageIds: conversation.threadMessageIds,
+				// Control ACK retries must remain byte-identical after the first send
+				// records a platform message ID on the live conversation.
+				threadMessageIds: [],
 			};
 		},
 
@@ -149,4 +155,12 @@ function required(value: string, field: string): string {
 	const trimmed = value.trim();
 	if (!trimmed) throw new Error(`reminder control policy ${field} is missing`);
 	return trimmed;
+}
+
+function requiredInterceptionReceiptRef(value: string): string {
+	const ref = required(value, "deliveryRef");
+	if (!/^reminder-interception:[a-f0-9]{64}$/.test(ref)) {
+		throw new Error("reminder control deliveryRef is invalid");
+	}
+	return ref;
 }

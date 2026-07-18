@@ -10,10 +10,12 @@ import { HOUSEHOLD_REMINDER_CONFIRMATION_COPY } from "../../src/household-remind
 import {
 	confirmHouseholdReminderProposal,
 	getHouseholdReminderForAuthority,
+	getHouseholdReminderInterceptionReceipt,
 	getPendingHouseholdReminderProposal,
 	prepareHouseholdReminderCancellation,
 	prepareHouseholdReminderCreate,
 	prepareHouseholdReminderUpdate,
+	resolveHouseholdReminderProposalWithInterceptionReceipt,
 } from "../../src/household-reminders/store.js";
 import { createPendingProviderChallengeRegistry } from "../../src/relay/pending-provider-challenge.js";
 import type {
@@ -90,11 +92,106 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 				identity: fixture.identity,
 				conversation: fixture.conversation,
 			}),
-		).toEqual({ handled: false });
+		).toEqual({ handled: true, templateId: "confirmed" });
 		expect(getHouseholdReminderForAuthority(reminder.id, fixture.context.authority)).toEqual(
 			afterConfirmation,
 		);
 		expect(fixture.sendControl).toHaveBeenCalledTimes(sentCount);
+	});
+
+	it("recovers a crash before ACK completion without a second proposal mutation", async () => {
+		const fixture = reminderFixture();
+		const reminder = fixture.arm();
+		fixture.sendControl.mockRejectedValueOnce(new Error("simulated crash before ack completion"));
+		const event = inbound({ eventId: "event-crash", messageId: "message-crash", text: "1" });
+
+		await expect(
+			fixture.intercept({ event, identity: fixture.identity, conversation: fixture.conversation }),
+		).rejects.toThrow(/simulated crash/);
+		expect(getHouseholdReminderForAuthority(reminder.id, fixture.context.authority)?.status).toBe(
+			"scheduled",
+		);
+		const receipt = getHouseholdReminderInterceptionReceipt({
+			eventId: event.eventId,
+			messageId: event.messageId,
+			authority: fixture.context.authority,
+			binding: fixture.context.binding,
+		});
+		expect(receipt).toMatchObject({ status: "pending_ack", templateId: "confirmed" });
+		expect(fixture.sendControl).toHaveBeenCalledTimes(1);
+		const firstSend = fixture.sendControl.mock.calls[0]?.[0];
+
+		await expect(
+			fixture.intercept({ event, identity: fixture.identity, conversation: fixture.conversation }),
+		).resolves.toEqual({ handled: true, templateId: "confirmed" });
+		expect(fixture.sendControl).toHaveBeenCalledTimes(2);
+		expect(fixture.sendControl.mock.calls[1]?.[0]).toEqual(firstSend);
+		expect(
+			getHouseholdReminderInterceptionReceipt({
+				eventId: event.eventId,
+				messageId: event.messageId,
+				authority: fixture.context.authority,
+				binding: fixture.context.binding,
+			}),
+		).toMatchObject({ status: "acked" });
+
+		await fixture.intercept({
+			event,
+			identity: fixture.identity,
+			conversation: fixture.conversation,
+		});
+		expect(fixture.sendControl).toHaveBeenCalledTimes(2);
+	});
+
+	it("retries the same delivery ref after send-before-ACK without mutating twice", async () => {
+		const fixture = reminderFixture();
+		const reminder = fixture.arm();
+		const proposal = getPendingHouseholdReminderProposal(
+			fixture.context.authority,
+			fixture.context.binding,
+		);
+		if (!proposal) throw new Error("test proposal missing");
+		const event = inbound({
+			eventId: "event-after-send",
+			messageId: "message-after-send",
+			text: "1",
+		});
+		const receipt = resolveHouseholdReminderProposalWithInterceptionReceipt({
+			eventId: event.eventId,
+			messageId: event.messageId,
+			proposalRef: proposal.ref,
+			choice: "confirm",
+			...fixture.context,
+			nowMs: NOW_MS,
+		});
+		if (!receipt) throw new Error("test receipt missing");
+		const delivery = {
+			templateId: receipt.templateId,
+			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY[receipt.templateId],
+			replyAddressRef: fixture.identity.replyAddressRef,
+			bindingId: fixture.identity.bindingId,
+			deliveryRef: receipt.receiptId,
+		};
+		await fixture.sendControl(delivery);
+		// Simulate process death after the bridge accepted the send but before the
+		// relay could mark the durable receipt acked.
+		expect(receipt.status).toBe("pending_ack");
+
+		await expect(
+			fixture.intercept({ event, identity: fixture.identity, conversation: fixture.conversation }),
+		).resolves.toEqual({ handled: true, templateId: "confirmed" });
+		expect(fixture.sendControl.mock.calls).toEqual([[delivery], [delivery]]);
+		expect(getHouseholdReminderForAuthority(reminder.id, fixture.context.authority)?.status).toBe(
+			"scheduled",
+		);
+		expect(
+			getHouseholdReminderInterceptionReceipt({
+				eventId: event.eventId,
+				messageId: event.messageId,
+				authority: fixture.context.authority,
+				binding: fixture.context.binding,
+			}),
+		).toMatchObject({ status: "acked" });
 	});
 
 	it("rejects with 2 and never accepts whitespace or non-ASCII lookalikes", async () => {

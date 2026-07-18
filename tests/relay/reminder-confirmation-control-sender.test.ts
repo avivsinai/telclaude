@@ -124,6 +124,83 @@ describe("reminder confirmation control sender", () => {
 		expect(dispatch).not.toHaveBeenCalled();
 		expect(policyStore.list()).toEqual([]);
 	});
+
+	it("reconstructs the same byte-stable outbound for a pending receipt retry", async () => {
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		mintConversation(conversationStore);
+		const policyStore = createReminderConfirmationControlPolicyStore({
+			conversationStore,
+			nowMs: () => NOW,
+		});
+		const preparedAttempts: Parameters<typeof policyStore.claim>[0][] = [];
+		const dispatch = vi.fn(async (prepared) => {
+			preparedAttempts.push(prepared);
+			expect(await policyStore.resolveConversation(prepared)).toMatchObject({
+				threadMessageIds: [],
+			});
+			return DeliveryReceiptSchema.parse({
+				schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+				outboundRef: prepared.outboundRef,
+				platformMessageId: "wa-reminder-control-stable",
+				deliveryStatus: "sent",
+				timestamps: {
+					observedAt: new Date(NOW).toISOString(),
+					sentAt: new Date(NOW).toISOString(),
+				},
+				retry: { attempt: 1, maxAttempts: 3, idempotencyKey: prepared.idempotencyKey },
+			});
+		});
+		let edgeNow = NOW;
+		const sender = createReminderConfirmationControlSender({
+			config,
+			conversationStore,
+			edgeRuntime: new TelclaudeEdgeRuntime({ now: () => new Date(edgeNow).toISOString() }),
+			dispatch,
+			policyStore,
+		});
+		const input = {
+			templateId: "confirmed" as const,
+			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.confirmed,
+			replyAddressRef: ADDRESS,
+			bindingId: "parent-a",
+			deliveryRef: `reminder-interception:${"a".repeat(64)}`,
+		};
+
+		await sender(input);
+		edgeNow += 1_000;
+		conversationStore.recordThreadMessageId(
+			conversationStore.list({ channel: "whatsapp" })[0].token,
+			"wa-reminder-control-stable",
+		);
+		await sender(input);
+
+		expect(dispatch).toHaveBeenCalledTimes(2);
+		const stableRequestFields = ({
+			outboundRef,
+			idempotencyKey,
+			sideEffectLedgerRef,
+			edgePreparedHash,
+			resolvedDestination,
+			finalRenderedBody,
+			mediaRefs,
+		}: Parameters<typeof policyStore.claim>[0]) => ({
+			outboundRef,
+			idempotencyKey,
+			sideEffectLedgerRef,
+			edgePreparedHash,
+			resolvedDestination,
+			finalRenderedBody,
+			mediaRefs,
+		});
+		expect(stableRequestFields(preparedAttempts[1])).toEqual(
+			stableRequestFields(preparedAttempts[0]),
+		);
+		expect(preparedAttempts[1].createdAt).not.toBe(preparedAttempts[0].createdAt);
+		expect(preparedAttempts[0]).toMatchObject({
+			outboundRef: expect.stringContaining(input.deliveryRef),
+			idempotencyKey: expect.stringContaining(input.deliveryRef),
+		});
+	});
 });
 
 function mintConversation(store: RelayConversationStore) {

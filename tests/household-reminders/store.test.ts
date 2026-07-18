@@ -517,6 +517,112 @@ describe("household reminder store", () => {
 		});
 	});
 
+	it("atomically resolves one inbound choice with a content-minimal pending ACK receipt", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		const created = store.prepareHouseholdReminderCreate({
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "להביא מסמכים",
+			schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+			source: { kind: "parent" },
+			nowMs: NOW_MS,
+		});
+		const input = {
+			eventId: "wa:event:choice-1",
+			messageId: "wa-message-choice-1",
+			proposalRef: created.proposal.ref,
+			choice: "confirm" as const,
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			nowMs: NOW_MS + 1_000,
+		};
+
+		const receipt = store.resolveHouseholdReminderProposalWithInterceptionReceipt(input);
+		expect(receipt).toMatchObject({
+			receiptId: expect.stringMatching(/^reminder-interception:[a-f0-9]{64}$/),
+			templateId: "confirmed",
+			status: "pending_ack",
+			proposalRef: created.proposal.ref,
+			proposalHash: created.proposal.proposalHash,
+		});
+		expect(store.getHouseholdReminderForAuthority(created.reminder.id, AUTHORITY_A)?.status).toBe(
+			"scheduled",
+		);
+		expect(store.resolveHouseholdReminderProposalWithInterceptionReceipt(input)).toEqual(receipt);
+		expect(
+			store.getHouseholdReminderInterceptionReceipt({
+				eventId: input.eventId,
+				messageId: input.messageId,
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+			}),
+		).toEqual(receipt);
+
+		const raw = getDb()
+			.prepare("SELECT * FROM household_reminder_interception_receipts WHERE receipt_id = ?")
+			.get(receipt?.receiptId) as Record<string, unknown>;
+		expect(JSON.stringify(raw)).not.toMatch(/להביא|text|body|destination|address|recipient/);
+		expect(Object.keys(raw).sort()).toEqual(
+			[
+				"actor_id",
+				"binding_id",
+				"conversation_id",
+				"created_at_ms",
+				"event_id_hash",
+				"message_id_hash",
+				"profile_id",
+				"proposal_hash",
+				"proposal_ref",
+				"receipt_id",
+				"status",
+				"subject_user_id",
+				"template_id",
+				"updated_at_ms",
+			].sort(),
+		);
+		if (!receipt) throw new Error("test interception receipt missing");
+		expect(
+			store.markHouseholdReminderInterceptionReceiptAcked(receipt.receiptId, NOW_MS + 2_000),
+		).toMatchObject({ status: "acked", updatedAtMs: NOW_MS + 2_000 });
+	});
+
+	it("rolls proposal mutation back when the interception receipt cannot persist", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		const created = store.prepareHouseholdReminderCreate({
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "להביא מסמכים",
+			schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+			source: { kind: "parent" },
+			nowMs: NOW_MS,
+		});
+		getDb().exec(`CREATE TRIGGER block_reminder_interception_receipt
+			BEFORE INSERT ON household_reminder_interception_receipts
+			BEGIN SELECT RAISE(ABORT, 'receipt blocked'); END`);
+
+		expect(() =>
+			store.resolveHouseholdReminderProposalWithInterceptionReceipt({
+				eventId: "wa:event:rollback",
+				messageId: "wa-message-rollback",
+				proposalRef: created.proposal.ref,
+				choice: "confirm",
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: CONSENT_A,
+				nowMs: NOW_MS + 1_000,
+			}),
+		).toThrow(/receipt blocked/);
+		expect(store.getHouseholdReminderForAuthority(created.reminder.id, AUTHORITY_A)?.status).toBe(
+			"pending_confirmation",
+		);
+		expect(store.getPendingHouseholdReminderProposal(AUTHORITY_A, BINDING_A)).not.toBeNull();
+	});
+
 	it("adds consent and fire-ledger columns to an earlier Wave 1 database", async () => {
 		const { closeDb, getDb } = await import("../../src/storage/db.js");
 		closeDb();

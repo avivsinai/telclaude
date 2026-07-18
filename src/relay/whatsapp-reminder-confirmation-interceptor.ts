@@ -6,10 +6,11 @@ import {
 	type HouseholdReminderConfirmationTemplateId,
 } from "../household-reminders/copy.js";
 import {
-	confirmHouseholdReminderProposal,
+	getHouseholdReminderInterceptionReceipt,
 	getPendingHouseholdReminderProposal,
-	type HouseholdReminderProposalResolution,
-	rejectHouseholdReminderProposal,
+	type HouseholdReminderInterceptionReceipt,
+	markHouseholdReminderInterceptionReceiptAcked,
+	resolveHouseholdReminderProposalWithInterceptionReceipt,
 } from "../household-reminders/store.js";
 import type { WhatsAppReminderConfirmationControlSender } from "./reminder-confirmation-control-sender.js";
 import type {
@@ -64,6 +65,15 @@ export function createWhatsAppReminderConfirmationInterceptor(options: {
 		if (!context || context.binding.conversationId !== identity.conversationId) {
 			return { handled: false };
 		}
+		const existingReceipt = getHouseholdReminderInterceptionReceipt({
+			eventId: event.eventId,
+			messageId: event.messageId,
+			authority: context.authority,
+			binding: context.binding,
+		});
+		if (existingReceipt) {
+			return acknowledgeReceipt(options.sendControl, identity, existingReceipt, nowMs());
+		}
 		const proposal = getPendingHouseholdReminderProposal(context.authority, context.binding);
 		if (!proposal) return { handled: false };
 
@@ -73,23 +83,17 @@ export function createWhatsAppReminderConfirmationInterceptor(options: {
 				? sendTemplate(options.sendControl, identity, "choice_required")
 				: { handled: false };
 		}
-		const resolution =
-			choice === "confirm"
-				? confirmHouseholdReminderProposal({
-						proposalRef: proposal.ref,
-						...context,
-						nowMs: nowMs(),
-					})
-				: rejectHouseholdReminderProposal({
-						proposalRef: proposal.ref,
-						...context,
-						nowMs: nowMs(),
-					});
-		return sendTemplate(
-			options.sendControl,
-			identity,
-			resolutionTemplate(resolution, proposal.action, choice),
-		);
+		const receipt = resolveHouseholdReminderProposalWithInterceptionReceipt({
+			eventId: event.eventId,
+			messageId: event.messageId,
+			proposalRef: proposal.ref,
+			choice,
+			...context,
+			nowMs: nowMs(),
+		});
+		return receipt
+			? acknowledgeReceipt(options.sendControl, identity, receipt, nowMs())
+			: sendTemplate(options.sendControl, identity, "failed");
 	};
 }
 
@@ -102,19 +106,6 @@ export function parseWhatsAppReminderChoice(text: string | undefined): "confirm"
 function isReminderChoiceAttempt(text: string | undefined): boolean {
 	if (text === undefined || text.length > 32) return false;
 	return REMINDER_CHOICE_ATTEMPTS.has(text.normalize("NFKC").trim().toLowerCase());
-}
-
-function resolutionTemplate(
-	resolution: HouseholdReminderProposalResolution,
-	action: "create" | "update" | "cancel",
-	choice: "confirm" | "reject",
-): HouseholdReminderConfirmationTemplateId {
-	if (!resolution.ok) {
-		return resolution.code === "proposal_expired" ? "proposal_expired" : "failed";
-	}
-	if (resolution.reminder.status === "cancelled") return "rejected";
-	if (choice === "reject" && action !== "create") return "unchanged";
-	return "confirmed";
 }
 
 function isCurrentConversation(
@@ -130,6 +121,27 @@ function isCurrentConversation(
 		conversation.conversationId === identity.conversationId &&
 		conversation.profileId === identity.profileId
 	);
+}
+
+async function acknowledgeReceipt(
+	sendControl: WhatsAppReminderConfirmationControlSender,
+	identity: Extract<WhatsAppIdentityResolution, { domain: "household" }>,
+	receipt: HouseholdReminderInterceptionReceipt,
+	nowMs: number,
+): Promise<Extract<WhatsAppReminderConfirmationInterceptResult, { handled: true }>> {
+	if (receipt.status === "pending_ack") {
+		await sendControl({
+			templateId: receipt.templateId,
+			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY[receipt.templateId],
+			replyAddressRef: identity.replyAddressRef,
+			bindingId: identity.bindingId,
+			deliveryRef: receipt.receiptId,
+		});
+		if (!markHouseholdReminderInterceptionReceiptAcked(receipt.receiptId, nowMs)) {
+			throw new Error("household reminder interception ACK persistence failed");
+		}
+	}
+	return { handled: true, templateId: receipt.templateId };
 }
 
 async function sendTemplate(

@@ -19,6 +19,8 @@ export type WhatsAppReminderConfirmationControlSender = (input: {
 	readonly body: string;
 	readonly replyAddressRef: string;
 	readonly bindingId: string;
+	/** Durable interception receipt ref. Exact retries must reuse it. */
+	readonly deliveryRef?: string;
 }) => Promise<void>;
 
 export function createReminderConfirmationControlSender(options: {
@@ -63,6 +65,7 @@ export function createReminderConfirmationControlSender(options: {
 			bindingId: binding.bindingId,
 			conversationToken: conversation.token,
 			expectedAddress: binding.replyAddress,
+			...(input.deliveryRef ? { deliveryRef: input.deliveryRef } : {}),
 		});
 		if (!options.policyStore.claim(authorized)) throw new Error("reminder control replay denied");
 		let sent = false;

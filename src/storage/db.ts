@@ -497,6 +497,25 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_household_reminder_proposals_authority
 			ON household_reminder_proposals(actor_id, subject_user_id, profile_id, created_at_ms DESC);
 
+		CREATE TABLE IF NOT EXISTS household_reminder_interception_receipts (
+			receipt_id TEXT PRIMARY KEY,
+			event_id_hash TEXT NOT NULL,
+			message_id_hash TEXT NOT NULL,
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			proposal_ref TEXT NOT NULL,
+			proposal_hash TEXT NOT NULL,
+			template_id TEXT NOT NULL CHECK(template_id IN ('confirmed','rejected','unchanged','proposal_expired','failed')),
+			status TEXT NOT NULL CHECK(status IN ('pending_ack','acked')),
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_reminder_interception_receipts_status
+			ON household_reminder_interception_receipts(status, updated_at_ms);
+
 		CREATE TABLE IF NOT EXISTS household_reminder_fires (
 			fire_id TEXT PRIMARY KEY,
 			reminder_id TEXT NOT NULL,

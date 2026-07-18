@@ -5,6 +5,7 @@ import {
 } from "../cron/store.js";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { getDb } from "../storage/db.js";
+import type { HouseholdReminderConfirmationTemplateId } from "./copy.js";
 import { validateJerusalemOneShotSchedule } from "./time.js";
 import type {
 	HouseholdReminder,
@@ -21,6 +22,11 @@ import type {
 
 const DEFAULT_PROPOSAL_TTL_MS = 10 * 60 * 1_000;
 const SHA256_REF_RE = /^sha256:[a-f0-9]{64}$/;
+
+type HouseholdReminderAckTemplateId = Exclude<
+	HouseholdReminderConfirmationTemplateId,
+	"choice_required"
+>;
 
 type ReminderPayload = {
 	readonly text: string;
@@ -102,6 +108,23 @@ type FireRow = {
 	updated_at_ms: number;
 };
 
+type InterceptionReceiptRow = {
+	receipt_id: string;
+	event_id_hash: string;
+	message_id_hash: string;
+	actor_id: string;
+	subject_user_id: string;
+	profile_id: string;
+	binding_id: string;
+	conversation_id: string;
+	proposal_ref: string;
+	proposal_hash: string;
+	template_id: HouseholdReminderAckTemplateId;
+	status: HouseholdReminderInterceptionReceipt["status"];
+	created_at_ms: number;
+	updated_at_ms: number;
+};
+
 export type HouseholdReminderProposalResolution =
 	| { readonly ok: true; readonly reminder: HouseholdReminder }
 	| {
@@ -121,6 +144,18 @@ export type HouseholdReminderConfirmedPolicySnapshot = {
 		readonly proposalHash: Sha256Ref;
 		readonly action: "create" | "update";
 	};
+};
+
+export type HouseholdReminderInterceptionReceipt = {
+	readonly receiptId: string;
+	readonly eventIdHash: Sha256Ref;
+	readonly messageIdHash: Sha256Ref;
+	readonly proposalRef: string;
+	readonly proposalHash: Sha256Ref;
+	readonly templateId: HouseholdReminderAckTemplateId;
+	readonly status: "pending_ack" | "acked";
+	readonly createdAtMs: number;
+	readonly updatedAtMs: number;
 };
 
 export function householdReminderBindingFingerprint(binding: HouseholdReminderBinding): Sha256Ref {
@@ -443,6 +478,134 @@ export function rejectHouseholdReminderProposal(input: {
 			reminder,
 		};
 	})();
+}
+
+export function getHouseholdReminderInterceptionReceipt(input: {
+	readonly eventId: string;
+	readonly messageId: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+}): HouseholdReminderInterceptionReceipt | null {
+	const authority = normalizeAuthority(input.authority);
+	const binding = normalizeBinding(input.binding);
+	const eventId = nonEmpty(input.eventId, "eventId");
+	const messageId = nonEmpty(input.messageId, "messageId");
+	const receiptId = interceptionReceiptId({
+		eventId,
+		messageId,
+		authority,
+		binding,
+	});
+	const row = getDb()
+		.prepare(
+			`SELECT * FROM household_reminder_interception_receipts
+			 WHERE receipt_id = ? AND actor_id = ? AND subject_user_id = ? AND profile_id = ?
+			 AND binding_id = ? AND conversation_id = ?`,
+		)
+		.get(
+			receiptId,
+			authority.actorId,
+			authority.subjectUserId,
+			authority.profileId,
+			binding.bindingId,
+			binding.conversationId,
+		) as InterceptionReceiptRow | undefined;
+	if (
+		!row ||
+		row.event_id_hash !== interceptionValueHash("event", eventId) ||
+		row.message_id_hash !== interceptionValueHash("message", messageId)
+	) {
+		return null;
+	}
+	return rowToInterceptionReceipt(row);
+}
+
+export function resolveHouseholdReminderProposalWithInterceptionReceipt(input: {
+	readonly eventId: string;
+	readonly messageId: string;
+	readonly proposalRef: string;
+	readonly choice: "confirm" | "reject";
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+	readonly consent: HouseholdReminderConsentReceipt;
+	readonly nowMs?: number;
+}): HouseholdReminderInterceptionReceipt | null {
+	const { authority, binding } = normalizeContext(input);
+	const eventId = nonEmpty(input.eventId, "eventId");
+	const messageId = nonEmpty(input.messageId, "messageId");
+	const nowMs = normalizeNow(input.nowMs);
+	return getDb().transaction(() => {
+		const existing = getHouseholdReminderInterceptionReceipt({
+			eventId,
+			messageId,
+			authority,
+			binding,
+		});
+		if (existing) return existing;
+		const proposal = findPendingProposal(input.proposalRef, authority);
+		if (!proposal) return null;
+		const resolution =
+			input.choice === "confirm"
+				? confirmHouseholdReminderProposal({
+						proposalRef: proposal.ref,
+						authority: input.authority,
+						binding: input.binding,
+						consent: input.consent,
+						nowMs,
+					})
+				: rejectHouseholdReminderProposal({
+						proposalRef: proposal.ref,
+						authority: input.authority,
+						binding: input.binding,
+						consent: input.consent,
+						nowMs,
+					});
+		const receiptId = interceptionReceiptId({ eventId, messageId, authority, binding });
+		getDb()
+			.prepare(
+				`INSERT INTO household_reminder_interception_receipts (
+				 receipt_id, event_id_hash, message_id_hash,
+				 actor_id, subject_user_id, profile_id, binding_id, conversation_id,
+				 proposal_ref, proposal_hash, template_id, status, created_at_ms, updated_at_ms
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_ack', ?, ?)`,
+			)
+			.run(
+				receiptId,
+				interceptionValueHash("event", eventId),
+				interceptionValueHash("message", messageId),
+				authority.actorId,
+				authority.subjectUserId,
+				authority.profileId,
+				binding.bindingId,
+				binding.conversationId,
+				proposal.ref,
+				proposal.proposal_hash,
+				interceptionResolutionTemplate(resolution, proposal.action, input.choice),
+				nowMs,
+				nowMs,
+			);
+		return requireInterceptionReceipt(receiptId);
+	})();
+}
+
+export function markHouseholdReminderInterceptionReceiptAcked(
+	receiptIdInput: string,
+	nowMsInput?: number,
+): HouseholdReminderInterceptionReceipt | null {
+	const receiptId = nonEmpty(receiptIdInput, "receiptId");
+	const nowMs = normalizeNow(nowMsInput);
+	const changed = getDb()
+		.prepare(
+			`UPDATE household_reminder_interception_receipts
+			 SET status = 'acked', updated_at_ms = ?
+			 WHERE receipt_id = ? AND status = 'pending_ack'`,
+		)
+		.run(nowMs, receiptId);
+	if (changed.changes === 0) {
+		const existing = readInterceptionReceipt(receiptId);
+		return existing?.status === "acked" ? existing : null;
+	}
+	return requireInterceptionReceipt(receiptId);
 }
 
 export function getHouseholdReminderForAuthority(
@@ -1117,6 +1280,22 @@ function rowToFire(row: FireRow): HouseholdReminderFire {
 	};
 }
 
+function rowToInterceptionReceipt(
+	row: InterceptionReceiptRow,
+): HouseholdReminderInterceptionReceipt {
+	return {
+		receiptId: row.receipt_id,
+		eventIdHash: sha256Ref(row.event_id_hash),
+		messageIdHash: sha256Ref(row.message_id_hash),
+		proposalRef: row.proposal_ref,
+		proposalHash: sha256Ref(row.proposal_hash),
+		templateId: row.template_id,
+		status: row.status,
+		createdAtMs: row.created_at_ms,
+		updatedAtMs: row.updated_at_ms,
+	};
+}
+
 function rowToProposal(row: ProposalRow): HouseholdReminderProposal {
 	return {
 		ref: row.ref,
@@ -1162,6 +1341,56 @@ function findPendingProposal(
 				authority.profileId,
 			) as ProposalRow | undefined) ?? null
 	);
+}
+
+function readInterceptionReceipt(receiptId: string): HouseholdReminderInterceptionReceipt | null {
+	const row = getDb()
+		.prepare("SELECT * FROM household_reminder_interception_receipts WHERE receipt_id = ?")
+		.get(receiptId) as InterceptionReceiptRow | undefined;
+	return row ? rowToInterceptionReceipt(row) : null;
+}
+
+function requireInterceptionReceipt(receiptId: string): HouseholdReminderInterceptionReceipt {
+	const receipt = readInterceptionReceipt(receiptId);
+	if (!receipt) throw new Error("household reminder interception receipt persistence failure");
+	return receipt;
+}
+
+function interceptionReceiptId(input: {
+	readonly eventId: string;
+	readonly messageId: string;
+	readonly authority: HouseholdReminderAuthority;
+	readonly binding: HouseholdReminderBinding;
+}): string {
+	const digest = canonicalSha256({
+		domain: "telclaude.household-reminder-interception-receipt.v1",
+		eventId: nonEmpty(input.eventId, "eventId"),
+		messageId: nonEmpty(input.messageId, "messageId"),
+		authority: input.authority,
+		bindingId: input.binding.bindingId,
+		conversationId: input.binding.conversationId,
+	});
+	return `reminder-interception:${digest.slice("sha256:".length)}`;
+}
+
+function interceptionValueHash(kind: "event" | "message", value: string): Sha256Ref {
+	return canonicalSha256({
+		domain: `telclaude.household-reminder-interception-${kind}.v1`,
+		value,
+	});
+}
+
+function interceptionResolutionTemplate(
+	resolution: HouseholdReminderProposalResolution,
+	action: HouseholdReminderProposalAction,
+	choice: "confirm" | "reject",
+): HouseholdReminderAckTemplateId {
+	if (!resolution.ok) {
+		return resolution.code === "proposal_expired" ? "proposal_expired" : "failed";
+	}
+	if (resolution.reminder.status === "cancelled") return "rejected";
+	if (choice === "reject" && action !== "create") return "unchanged";
+	return "confirmed";
 }
 
 function getReminderRevision(reminderId: string, revision: number): HouseholdReminder | null {
