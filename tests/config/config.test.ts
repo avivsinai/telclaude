@@ -224,6 +224,7 @@ describe("config defaults", () => {
 						whatsappHouseholdBindings: [
 							{
 								bindingId: "parent-a",
+								addresseeGender: "f",
 								address: "+15551234567",
 								replyAddress: "whatsapp:+15551234567",
 								displayName: "Parent A",
@@ -239,12 +240,52 @@ describe("config defaults", () => {
 		expect(cfg.profiles[0]?.whatsappHouseholdBindings).toEqual([
 			{
 				bindingId: "parent-a",
+				addresseeGender: "f",
 				address: "whatsapp:+15551234567",
 				replyAddress: "whatsapp:+15551234567",
 				displayName: "Parent A",
 				subjectUserId: "household:parent-a",
 			},
 		]);
+	});
+
+	it("requires a reviewed household addressee gender", () => {
+		setConfigPath(configPath());
+		const binding = {
+			bindingId: "parent-a",
+			address: "whatsapp:+15551234567",
+			replyAddress: "whatsapp:+15551234567",
+			displayName: "Parent A",
+			subjectUserId: "household:parent-a",
+		};
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [binding],
+		};
+
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		expect(() => loadConfig()).toThrow(/addresseeGender/i);
+
+		for (const addresseeGender of ["female", "unknown", ""] as const) {
+			resetConfigCache();
+			fs.writeFileSync(
+				configPath(),
+				JSON.stringify({
+					profiles: [
+						{
+							...profile,
+							whatsappHouseholdBindings: [{ ...binding, addresseeGender }],
+						},
+					],
+				}),
+			);
+			expect(() => loadConfig()).toThrow(/addresseeGender/i);
+		}
 	});
 
 	it("rejects unsafe household subjects, broad profiles, and duplicate addresses", () => {
@@ -259,6 +300,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: "whatsapp:+15551234567",
 					replyAddress: "whatsapp:+15551234567",
 					displayName: "Parent A",
@@ -276,6 +318,7 @@ describe("config defaults", () => {
 						whatsappHouseholdBindings: [
 							{
 								bindingId: "parent-a",
+								addresseeGender: "f",
 								address: "whatsapp:+15551234567",
 								replyAddress: "whatsapp:+15551234567",
 								displayName: "Parent A",
@@ -307,6 +350,7 @@ describe("config defaults", () => {
 						whatsappHouseholdBindings: [
 							{
 								bindingId: "parent-b",
+								addresseeGender: "m",
 								address: "+15551234567",
 								replyAddress: "+15551234567",
 								displayName: "Parent B",
@@ -348,6 +392,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address,
 					replyAddress: address,
 					displayName: "Parent A",
@@ -431,6 +476,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address,
 					replyAddress: address,
 					displayName: "Parent A",
@@ -479,6 +525,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: "whatsapp:+15551234567",
 					replyAddress: "whatsapp:+15551234567",
 					displayName: "Parent A",

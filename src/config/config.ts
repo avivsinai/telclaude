@@ -287,6 +287,7 @@ const HouseholdReminderConsentSchema = z
 const WhatsAppHouseholdBindingSchema = z
 	.object({
 		bindingId: z.string().refine(isValidHouseholdBindingId, "invalid opaque household binding id"),
+		addresseeGender: z.enum(["f", "m"]),
 		address: WhatsAppAddressRefSchema,
 		replyAddress: WhatsAppAddressRefSchema,
 		displayName: z.string().trim().min(1).max(80),

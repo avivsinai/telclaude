@@ -38,7 +38,7 @@ describe("provider challenge control sender", () => {
 		);
 		const { createProviderChallengeControlPolicyStore, createProviderChallengeControlSender } =
 			await import("../../src/relay/provider-challenge-control-sender.js");
-		const { WHATSAPP_PROVIDER_CHALLENGE_COPY } = await import(
+		const { whatsAppProviderChallengeCopy } = await import(
 			"../../src/relay/whatsapp-provider-challenge-interceptor.js"
 		);
 		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
@@ -75,7 +75,7 @@ describe("provider challenge control sender", () => {
 
 		await sender({
 			templateId: "challenge_sent",
-			body: WHATSAPP_PROVIDER_CHALLENGE_COPY.challenge_sent,
+			body: whatsAppProviderChallengeCopy("challenge_sent", "f"),
 			replyAddressRef: ADDRESS,
 			bindingId: "parent-a",
 		});
@@ -86,6 +86,7 @@ describe("provider challenge control sender", () => {
 			origin: "relay_system_provider_challenge_control",
 			templateId: "challenge_sent",
 			bindingId: "parent-a",
+			addresseeGender: "f",
 			status: "sent",
 		});
 		expect(record).not.toHaveProperty("body");
@@ -159,6 +160,7 @@ const config = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: ADDRESS,
 					replyAddress: ADDRESS,
 					displayName: "Parent A",

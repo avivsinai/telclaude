@@ -21,6 +21,7 @@ export type EffectiveOperatorProfile = {
 
 export type ResolvedWhatsAppHouseholdBinding = {
 	readonly bindingId: string;
+	readonly addresseeGender: "f" | "m";
 	readonly actorId: string;
 	readonly subjectUserId: string;
 	readonly memorySource: ReturnType<typeof householdMemorySource>;
@@ -122,6 +123,7 @@ export function resolveWhatsAppHouseholdBinding(
 		const memorySource = householdMemorySource(binding.bindingId);
 		return {
 			bindingId: binding.bindingId,
+			addresseeGender: binding.addresseeGender,
 			actorId: `household:whatsapp:${binding.bindingId}`,
 			subjectUserId: binding.subjectUserId,
 			memorySource,

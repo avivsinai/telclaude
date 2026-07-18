@@ -8,8 +8,8 @@ import {
 	relayConversationToConversationRef,
 } from "../hermes/relay-conversation-store.js";
 import {
-	HOUSEHOLD_REMINDER_CONFIRMATION_COPY,
 	type HouseholdReminderConfirmationTemplateId,
+	householdReminderConfirmationCopy,
 } from "../household-reminders/copy.js";
 import type { OutboundDeliveryDispatcher } from "./outbound-delivery-dispatcher.js";
 import type { ReminderConfirmationControlPolicyStore } from "./reminder-confirmation-control-policy.js";
@@ -35,7 +35,9 @@ export function createReminderConfirmationControlSender(options: {
 		if (!binding || binding.replyAddress !== input.replyAddressRef) {
 			throw new Error("reminder control binding is unavailable");
 		}
-		if (input.body !== HOUSEHOLD_REMINDER_CONFIRMATION_COPY[input.templateId]) {
+		if (
+			input.body !== householdReminderConfirmationCopy(input.templateId, binding.addresseeGender)
+		) {
 			throw new Error("reminder control body is not relay-owned");
 		}
 		const conversations = options.conversationStore
@@ -63,6 +65,7 @@ export function createReminderConfirmationControlSender(options: {
 			prepared,
 			templateId: input.templateId,
 			bindingId: binding.bindingId,
+			addresseeGender: binding.addresseeGender,
 			conversationToken: conversation.token,
 			expectedAddress: binding.replyAddress,
 			...(input.deliveryRef ? { deliveryRef: input.deliveryRef } : {}),

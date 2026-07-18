@@ -9,7 +9,7 @@ import type {
 import {
 	createWhatsAppProviderChallengeInterceptor,
 	parseWhatsAppOtp,
-	WHATSAPP_PROVIDER_CHALLENGE_COPY,
+	whatsAppProviderChallengeCopy,
 } from "../../src/relay/whatsapp-provider-challenge-interceptor.js";
 
 describe("WhatsApp provider challenge interceptor", () => {
@@ -176,7 +176,82 @@ describe("WhatsApp provider challenge interceptor", () => {
 
 		expect(publicSurfaces).not.toContain("864209");
 		expect(publicSurfaces).not.toContain("provider-secret-never-serialize");
-		expect(Object.values(WHATSAPP_PROVIDER_CHALLENGE_COPY).join(" ")).not.toMatch(/[0-9]{4,8}/);
+		const fixedCopy = (["f", "m"] as const).flatMap((gender) =>
+			(
+				[
+					"challenge_sent",
+					"challenge_type_digits",
+					"challenge_invalid_format",
+					"challenge_success_repeat_request",
+					"challenge_expired_restart",
+					"challenge_failed_restart",
+					"challenge_unarmed_safety",
+				] as const
+			).map((templateId) => whatsAppProviderChallengeCopy(templateId, gender)),
+		);
+		expect(fixedCopy.join(" ")).not.toMatch(/[0-9]{4,8}/);
+	});
+
+	it("renders exact fixed copy for the binding addressee gender", async () => {
+		const female = challengeFixture({ addresseeGender: "f" });
+		const male = challengeFixture({ addresseeGender: "m" });
+		female.arm();
+		male.arm();
+
+		await female.intercept({
+			event: inbound({ attachments: [{ mediaType: "audio/ogg", bytesBase64: "x" }] }),
+			identity: female.identity,
+			conversation: female.conversation,
+		});
+		await male.intercept({
+			event: inbound({ attachments: [{ mediaType: "audio/ogg", bytesBase64: "x" }] }),
+			identity: male.identity,
+			conversation: male.conversation,
+		});
+
+		expect(female.sendControl).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "תכתבי את המספרים בהודעה" }),
+		);
+		expect(male.sendControl).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "תכתוב את המספרים בהודעה" }),
+		);
+	});
+
+	it.each([
+		[
+			"challenge_sent",
+			"שלחנו עכשיו קוד אימות ב-SMS. שלחי כאן רק את הספרות מההודעה.",
+			"שלחנו עכשיו קוד אימות ב-SMS. שלח כאן רק את הספרות מההודעה.",
+		],
+		["challenge_type_digits", "תכתבי את המספרים בהודעה", "תכתוב את המספרים בהודעה"],
+		[
+			"challenge_invalid_format",
+			"שלחי רק את קוד האימות בן 4 עד 8 הספרות.",
+			"שלח רק את קוד האימות בן 4 עד 8 הספרות.",
+		],
+		[
+			"challenge_success_repeat_request",
+			"האימות הושלם. עכשיו שלחי שוב את הבקשה המקורית.",
+			"האימות הושלם. עכשיו שלח שוב את הבקשה המקורית.",
+		],
+		[
+			"challenge_expired_restart",
+			"קוד האימות פג. התחילי שוב את החיבור לשירות.",
+			"קוד האימות פג. התחל שוב את החיבור לשירות.",
+		],
+		[
+			"challenge_failed_restart",
+			"לא הצלחנו לאמת את הקוד. התחילי שוב את החיבור לשירות.",
+			"לא הצלחנו לאמת את הקוד. התחל שוב את החיבור לשירות.",
+		],
+		[
+			"challenge_unarmed_safety",
+			"אין כרגע אימות שממתין לקוד. אל תשלחי קודי אימות בצ׳אט.",
+			"אין כרגע אימות שממתין לקוד. אל תשלח קודי אימות בצ׳אט.",
+		],
+	] as const)("pins %s copy for both variants", (templateId, female, male) => {
+		expect(whatsAppProviderChallengeCopy(templateId, "f")).toBe(female);
+		expect(whatsAppProviderChallengeCopy(templateId, "m")).toBe(male);
 	});
 });
 
@@ -200,11 +275,15 @@ function challengeFixture(
 		readonly nowMs?: () => number;
 		readonly sidecarExpiresAtMs?: number;
 		readonly responseStatus?: "success" | "rejected" | "expired" | "error";
+		readonly addresseeGender?: "f" | "m";
 	} = {},
 ) {
 	const nowMs = options.nowMs ?? (() => 100_000);
 	const registry = createPendingProviderChallengeRegistry({ nowMs });
-	const identity = householdIdentity("parent-a", "+15550000001");
+	const identity = {
+		...householdIdentity("parent-a", "+15550000001"),
+		addresseeGender: options.addresseeGender ?? "f",
+	};
 	const conversation = householdConversation(identity, "a");
 	const binding = {
 		bindingId: identity.bindingId,
@@ -253,6 +332,7 @@ function householdIdentity(
 	return {
 		domain: "household",
 		bindingId,
+		addresseeGender: bindingId === "parent-b" ? "m" : "f",
 		actorId: `household:whatsapp:${bindingId}`,
 		subjectUserId: `household:${bindingId}`,
 		profileId: bindingId,

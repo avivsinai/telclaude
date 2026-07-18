@@ -1113,7 +1113,11 @@ export function createTelclaudeLiveMcpRelayClients(
 					proposalHash: prepared.proposal.proposalHash,
 					status: prepared.reminder.status,
 				});
-				return householdProposalView(prepared.reminder, prepared.proposal.action);
+				return householdProposalView(
+					prepared.reminder,
+					prepared.proposal.action,
+					context.addresseeGender,
+				);
 			}
 			// ownerId + delivery target are resolved SERVER-SIDE from the authority.
 			// The agent's input never carries an ownerId/chatId/threadId/deliveryTarget.
@@ -1170,7 +1174,11 @@ export function createTelclaudeLiveMcpRelayClients(
 					proposalHash: prepared.proposal.proposalHash,
 					status: prepared.reminder.status,
 				});
-				return householdProposalView(prepared.reminder, prepared.proposal.action);
+				return householdProposalView(
+					prepared.reminder,
+					prepared.proposal.action,
+					context.addresseeGender,
+				);
 			}
 			const ownerId = resolveScheduleOwnerOrThrow(resolveScheduleOwner, request);
 			const job = getCronJob(request.jobId);
@@ -1209,7 +1217,11 @@ export function createTelclaudeLiveMcpRelayClients(
 				proposalHash: prepared.proposal.proposalHash,
 				status: prepared.reminder.status,
 			});
-			return householdProposalView(prepared.reminder, prepared.proposal.action);
+			return householdProposalView(
+				prepared.reminder,
+				prepared.proposal.action,
+				context.addresseeGender,
+			);
 		},
 	};
 }
@@ -1250,13 +1262,14 @@ function householdOneShotSchedule(schedule: TelclaudeMcpScheduleInput) {
 function householdProposalView(
 	reminder: HouseholdReminder,
 	action: "create" | "update" | "cancel",
+	addresseeGender: "f" | "m",
 ) {
 	return {
 		reminderId: reminder.id,
 		revision: reminder.revision,
 		status: reminder.status,
 		confirmationRequired: true,
-		confirmationPrompt: householdReminderProposalPrompt(action, reminder),
+		confirmationPrompt: householdReminderProposalPrompt(action, reminder, addresseeGender),
 	};
 }
 

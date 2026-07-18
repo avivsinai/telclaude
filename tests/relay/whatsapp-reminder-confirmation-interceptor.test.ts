@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import type { RelayConversation } from "../../src/hermes/relay-conversation-store.js";
 import { resolveHouseholdReminderContext } from "../../src/household-reminders/binding.js";
-import { HOUSEHOLD_REMINDER_CONFIRMATION_COPY } from "../../src/household-reminders/copy.js";
+import { householdReminderConfirmationCopy } from "../../src/household-reminders/copy.js";
 import {
 	confirmHouseholdReminderProposal,
 	getHouseholdReminderForAuthority,
@@ -62,10 +62,10 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 			}),
 		).toEqual({ handled: true, templateId: "choice_required" });
 		expect(fixture.sendControl).toHaveBeenLastCalledWith(
-			expect.objectContaining({ body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.choice_required }),
+			expect.objectContaining({ body: householdReminderConfirmationCopy("choice_required", "f") }),
 		);
-		expect(HOUSEHOLD_REMINDER_CONFIRMATION_COPY.choice_required).toContain("1. אישור");
-		expect(HOUSEHOLD_REMINDER_CONFIRMATION_COPY.choice_required).toContain("2. ביטול");
+		expect(householdReminderConfirmationCopy("choice_required", "f")).toContain("1. אישור");
+		expect(householdReminderConfirmationCopy("choice_required", "f")).toContain("2. ביטול");
 
 		expect(
 			await fixture.intercept({
@@ -167,7 +167,7 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 		if (!receipt) throw new Error("test receipt missing");
 		const delivery = {
 			templateId: receipt.templateId,
-			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY[receipt.templateId],
+			body: householdReminderConfirmationCopy(receipt.templateId, "f"),
 			replyAddressRef: fixture.identity.replyAddressRef,
 			bindingId: fixture.identity.bindingId,
 			deliveryRef: receipt.receiptId,
@@ -268,7 +268,7 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 			}),
 		).toEqual({ handled: true, templateId: "unchanged" });
 		expect(fixture.sendControl).toHaveBeenLastCalledWith(
-			expect.objectContaining({ body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.unchanged }),
+			expect.objectContaining({ body: householdReminderConfirmationCopy("unchanged", "f") }),
 		);
 		expect(getHouseholdReminderForAuthority(reminder.id, fixture.context.authority)?.status).toBe(
 			"scheduled",
@@ -292,11 +292,11 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 		).toEqual({ handled: true, templateId: "proposal_expired" });
 		expect(fixture.sendControl).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.proposal_expired,
+				body: householdReminderConfirmationCopy("proposal_expired", "f"),
 			}),
 		);
-		expect(HOUSEHOLD_REMINDER_CONFIRMATION_COPY.proposal_expired).not.toBe(
-			HOUSEHOLD_REMINDER_CONFIRMATION_COPY.rejected,
+		expect(householdReminderConfirmationCopy("proposal_expired", "f")).not.toBe(
+			householdReminderConfirmationCopy("rejected", "f"),
 		);
 		expect(getHouseholdReminderForAuthority(reminder.id, fixture.context.authority)?.status).toBe(
 			"scheduled",
@@ -319,7 +319,7 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 			}),
 		).toEqual({ handled: true, templateId: "failed" });
 		expect(fixture.sendControl).toHaveBeenLastCalledWith(
-			expect.objectContaining({ body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.failed }),
+			expect.objectContaining({ body: householdReminderConfirmationCopy("failed", "f") }),
 		);
 	});
 
@@ -490,6 +490,7 @@ function householdIdentity(): Extract<WhatsAppIdentityResolution, { domain: "hou
 	return {
 		domain: "household",
 		bindingId: "parent-a",
+		addresseeGender: "f",
 		actorId: "household:whatsapp:parent-a",
 		subjectUserId: "household:parent-a",
 		profileId: "parent-a",
@@ -566,6 +567,7 @@ const config = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: ADDRESS,
 					replyAddress: ADDRESS,
 					displayName: "Parent A",

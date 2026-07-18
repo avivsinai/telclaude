@@ -12,6 +12,7 @@ export type HouseholdReminderContext = {
 	readonly authority: HouseholdReminderAuthority;
 	readonly binding: HouseholdReminderBinding;
 	readonly consent: HouseholdReminderConsentReceipt;
+	readonly addresseeGender: "f" | "m";
 };
 
 export function resolveHouseholdReminderContext(
@@ -31,6 +32,7 @@ export function resolveHouseholdReminderContext(
 		return null;
 	}
 	return {
+		addresseeGender: resolved.addresseeGender,
 		authority: {
 			actorId: resolved.actorId,
 			subjectUserId: resolved.subjectUserId,

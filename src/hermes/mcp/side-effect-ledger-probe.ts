@@ -1096,6 +1096,7 @@ function providerChallengeIdentity(
 	return {
 		domain: "household",
 		bindingId,
+		addresseeGender: bindingId === "parent-a" ? "f" : "m",
 		actorId: `household:whatsapp:${bindingId}`,
 		subjectUserId: `household:${bindingId}`,
 		profileId: bindingId,

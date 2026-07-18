@@ -495,6 +495,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					whatsappHouseholdBindings: [
 						{
 							bindingId: "parent-a",
+							addresseeGender: "f",
 							address: householdPhone,
 							replyAddress: householdPhone,
 							displayName: "Parent A",
@@ -1075,6 +1076,7 @@ const householdProfile: EffectiveOperatorProfile = {
 	whatsappHouseholdBindings: [
 		{
 			bindingId: "parent-a",
+			addresseeGender: "f",
 			address: "whatsapp:+15557654321",
 			replyAddress: "whatsapp:+15557654321",
 			displayName: "Parent A",

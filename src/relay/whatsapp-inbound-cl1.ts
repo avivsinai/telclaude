@@ -75,6 +75,7 @@ export type WhatsAppIdentityResolution =
 	| (WhatsAppIdentityResolutionBase & {
 			readonly domain: "household";
 			readonly bindingId: string;
+			readonly addresseeGender: "f" | "m";
 			readonly subjectUserId: string;
 			readonly memorySource: `household:${string}`;
 			readonly writableNamespace: `household:${string}`;

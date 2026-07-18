@@ -731,6 +731,7 @@ function revokedReminderConfig(householdContext: ScenarioContext): TelclaudeConf
 				whatsappHouseholdBindings: [
 					{
 						bindingId: householdContext.binding.bindingId,
+						addresseeGender: householdContext.binding.bindingId === "parent-a" ? "f" : "m",
 						address,
 						replyAddress: address,
 						displayName: "Household probe parent",

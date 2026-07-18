@@ -2,8 +2,8 @@ import type { TelclaudeConfig } from "../config/config.js";
 import type { RelayConversation } from "../hermes/relay-conversation-store.js";
 import { resolveHouseholdReminderContext } from "../household-reminders/binding.js";
 import {
-	HOUSEHOLD_REMINDER_CONFIRMATION_COPY,
 	type HouseholdReminderConfirmationTemplateId,
+	householdReminderConfirmationCopy,
 } from "../household-reminders/copy.js";
 import {
 	getHouseholdReminderInterceptionReceipt,
@@ -132,7 +132,7 @@ async function acknowledgeReceipt(
 	if (receipt.status === "pending_ack") {
 		await sendControl({
 			templateId: receipt.templateId,
-			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY[receipt.templateId],
+			body: householdReminderConfirmationCopy(receipt.templateId, identity.addresseeGender),
 			replyAddressRef: identity.replyAddressRef,
 			bindingId: identity.bindingId,
 			deliveryRef: receipt.receiptId,
@@ -151,7 +151,7 @@ async function sendTemplate(
 ): Promise<Extract<WhatsAppReminderConfirmationInterceptResult, { handled: true }>> {
 	await sendControl({
 		templateId,
-		body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY[templateId],
+		body: householdReminderConfirmationCopy(templateId, identity.addresseeGender),
 		replyAddressRef: identity.replyAddressRef,
 		bindingId: identity.bindingId,
 	});
