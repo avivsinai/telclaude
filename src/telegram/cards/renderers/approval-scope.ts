@@ -6,6 +6,7 @@ import {
 	hasPendingToolApprovalWait,
 	resolvePendingToolApproval,
 } from "../../../security/approvals.js";
+import { redactSecrets } from "../../../security/output-filter.js";
 import { type ApprovalScope, scopeAllowedForRisk } from "../../../security/risk-tiers.js";
 import type {
 	ApprovalScopeCardAction,
@@ -22,6 +23,16 @@ import { btn, esc, keyboard, renderTerminalState } from "./helpers.js";
 const logger = getChildLogger({ module: "approval-scope-card" });
 
 type K = typeof CardKind.ApprovalScope;
+
+function sanitizeCardState(state: ApprovalScopeCardState): ApprovalScopeCardState {
+	return {
+		...state,
+		title: redactSecrets(state.title),
+		body: redactSecrets(state.body),
+		toolKey: redactSecrets(state.toolKey),
+		...(state.explanation ? { explanation: redactSecrets(state.explanation) } : {}),
+	};
+}
 
 function missingWaiterResult(card: CardInstance<K>): CardExecutionResult<K> {
 	return {
@@ -63,9 +74,10 @@ function humanizeRisk(risk: ApprovalScopeCardState["riskTier"]): string {
 
 export const approvalScopeRenderer: CardRenderer<K> = {
 	render(card: CardInstance<K>): CardRenderResult {
-		const s = card.state;
+		const s = sanitizeCardState(card.state);
+		const safeCard = { ...card, state: s };
 
-		const terminal = renderTerminalState(card, s.title);
+		const terminal = renderTerminalState(safeCard, s.title);
 		if (terminal) {
 			if (card.status === "consumed") {
 				const outcome = s.denied

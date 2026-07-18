@@ -12,6 +12,7 @@ import {
 	type PendingApproval,
 	peekPendingApprovalByNonce,
 } from "../../security/approvals.js";
+import { redactHouseholdSinkText } from "../../security/household-redactor.js";
 import {
 	freshTotpStepUpVerification,
 	type StepUpVerification,
@@ -518,11 +519,15 @@ function prepareApprovalBinding(
 	}
 	const binding = getTelclaudeMcpSideEffectApprovalBinding(record);
 	const bindingDigest = digestBinding(binding);
+	const displayRender =
+		record.kind === "outbound" && record.domain === "household"
+			? redactHouseholdSinkText(humanVisibleRender)
+			: humanVisibleRender;
 	const body = formatSideEffectHumanApprovalBody(
 		record,
 		binding,
 		bindingDigest,
-		humanVisibleRender,
+		displayRender,
 		nowMs,
 	);
 	return { ok: true, binding, bindingDigest, body };
@@ -670,6 +675,9 @@ function displaySafeBinding(
 ): TelclaudeMcpSideEffectApprovalBinding {
 	if (binding.kind === "browser-write" && record.kind === "browser-write") {
 		return { ...binding, actionTarget: record.display.target };
+	}
+	if (binding.kind === "outbound" && record.kind === "outbound" && record.domain === "household") {
+		return { ...binding, requestedBody: redactHouseholdSinkText(binding.requestedBody) };
 	}
 	return binding;
 }

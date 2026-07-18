@@ -17,14 +17,18 @@ const logger = getChildLogger({ module: "approval-card" });
 
 type K = typeof CardKind.Approval;
 
+function sanitizeCardState(state: ApprovalCardState): ApprovalCardState {
+	return {
+		...state,
+		title: redactSecrets(state.title),
+		body: redactSecrets(state.body),
+		...(state.explanation ? { explanation: redactSecrets(state.explanation) } : {}),
+	};
+}
+
 export const approvalRenderer: CardRenderer<K> = {
 	render(card: CardInstance<K>): CardRenderResult {
-		const s = {
-			...card.state,
-			title: redactSecrets(card.state.title),
-			body: redactSecrets(card.state.body),
-			...(card.state.explanation ? { explanation: redactSecrets(card.state.explanation) } : {}),
-		};
+		const s = sanitizeCardState(card.state);
 		const safeCard = { ...card, state: s };
 
 		const terminal = renderTerminalState(safeCard, s.title);
@@ -122,11 +126,12 @@ export const approvalRenderer: CardRenderer<K> = {
 			}
 
 			case "explain": {
-				await context.ctx.api.sendMessage(card.chatId, card.state.body, {
+				const safeState = sanitizeCardState(card.state);
+				await context.ctx.api.sendMessage(card.chatId, safeState.body, {
 					message_thread_id: card.threadId,
 				});
 				return {
-					state: { ...card.state, explanation: card.state.body },
+					state: { ...safeState, explanation: safeState.body },
 					callbackText: "Explanation sent",
 					rerender: true,
 				};
