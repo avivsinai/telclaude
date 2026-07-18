@@ -18,8 +18,13 @@ import {
 	type DerivedMediaActionReasonCode,
 } from "./derived-media-action-classifier.js";
 import {
+	DOCUMENT_EXTRACTOR_ID,
+	type DocumentMediaTypeV1,
+	type DocumentUnderstandingAdapter,
+} from "./document-understanding-adapter.js";
+import {
 	evaluateVoiceConfidenceV1,
-	type MEDIA_CONFIDENCE_POLICY_VERSION,
+	MEDIA_CONFIDENCE_POLICY_VERSION,
 	VOICE_DURATION_CAP_SECONDS,
 	type VoiceLowConfidenceReasonCode,
 } from "./media-confidence-policy.js";
@@ -30,8 +35,11 @@ const logger = getChildLogger({ module: "inbound-media-processor" });
 export const DERIVED_MEDIA_MAX_SCALARS = 8_000;
 export const DERIVED_MEDIA_MAX_DURATION_SECONDS = VOICE_DURATION_CAP_SECONDS;
 export const VOICE_EXTRACTOR_ID = "ffmpeg_ogg_opus_wav16k_transcription_v1";
+export const DOCUMENT_CONFIDENCE_SOURCE = "document_confidence_unavailable_v1";
 
-export type DerivedMediaEnvelopeV1 = {
+export type DocumentLowConfidenceReasonCode = "document_confidence_unavailable";
+
+export type DerivedVoiceEnvelopeV1 = {
 	readonly kind: "voice_transcript";
 	readonly text: string;
 	readonly sourceSha256: string;
@@ -49,6 +57,25 @@ export type DerivedMediaEnvelopeV1 = {
 	readonly actionBearingReasonCodes: readonly DerivedMediaActionReasonCode[];
 };
 
+export type DerivedDocumentEnvelopeV1 = {
+	readonly kind: "document_extract";
+	readonly text: string;
+	readonly sourceSha256: string;
+	readonly sourceMediaType: DocumentMediaTypeV1;
+	readonly sourcePageCount: number;
+	readonly extractor: typeof DOCUMENT_EXTRACTOR_ID;
+	readonly confidenceSource: typeof DOCUMENT_CONFIDENCE_SOURCE;
+	readonly confirmed: false;
+	readonly confidencePolicyVersion: typeof MEDIA_CONFIDENCE_POLICY_VERSION;
+	readonly lowConfidence: true;
+	readonly lowConfidenceReasonCodes: readonly DocumentLowConfidenceReasonCode[];
+	readonly classifierVersion: typeof DERIVED_MEDIA_ACTION_CLASSIFIER_VERSION;
+	readonly actionBearing: boolean;
+	readonly actionBearingReasonCodes: readonly DerivedMediaActionReasonCode[];
+};
+
+export type DerivedMediaEnvelopeV1 = DerivedVoiceEnvelopeV1 | DerivedDocumentEnvelopeV1;
+
 export type InboundMediaProcessingInput = {
 	readonly event: InboundEvent;
 	readonly identity: WhatsAppIdentityResolution;
@@ -64,21 +91,30 @@ export type VoiceFfmpegInvocation = {
 	};
 };
 
-export type InboundVoiceMediaProcessor = {
+export type InboundMediaProcessor = {
 	processVoice(input: {
 		readonly ref: InboundEvent["normalized"]["mediaRefs"][number];
 		readonly owner: QuarantineOwnerBinding;
-	}): Promise<DerivedMediaEnvelopeV1>;
+	}): Promise<DerivedVoiceEnvelopeV1>;
+	processDocument(input: {
+		readonly ref: InboundEvent["normalized"]["mediaRefs"][number];
+		readonly owner: QuarantineOwnerBinding;
+	}): Promise<DerivedDocumentEnvelopeV1>;
 	processInbound(input: InboundMediaProcessingInput): Promise<InboundEvent>;
 	ownerFor(input: InboundMediaProcessingInput): QuarantineOwnerBinding;
 };
 
-export type CreateInboundVoiceMediaProcessorOptions = {
+export type InboundVoiceMediaProcessor = InboundMediaProcessor;
+
+export type CreateInboundMediaProcessorOptions = {
 	readonly quarantineStore: AttachmentQuarantineStore;
 	readonly processorCapability: AttachmentProcessorCapability;
 	readonly runFfmpeg?: (inputPath: string, outputPath: string) => Promise<void>;
 	readonly transcribe?: (wavPath: string) => Promise<TranscriptionResult>;
+	readonly documentAdapter?: DocumentUnderstandingAdapter;
 };
+
+export type CreateInboundVoiceMediaProcessorOptions = CreateInboundMediaProcessorOptions;
 
 export function buildVoiceFfmpegInvocation(
 	inputPath: string,
@@ -110,6 +146,12 @@ export function buildVoiceFfmpegInvocation(
 export function createInboundVoiceMediaProcessor(
 	options: CreateInboundVoiceMediaProcessorOptions,
 ): InboundVoiceMediaProcessor {
+	return createInboundMediaProcessor(options);
+}
+
+export function createInboundMediaProcessor(
+	options: CreateInboundMediaProcessorOptions,
+): InboundMediaProcessor {
 	const runFfmpeg = options.runFfmpeg ?? runVoiceFfmpeg;
 	const transcribe = options.transcribe ?? ((wavPath) => transcribeAudio(wavPath));
 
@@ -130,7 +172,7 @@ export function createInboundVoiceMediaProcessor(
 	async function processVoice(input: {
 		readonly ref: InboundEvent["normalized"]["mediaRefs"][number];
 		readonly owner: QuarantineOwnerBinding;
-	}): Promise<DerivedMediaEnvelopeV1> {
+	}): Promise<DerivedVoiceEnvelopeV1> {
 		if (input.ref.mediaType !== "audio/ogg") {
 			options.quarantineStore.deleteForOwner(input.ref.quarantineId, input.owner);
 			throw new Error("voice_media_type_unsupported");
@@ -234,20 +276,109 @@ export function createInboundVoiceMediaProcessor(
 		}
 	}
 
+	async function processDocument(input: {
+		readonly ref: InboundEvent["normalized"]["mediaRefs"][number];
+		readonly owner: QuarantineOwnerBinding;
+	}): Promise<DerivedDocumentEnvelopeV1> {
+		const mediaType = asDocumentMediaType(input.ref.mediaType);
+		if (!mediaType || !options.documentAdapter) {
+			options.quarantineStore.deleteForOwner(input.ref.quarantineId, input.owner);
+			throw new Error("document_media_type_unsupported");
+		}
+		const lease = options.quarantineStore.leaseForProcessing(
+			input.ref.quarantineId,
+			input.owner,
+			options.processorCapability,
+		);
+		if (lease?.mediaType !== mediaType) {
+			options.quarantineStore.deleteForOwner(input.ref.quarantineId, input.owner);
+			throw new Error("document_media_not_clean_or_owner_mismatch");
+		}
+		let processingCompleted = false;
+		let phase: "extraction" | "envelope" | "completion" = "extraction";
+		try {
+			const extraction = await options.documentAdapter.extract({
+				bytes: lease.bytes,
+				mediaType,
+			});
+			phase = "envelope";
+			const bounded = boundScalars(extraction.text, DERIVED_MEDIA_MAX_SCALARS);
+			if (bounded.truncated) throw new Error("document_output_exceeded");
+			const classification = classifyDerivedMediaActionV1(bounded.text, undefined, {
+				truncated: false,
+			});
+			const envelope: DerivedDocumentEnvelopeV1 = {
+				kind: "document_extract",
+				text: bounded.text,
+				sourceSha256: lease.contentHash.replace(/^sha256:/u, ""),
+				sourceMediaType: mediaType,
+				sourcePageCount: extraction.pageCount,
+				extractor: DOCUMENT_EXTRACTOR_ID,
+				confidenceSource: DOCUMENT_CONFIDENCE_SOURCE,
+				confirmed: false,
+				confidencePolicyVersion: MEDIA_CONFIDENCE_POLICY_VERSION,
+				lowConfidence: true,
+				lowConfidenceReasonCodes: ["document_confidence_unavailable"],
+				classifierVersion: classification.classifierVersion,
+				actionBearing: classification.actionBearing,
+				actionBearingReasonCodes: classification.reasonCodes,
+			};
+			phase = "completion";
+			if (
+				!options.quarantineStore.completeProcessing(lease, input.owner, options.processorCapability)
+			) {
+				throw new Error("document_media_completion_failed");
+			}
+			processingCompleted = true;
+			logger.info(
+				{
+					contentDigestPrefix: envelope.sourceSha256.slice(0, 12),
+					pageCountBucket: documentPageCountBucket(envelope.sourcePageCount),
+					providerId: envelope.extractor,
+					resultLength: Array.from(envelope.text).length,
+					reasonCode: "low_confidence",
+				},
+				"document attachment derived",
+			);
+			return envelope;
+		} catch {
+			logger.warn(
+				{
+					contentDigestPrefix: lease.contentHash.replace(/^sha256:/u, "").slice(0, 12),
+					reasonCode: `document_${phase}_failed`,
+				},
+				"document attachment processing failed",
+			);
+			throw new Error(`document_${phase}_failed`);
+		} finally {
+			if (!processingCompleted) {
+				options.quarantineStore.deleteForOwner(lease.quarantineId, input.owner);
+			}
+		}
+	}
+
 	async function processInbound(input: InboundMediaProcessingInput): Promise<InboundEvent> {
 		if (input.identity.domain !== "household") return input.event;
 		const owner = ownerFor(input);
 		const retainedRefs: InboundEvent["normalized"]["mediaRefs"][number][] = [];
 		const envelopes: DerivedMediaEnvelopeV1[] = [];
 		for (const ref of input.event.normalized.mediaRefs) {
-			if (ref.mediaType !== "audio/ogg") {
+			const isVoice = ref.mediaType === "audio/ogg";
+			const isDocument = asDocumentMediaType(ref.mediaType) !== null;
+			if (!isVoice && !isDocument) {
 				retainedRefs.push(ref);
 				continue;
 			}
+			if (isDocument && !options.documentAdapter) {
+				options.quarantineStore.deleteForOwner(ref.quarantineId, owner);
+				continue;
+			}
 			try {
-				envelopes.push(await processVoice({ ref, owner }));
+				envelopes.push(
+					isVoice ? await processVoice({ ref, owner }) : await processDocument({ ref, owner }),
+				);
 			} catch {
-				// Voice failure is terminal for the raw item but does not block ordinary conversation.
+				// Media failure is terminal for the raw item but does not block ordinary conversation.
 			}
 		}
 		if (envelopes.length === 0 && retainedRefs.length === input.event.normalized.mediaRefs.length) {
@@ -257,7 +388,10 @@ export function createInboundVoiceMediaProcessor(
 			.map((envelope) =>
 				wrapExternalContent(envelope.text, {
 					source: "user-forwarded",
-					serviceId: "whatsapp-voice-transcript",
+					serviceId:
+						envelope.kind === "voice_transcript"
+							? "whatsapp-voice-transcript"
+							: "whatsapp-document-extract",
 					foldHomoglyphs: false,
 					maxLength: DERIVED_MEDIA_MAX_SCALARS * 2,
 				}),
@@ -277,7 +411,7 @@ export function createInboundVoiceMediaProcessor(
 		};
 	}
 
-	return { processVoice, processInbound, ownerFor };
+	return { processVoice, processDocument, processInbound, ownerFor };
 }
 
 async function runVoiceFfmpeg(inputPath: string, outputPath: string): Promise<void> {
@@ -326,4 +460,17 @@ function boundedDuration(seconds: number | undefined): number | undefined {
 function containsOpusHead(bytes: Uint8Array): boolean {
 	const header = Buffer.from("OpusHead");
 	return Buffer.from(bytes.subarray(0, 512)).includes(header);
+}
+
+function asDocumentMediaType(mediaType: string): DocumentMediaTypeV1 | null {
+	return mediaType === "application/pdf" || mediaType === "image/jpeg" || mediaType === "image/png"
+		? mediaType
+		: null;
+}
+
+function documentPageCountBucket(pageCount: number): string {
+	if (pageCount <= 1) return "1";
+	if (pageCount <= 5) return "2_5";
+	if (pageCount <= 10) return "6_10";
+	return "11_20";
 }
