@@ -63,12 +63,15 @@ Each household WhatsApp principal gets a separate explicit profile and one bindi
 
 The binding entry is the Phase 0 pairing attestation. Someone with administrative access to `telclaude.json` therefore has pairing authority and must be treated like a credential administrator. Changing or removing a binding changes or revokes that principal's access on the next config load.
 
+Use the [household WhatsApp activation ceremony](operator-playbook.md#household-whatsapp-activation) before enabling any binding. It keeps channel pairing, model data controls, provider enrollment, consent, rollout holds, emergency stop, and image rollback as separate operator gates.
+
 The fields deliberately separate local identity from provider credentials:
 
 - `bindingId` is an opaque local slug containing at least one letter. It is not a phone number, national ID, provider account, or credential.
 - `addresseeGender` is required and is exactly `"f"` or `"m"`. It selects reviewed deterministic Hebrew control-copy variants (for example OTP and reminder prompts); the model never inflects security or confirmation copy.
 - Household media processing is dark by default. Activation requires all three controls: root `householdMedia.enabled: true`, `mediaEnabled: true` on the exact binding, and a stable relay-owned media-confirmation encryption key of at least 32 characters. Missing configuration preserves the pre-media behavior.
 - Deterministic household emergency guidance is also dark by default. Activation requires root `householdEmergency.enabled: true` and `emergencyEnabled: true` on the exact binding. When active, an authenticated first-seen message with an emergency signal receives fixed gendered Hebrew 101 guidance and a redacted, rate-limited operator alert; the original turn still continues to the household assistant.
+- Household reminders are dark by default. Activation requires root `householdReminders.enabled: true`, `remindersEnabled: true` on the exact binding, and a granted reminder-consent receipt for that bound channel. Missing switches deny creation, update, cancellation, confirmation, and delivery.
 - `subjectUserId` must equal `household:<bindingId>`. Never paste an Israeli ID number, phone number, or provider username into it. Provider ID and phone enrollment data belong only in the vault/provider sidecar.
 - `address` and `replyAddress` must be the same enrolled E.164 WhatsApp address. Telclaude derives actor, conversation, reply, memory, and writable namespace authority from this binding; the model cannot choose them.
 - Household scope arrays are exact, not defaults: no skills, only the `clalit` provider, schedule read/write capabilities, and WhatsApp outbound. Missing or broader arrays fail config validation.

@@ -23,7 +23,9 @@ export function resolveHouseholdReminderContext(
 	if (!bindingId) return null;
 	const resolved = resolveWhatsAppHouseholdBindingById(bindingId, config);
 	if (
+		!config.householdReminders?.enabled ||
 		!resolved ||
+		resolved.remindersEnabled !== true ||
 		resolved.actorId !== input.actorId ||
 		resolved.subjectUserId !== input.subjectUserId ||
 		resolved.profile.id !== input.profileId ||

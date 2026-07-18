@@ -348,6 +348,72 @@ export function cancelAppointmentDerivedHouseholdReminder(input: {
 	return requireReminder(current.id, current.revision);
 }
 
+export type HouseholdReminderBindingRevocationResult = {
+	readonly remindersCancelled: number;
+	readonly firesDeadLettered: number;
+	readonly proposalsExpired: number;
+	readonly leasesReleased: number;
+};
+
+export function revokeHouseholdReminderBindingState(input: {
+	readonly bindingId: string;
+	readonly nowMs?: number;
+}): HouseholdReminderBindingRevocationResult {
+	const bindingId = nonEmpty(input.bindingId, "bindingId");
+	const nowMs = normalizeNow(input.nowMs);
+	const reminderIds = getDb()
+		.prepare(
+			`SELECT DISTINCT id FROM household_reminders
+			 WHERE binding_id = ? AND status IN ('pending_confirmation','scheduled','paused_confirmation')`,
+		)
+		.all(bindingId) as Array<{ id: string }>;
+	const result = getDb().transaction(() => {
+		const fires = getDb()
+			.prepare(
+				`UPDATE household_reminder_fires
+				 SET state = 'dead_lettered', lease_expires_at_ms = NULL,
+				     failure_class = 'binding_revoked', updated_at_ms = ?
+				 WHERE state IN ('claimed','prepared','dispatched','retryable_failed')
+				   AND EXISTS (
+				     SELECT 1 FROM household_reminders reminder
+				     WHERE reminder.id = household_reminder_fires.reminder_id
+				       AND reminder.revision = household_reminder_fires.revision
+				       AND reminder.binding_id = ?
+				   )`,
+			)
+			.run(nowMs, bindingId);
+		const proposals = getDb()
+			.prepare(
+				`UPDATE household_reminder_proposals
+				 SET status = 'expired', resolved_at_ms = ?
+				 WHERE binding_id = ? AND status = 'pending'`,
+			)
+			.run(nowMs, bindingId);
+		const reminders = getDb()
+			.prepare(
+				`UPDATE household_reminders
+				 SET status = 'cancelled', updated_at_ms = ?
+				 WHERE binding_id = ?
+				   AND status IN ('pending_confirmation','scheduled','paused_confirmation')`,
+			)
+			.run(nowMs, bindingId);
+		const leases = getDb()
+			.prepare(
+				`DELETE FROM household_interactive_choice_leases
+				 WHERE binding_id = ? AND owner_kind = 'reminder'`,
+			)
+			.run(bindingId);
+		for (const reminder of reminderIds) pauseHouseholdReminderCronWakeup(reminder.id, nowMs);
+		return {
+			remindersCancelled: reminders.changes,
+			firesDeadLettered: fires.changes,
+			proposalsExpired: proposals.changes,
+			leasesReleased: leases.changes,
+		};
+	})();
+	return result;
+}
+
 export function prepareHouseholdReminderUpdate(input: {
 	readonly reminderId: string;
 	readonly authority: HouseholdReminderAuthority;

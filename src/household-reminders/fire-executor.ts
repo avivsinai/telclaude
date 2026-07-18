@@ -22,6 +22,7 @@ import {
 import { recordHouseholdMetric } from "../household-metrics/store.js";
 import type { OutboundDeliveryFailureClassifier } from "../relay/outbound-delivery-dispatcher.js";
 import { type HouseholdReminderContext, resolveHouseholdReminderContext } from "./binding.js";
+import { revokeHouseholdBindingDurableState } from "./reconcile.js";
 import { householdReminderWhatsAppMessageId, renderHouseholdReminderBody } from "./render.js";
 import {
 	claimHouseholdReminderFire,
@@ -179,6 +180,14 @@ export function createHouseholdReminderFirePreparation(
 			householdReminderBindingFingerprint(context.binding) !== reminder.bindingFingerprint ||
 			householdReminderConsentHash(context.consent) !== reminder.consentHash
 		) {
+			if (!resolveWhatsAppHouseholdBindingById(reminder.binding.bindingId, dependencies.config)) {
+				const revokedAtMs = Date.now();
+				revokeHouseholdBindingDurableState({
+					bindingId: reminder.binding.bindingId,
+					nowMs: revokedAtMs,
+					conversationStore: dependencies.conversationStore,
+				});
+			}
 			throw new Error("household reminder context changed");
 		}
 		const target = resolveHouseholdReminderLiveDeliveryTarget({

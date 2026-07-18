@@ -589,6 +589,7 @@ function futureJerusalemMinute(minutesFromNow: number): string {
 }
 
 const householdConfig = {
+	householdReminders: { enabled: true },
 	profiles: [
 		{
 			id: "parent-a",
@@ -600,6 +601,7 @@ const householdConfig = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					remindersEnabled: true,
 					addresseeGender: "f",
 					address: "whatsapp:+15557654321",
 					replyAddress: "whatsapp:+15557654321",
