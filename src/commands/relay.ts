@@ -4,6 +4,7 @@ import type { Command } from "commander";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import {
 	getOperatorProfile,
+	resolveHouseholdEmergencyActivation,
 	resolveHouseholdMediaActivation,
 	resolveWhatsAppHouseholdBindingById,
 } from "../config/profiles.js";
@@ -95,6 +96,9 @@ import {
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
+import { createHouseholdEmergencyControlPolicyStore } from "../relay/household-emergency-control-policy.js";
+import { createHouseholdEmergencyControlSender } from "../relay/household-emergency-control-sender.js";
+import { createHouseholdEmergencyNotifier } from "../relay/household-emergency-notifier.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import { createMediaActionConfirmationControlPolicyStore } from "../relay/media-action-confirmation-control-policy.js";
 import { createMediaActionConfirmationControlSender } from "../relay/media-action-confirmation-control-sender.js";
@@ -143,6 +147,7 @@ import {
 } from "../social/index.js";
 import { getEnabledSocialServices, isAutomaticHeartbeatEnabled } from "../social/service-config.js";
 import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
+import { sendAdminAlert } from "../telegram/admin-alert.js";
 import { type MonitorOptions, monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { sendConfiguredHouseholdProviderApprovalNotificationCard } from "../telegram/side-effect-approval-notification.js";
@@ -249,6 +254,7 @@ export function registerRelayCommand(program: Command): void {
 
 			try {
 				const cfg = loadConfig();
+				const householdEmergencyActivation = resolveHouseholdEmergencyActivation(cfg);
 				const householdMediaActivation = resolveConfiguredHouseholdMediaActivation(cfg);
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
@@ -398,6 +404,11 @@ export function registerRelayCommand(program: Command): void {
 				const providerChallengeControlPolicyStore = createProviderChallengeControlPolicyStore({
 					conversationStore: liveMcpConversationStore,
 				});
+				const householdEmergencyControlPolicyStore = householdEmergencyActivation.enabled
+					? createHouseholdEmergencyControlPolicyStore({
+							conversationStore: liveMcpConversationStore,
+						})
+					: null;
 				const reminderConfirmationControlPolicyStore = createReminderConfirmationControlPolicyStore(
 					{
 						conversationStore: liveMcpConversationStore,
@@ -492,6 +503,9 @@ export function registerRelayCommand(program: Command): void {
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
 					registry: createDefaultEdgeOutboundExecutorRegistry(),
 					resolveConversation: async (prepared) => {
+						const emergencyControl =
+							await householdEmergencyControlPolicyStore?.resolveConversation(prepared);
+						if (emergencyControl) return emergencyControl;
 						const systemControl =
 							await providerChallengeControlPolicyStore.resolveConversation(prepared);
 						if (systemControl) return systemControl;
@@ -614,6 +628,23 @@ export function registerRelayCommand(program: Command): void {
 					dispatch: liveMcpOutboundDeliveryDispatcher,
 					policyStore: providerChallengeControlPolicyStore,
 				});
+				const householdEmergencyControlSender = householdEmergencyControlPolicyStore
+					? createHouseholdEmergencyControlSender({
+							config: cfg,
+							conversationStore: liveMcpConversationStore,
+							edgeRuntime: liveMcpEdgeRuntime,
+							dispatch: liveMcpOutboundDeliveryDispatcher,
+							policyStore: householdEmergencyControlPolicyStore,
+						})
+					: null;
+				const householdEmergencyNotifier =
+					householdEmergencyControlSender && householdEmergencyActivation.enabled
+						? createHouseholdEmergencyNotifier({
+								sendControl: householdEmergencyControlSender,
+								sendAdminAlert,
+								eligibleBindingIds: householdEmergencyActivation.eligibleBindingIds,
+							})
+						: null;
 				const reminderConfirmationControlSender = createReminderConfirmationControlSender({
 					config: cfg,
 					conversationStore: liveMcpConversationStore,
@@ -685,6 +716,9 @@ export function registerRelayCommand(program: Command): void {
 					quarantineStore: liveMcpAttachmentQuarantineStore,
 					providerChallengeInterceptor,
 					reminderConfirmationInterceptor,
+					...(householdEmergencyNotifier
+						? { handleHouseholdEmergency: householdEmergencyNotifier }
+						: {}),
 					...(mediaActionConfirmationInterceptor ? { mediaActionConfirmationInterceptor } : {}),
 				});
 				schedulerHandles.push({

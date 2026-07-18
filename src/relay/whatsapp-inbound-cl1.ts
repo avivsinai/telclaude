@@ -150,6 +150,12 @@ export type CreateWhatsAppInboundCl1PipelineOptions = {
 	}) => Promise<
 		{ readonly handled: false } | { readonly handled: true; readonly templateId: string }
 	>;
+	readonly handleHouseholdEmergency?: (input: {
+		readonly event: WhatsAppInboundBridgeEvent;
+		readonly identity: WhatsAppIdentityResolution;
+		readonly conversation: RelayConversation | null;
+		readonly ensureConversation: () => RelayConversation;
+	}) => Promise<{ readonly matched: boolean }>;
 };
 
 export function createOperatorWhatsAppIdentityResolver(
@@ -284,11 +290,68 @@ export function createWhatsAppInboundCl1Pipeline(
 					};
 				}
 			}
-			const intercepted = await options.interceptBeforePersistence?.({
-				event,
-				identity,
-				conversation: existing ?? null,
-			});
+			const resumeConversation = (persistInbound: boolean) =>
+				options.conversationStore.resumeOrMint({
+					channel: "whatsapp",
+					conversationId,
+					threadId: identity.domain === "household" ? identity.replyAddressRef : conversationId,
+					profileId: identity.profileId,
+					domain: identity.domain,
+					authorizationState: "authorized",
+					humanPairingProvenance: identity.humanPairingProvenance,
+					authorizationScopes: identity.authorizationScopes,
+					members: [
+						{
+							actorId: identity.actorId,
+							principalId: identity.principalId,
+							...(identity.displayName ? { displayName: identity.displayName } : {}),
+							role: "sender",
+							identityAssurance: identity.identityAssurance,
+							scopes: ["message:reply", "whatsapp:reply"],
+						},
+					],
+					...(persistInbound
+						? {
+								threadMessageIds: [event.messageId],
+								inboundCursor: cursor,
+								auditIds: [auditIdFor(event)],
+							}
+						: {}),
+					nowMs: now,
+				}).conversation;
+			let authorityConversation: RelayConversation | null = existing ?? null;
+			const ensureConversation = () => {
+				if (authorityConversation) return authorityConversation;
+				authorityConversation = resumeConversation(false);
+				return authorityConversation;
+			};
+			let persistedConversation: RelayConversation | null = null;
+			const persistConversation = () => {
+				if (persistedConversation) return persistedConversation;
+				persistedConversation = resumeConversation(true);
+				return persistedConversation;
+			};
+			let emergencyMatched = false;
+			try {
+				emergencyMatched =
+					(
+						await options.handleHouseholdEmergency?.({
+							event,
+							identity,
+							conversation: existing ?? null,
+							ensureConversation,
+						})
+					)?.matched === true;
+			} catch {
+				// Emergency handling is best-effort. Its failures never block normal routing.
+			}
+			const intercepted = emergencyMatched
+				? undefined
+				: await options.interceptBeforePersistence?.({
+						event,
+						identity,
+						conversation: existing ?? null,
+					});
 			if (intercepted?.handled) {
 				return {
 					ok: true,
@@ -324,30 +387,7 @@ export function createWhatsAppInboundCl1Pipeline(
 				);
 			}
 
-			const { conversation } = options.conversationStore.resumeOrMint({
-				channel: "whatsapp",
-				conversationId,
-				threadId: identity.domain === "household" ? identity.replyAddressRef : conversationId,
-				profileId: identity.profileId,
-				domain: identity.domain,
-				authorizationState: "authorized",
-				humanPairingProvenance: identity.humanPairingProvenance,
-				authorizationScopes: identity.authorizationScopes,
-				members: [
-					{
-						actorId: identity.actorId,
-						principalId: identity.principalId,
-						...(identity.displayName ? { displayName: identity.displayName } : {}),
-						role: "sender",
-						identityAssurance: identity.identityAssurance,
-						scopes: ["message:reply", "whatsapp:reply"],
-					},
-				],
-				threadMessageIds: [event.messageId],
-				inboundCursor: cursor,
-				auditIds: [auditIdFor(event)],
-				nowMs: now,
-			});
+			const conversation = persistConversation();
 			let mediaRefs: AttachmentRef[];
 			try {
 				mediaRefs = decodedAttachments.map((attachment) =>

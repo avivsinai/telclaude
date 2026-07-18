@@ -39,6 +39,7 @@ export type ResolvedWhatsAppHouseholdBinding = {
 	>[number]["reminderConsent"];
 	readonly remindersEnabled?: boolean;
 	readonly mediaEnabled?: boolean;
+	readonly emergencyEnabled?: boolean;
 	readonly profile: EffectiveOperatorProfile;
 };
 
@@ -140,10 +141,33 @@ export function resolveWhatsAppHouseholdBinding(
 				? {}
 				: { remindersEnabled: binding.remindersEnabled }),
 			...(binding.mediaEnabled === undefined ? {} : { mediaEnabled: binding.mediaEnabled }),
+			...(binding.emergencyEnabled === undefined
+				? {}
+				: { emergencyEnabled: binding.emergencyEnabled }),
 			profile,
 		};
 	}
 	return null;
+}
+
+export type HouseholdEmergencyActivation =
+	| { readonly enabled: false; readonly reason: "global_disabled" | "binding_disabled" }
+	| { readonly enabled: true; readonly eligibleBindingIds: ReadonlySet<string> };
+
+export function resolveHouseholdEmergencyActivation(
+	config: Pick<TelclaudeConfig, "householdEmergency" | "profiles">,
+): HouseholdEmergencyActivation {
+	if (!config.householdEmergency?.enabled) return { enabled: false, reason: "global_disabled" };
+	const eligibleBindingIds = new Set(
+		(config.profiles ?? []).flatMap((profile) =>
+			(profile.whatsappHouseholdBindings ?? [])
+				.filter((binding) => binding.emergencyEnabled === true)
+				.map((binding) => binding.bindingId),
+		),
+	);
+	return eligibleBindingIds.size === 0
+		? { enabled: false, reason: "binding_disabled" }
+		: { enabled: true, eligibleBindingIds };
 }
 
 export type HouseholdMediaActivation =

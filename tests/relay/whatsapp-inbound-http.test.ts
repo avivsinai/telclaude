@@ -326,7 +326,13 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		const sendControl = vi.fn(async () => undefined);
 		const quarantineStore = createAttachmentQuarantineStore({ now: () => NOW });
 		const quarantine = vi.spyOn(quarantineStore, "store");
-		const dispatch = vi.fn();
+		const dispatch = vi.fn(async () => ({
+			ok: true as const,
+			response: "Gabriel received emergency",
+			success: true,
+			toolUses: 0,
+			toolResults: 0,
+		}));
 		const event = whatsappEvent({
 			eventId: "wa-event-otp-audio",
 			messageId: "wa-msg-otp-audio",
@@ -377,6 +383,55 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			inboundCursor: null,
 			auditIds: [],
 		});
+
+		const emergencyEvent = whatsappEvent({
+			eventId: "wa-event-emergency-while-armed",
+			messageId: "wa-msg-emergency-while-armed",
+			cursorSequence: 2,
+			senderAddressRef: identity.principalId,
+			conversationKey: identity.expectedConversationKey,
+			text: "יש לי כאב בחזה",
+			attachments: [],
+		});
+		const emergency = vi.fn(async ({ ensureConversation }) => {
+			ensureConversation();
+			return { matched: true as const, class: "cardiac" as const, replySent: true };
+		});
+		await expect(
+			handleWhatsAppInboundBridgePost({
+				body: whatsappInboundBridgeBody(emergencyEvent),
+				signatureHeader: signWhatsAppInboundBridgeEvent(emergencyEvent, SECRET),
+				options: {
+					signatureSecret: SECRET,
+					config: householdDispatcherConfig,
+					conversationStore,
+					quarantineStore,
+					nowMs: () => NOW,
+					dispatch,
+					handleHouseholdEmergency: emergency,
+					interceptBeforePersistence: createWhatsAppProviderChallengeInterceptor({
+						registry,
+						nowMs: () => NOW,
+						respondToChallenge,
+						sendControl,
+					}),
+				},
+			}),
+		).resolves.toMatchObject({ status: 202, payload: { dispatched: true } });
+		expect(emergency).toHaveBeenCalledTimes(1);
+		expect(dispatch).toHaveBeenCalledTimes(1);
+		expect(respondToChallenge).not.toHaveBeenCalled();
+		expect(
+			registry.peekForInbound({
+				bindingId: identity.bindingId,
+				actorId: identity.actorId,
+				subjectUserId: identity.subjectUserId,
+				profileId: identity.profileId,
+				conversationToken: conversation.token,
+				conversationId: conversation.conversationId,
+				senderPrincipalHash: `sha256:${crypto.createHash("sha256").update(identity.principalId).digest("hex")}`,
+			}),
+		).toMatchObject({ status: "armed" });
 	});
 
 	it("requires explicit inbound operator addresses and ignores the outbound allowlist", async () => {

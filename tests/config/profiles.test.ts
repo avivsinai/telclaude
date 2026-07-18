@@ -193,6 +193,40 @@ describe("operator profile resolution", () => {
 		expect(active.enabled && active.eligibleBindingIds).toEqual(new Set(["parent-a"]));
 	});
 
+	it("requires independent global and binding gates for household emergency activation", async () => {
+		const { resolveHouseholdEmergencyActivation } = await import("../../src/config/profiles.js");
+		const configFor = (
+			globalEnabled: boolean,
+			bindings: Array<{ bindingId: string; emergencyEnabled?: boolean }>,
+		) =>
+			({
+				householdEmergency: { enabled: globalEnabled },
+				profiles: [{ whatsappHouseholdBindings: bindings }],
+			}) as never;
+
+		expect(
+			resolveHouseholdEmergencyActivation(
+				configFor(false, [{ bindingId: "parent-a", emergencyEnabled: true }]),
+			),
+		).toEqual({
+			enabled: false,
+			reason: "global_disabled",
+		});
+		expect(
+			resolveHouseholdEmergencyActivation(configFor(true, [{ bindingId: "parent-a" }])),
+		).toEqual({
+			enabled: false,
+			reason: "binding_disabled",
+		});
+		const active = resolveHouseholdEmergencyActivation(
+			configFor(true, [
+				{ bindingId: "parent-a", emergencyEnabled: true },
+				{ bindingId: "parent-b", emergencyEnabled: true },
+			]),
+		);
+		expect(active.enabled && active.eligibleBindingIds).toEqual(new Set(["parent-a", "parent-b"]));
+	});
+
 	it("keeps the relay media seam dark when the whole config is absent", async () => {
 		const { HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV, resolveConfiguredHouseholdMediaActivation } =
 			await import("../../src/commands/relay.js");
