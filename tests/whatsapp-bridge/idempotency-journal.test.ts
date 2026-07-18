@@ -26,8 +26,9 @@ describe("WhatsApp bridge idempotency journal", () => {
 		const send = vi.fn(async (messageIds: readonly string[]) => {
 			const files = journalFiles(tempDir);
 			expect(files).toHaveLength(1);
-			expect(fs.statSync(files[0]).mode & 0o777).toBe(0o600);
-			expect(JSON.parse(fs.readFileSync(files[0], "utf8"))).toMatchObject({
+			const pending = readJournalFileSnapshot(files[0]);
+			expect(pending.mode).toBe(0o600);
+			expect(JSON.parse(pending.content)).toMatchObject({
 				state: "pending",
 				idempotencyKey: "idem:one",
 				requestDigest: `sha256:${"a".repeat(64)}`,
@@ -64,10 +65,11 @@ describe("WhatsApp bridge idempotency journal", () => {
 			vi.fn(),
 		);
 		expect(cached).toEqual(first);
-		expect(fs.statSync(journalFiles(tempDir)[0]).mode & 0o777).toBe(0o600);
-		expect(
-			JSON.stringify(JSON.parse(fs.readFileSync(journalFiles(tempDir)[0], "utf8"))),
-		).not.toMatch(/body|destination|recipient|attachment/);
+		const completed = readJournalFileSnapshot(journalFiles(tempDir)[0]);
+		expect(completed.mode).toBe(0o600);
+		expect(JSON.stringify(JSON.parse(completed.content))).not.toMatch(
+			/body|destination|recipient|attachment/,
+		);
 	});
 
 	it("recovers a pending retry after restart with byte-identical message ids", async () => {
@@ -230,4 +232,16 @@ function journalFiles(dataDir: string): string[] {
 				.filter((entry) => entry.endsWith(".json"))
 				.map((entry) => path.join(directory, entry))
 		: [];
+}
+
+function readJournalFileSnapshot(filePath: string): { mode: number; content: string } {
+	const file = fs.openSync(filePath, "r");
+	try {
+		return {
+			mode: fs.fstatSync(file).mode & 0o777,
+			content: fs.readFileSync(file, "utf8"),
+		};
+	} finally {
+		fs.closeSync(file);
+	}
 }
