@@ -8,6 +8,7 @@ import {
 	digestWhatsAppBridgeSendRequest,
 	isWhatsAppGroupJid,
 	jidToWhatsAppAddressRef,
+	parseWhatsAppBridgeAttachments,
 	parseWhatsAppDestinationJid,
 	signWhatsAppInboundBridgeEvent,
 	validateWhatsAppBridgeSend,
@@ -19,6 +20,7 @@ import {
 	type WhatsAppBridgeHeaders,
 	type WhatsAppBridgeSendRequest,
 	type WhatsAppInboundBridgeEvent,
+	whatsappBridgeContentForAttachment,
 	whatsappInboundBridgeBody,
 } from "./contract.js";
 import {
@@ -78,10 +80,6 @@ type BridgeStatus = {
 	outboundAuthConfigured: boolean;
 	inboundForwardingConfigured: boolean;
 };
-
-type WhatsAppBridgeRequestAttachment = NonNullable<
-	WhatsAppBridgeSendRequest["attachments"]
->[number];
 
 class WhatsAppBridgeRuntime {
 	private socket: BaileysSocket | null = null;
@@ -318,7 +316,10 @@ export async function sendWhatsAppBridgeRequest(
 			sentIds.push(sent.key?.id ?? messageId);
 		} else {
 			for (const [index, attachment] of attachments.entries()) {
-				const content = contentForAttachment(attachment, index === 0 ? request.body : "");
+				const content = whatsappBridgeContentForAttachment(
+					attachment,
+					index === 0 ? request.body : "",
+				);
 				const messageId = requireMessageId(messageIds, index);
 				const sent = await socket.sendMessage(destinationJid, content, { messageId });
 				sentIds.push(sent.key?.id ?? messageId);
@@ -447,41 +448,9 @@ function parseSendRequest(
 			...(typeof destination.addressRef === "string" ? { addressRef: destination.addressRef } : {}),
 		},
 		body: typeof value.body === "string" ? value.body : "",
-		attachments: Array.isArray(value.attachments)
-			? value.attachments.filter(isBridgeAttachment)
-			: [],
+		attachments: parseWhatsAppBridgeAttachments(value.attachments),
 	};
 	return { ok: true, request };
-}
-
-function isBridgeAttachment(value: unknown): value is WhatsAppBridgeRequestAttachment {
-	return (
-		isRecord(value) && typeof value.mediaType === "string" && typeof value.bytesBase64 === "string"
-	);
-}
-
-function contentForAttachment(
-	attachment: WhatsAppBridgeRequestAttachment,
-	caption: string,
-): Record<string, unknown> {
-	const buffer = Buffer.from(attachment.bytesBase64, "base64");
-	const mimetype = attachment.mediaType;
-	const captionValue = caption.trim();
-	if (mimetype.startsWith("image/")) {
-		return { image: buffer, ...(captionValue ? { caption: captionValue } : {}) };
-	}
-	if (mimetype.startsWith("video/")) {
-		return { video: buffer, mimetype, ...(captionValue ? { caption: captionValue } : {}) };
-	}
-	if (mimetype.startsWith("audio/")) {
-		return { audio: buffer, mimetype };
-	}
-	return {
-		document: buffer,
-		mimetype,
-		fileName: attachment.quarantineId ?? "attachment",
-		...(captionValue ? { caption: captionValue } : {}),
-	};
 }
 
 function extractText(message: unknown): { readonly text?: string } {

@@ -439,6 +439,103 @@ describe("outbound delivery dispatcher", () => {
 		]);
 	});
 
+	it("sends only bound safe attachment metadata to the WhatsApp bridge", async () => {
+		const stored = quarantineStore.store({
+			bytes: Buffer.from("%PDF-1.4\nprovider document"),
+			mediaType: "application/pdf",
+			conversationToken: "relay-conversation-token",
+			scanState: "clean",
+		});
+		const sent: WhatsAppSidecarSendRequest[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			sendToSidecar: async (request) => {
+				sent.push(request);
+				return { ok: true };
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+		});
+
+		await expect(
+			dispatch(
+				preparedOutbound({
+					channel: "whatsapp",
+					resolvedDestination: {
+						kind: "address",
+						addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+						conversationId: "relay-conversation-token",
+					},
+					mediaRefs: [{ ...stored, redactedFilename: "Provider_Statement.pdf" }],
+				}),
+			),
+		).resolves.toMatchObject({ deliveryStatus: "sent" });
+		expect(sent[0]?.attachments).toEqual([
+			expect.objectContaining({
+				mediaType: "application/pdf",
+				redactedFilename: "Provider_Statement.pdf",
+				sizeBytes: stored.sizeBytes,
+			}),
+		]);
+		expect(sent[0]?.attachments[0]).not.toHaveProperty("quarantineId");
+		expect(JSON.stringify(sent[0])).not.toContain(stored.quarantineId);
+	});
+
+	it("denies drift from bound attachment metadata without leaking the internal ref", async () => {
+		const stored = quarantineStore.store({
+			bytes: Buffer.from("%PDF-1.4\nprovider document"),
+			mediaType: "application/pdf",
+			conversationToken: "relay-conversation-token",
+			scanState: "clean",
+		});
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			allowedRecipientAddressRefs: [OPERATOR_WHATSAPP_RECIPIENT],
+			sendToSidecar: async () => {
+				sidecarCalls += 1;
+				return { ok: true };
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		await expect(
+			dispatch(
+				preparedOutbound({
+					channel: "whatsapp",
+					resolvedDestination: {
+						kind: "address",
+						addressRef: OPERATOR_WHATSAPP_RECIPIENT,
+						conversationId: "relay-conversation-token",
+					},
+					mediaRefs: [
+						{
+							...stored,
+							redactedFilename: "Provider_Statement.pdf",
+							sizeBytes: stored.sizeBytes + 1,
+						},
+					],
+				}),
+			),
+		).resolves.toMatchObject({ deliveryStatus: "failed" });
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "attachment_metadata_mismatch",
+				reason: "prepared attachment metadata does not match released bytes",
+			}),
+		]);
+		expect(JSON.stringify(failures)).not.toContain(stored.quarantineId);
+	});
+
 	it("registers WhatsApp by default but fails closed without sidecar config", async () => {
 		const failures: unknown[] = [];
 		const registry = createDefaultEdgeOutboundExecutorRegistry({ whatsapp: {} });
