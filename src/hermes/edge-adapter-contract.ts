@@ -105,6 +105,14 @@ export const AttachmentRefSchema = z
 		schemaVersion: z.literal(EdgeAdapterSchemaVersions.attachmentRef),
 		quarantineId: NonEmptyString,
 		mediaType: NonEmptyString,
+		redactedFilename: z
+			.string()
+			.trim()
+			.min(1)
+			.max(180)
+			.regex(/^[A-Za-z0-9][A-Za-z0-9._ -]*$/u)
+			.refine((value) => value !== "." && value !== "..")
+			.optional(),
 		scanState: z.enum(["pending", "clean", "blocked", "failed"]),
 		sizeBytes: z.number().int().nonnegative(),
 		contentHash: Sha256Digest,

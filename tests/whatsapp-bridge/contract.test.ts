@@ -21,10 +21,12 @@ import {
 	deterministicWhatsAppBridgeMessageId,
 	digestWhatsAppBridgeSendRequest,
 	parseWhatsAppDestinationJid,
+	parseWhatsAppBridgeAttachments,
 	signWhatsAppInboundBridgeEvent,
 	validateWhatsAppBridgeSend,
 	WHATSAPP_INBOUND_BRIDGE_SCHEMA_VERSION,
 	whatsappInboundBridgeBody,
+	whatsappBridgeContentForAttachment,
 } from "../../src/whatsapp-bridge/contract.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
@@ -143,6 +145,45 @@ describe("WhatsApp bridge contract", () => {
 		expect(deterministicWhatsAppBridgeMessageId("idem:test", 0)).toBe(first);
 		expect(deterministicWhatsAppBridgeMessageId("idem:test", 1)).not.toBe(first);
 		expect(() => deterministicWhatsAppBridgeMessageId("idem:test", -1)).toThrow(/part index/);
+	});
+
+	it("binds and renders only the safe document filename at the bridge boundary", () => {
+		const parsed = parseWhatsAppBridgeAttachments([
+			{
+				mediaType: "application/pdf",
+				bytesBase64: Buffer.from("pdf").toString("base64"),
+				sizeBytes: 3,
+				redactedFilename: "Provider_Statement.pdf",
+				quarantineId: "tc-quarantine:internal",
+				filepath: "/private/provider/raw.pdf",
+			},
+		]);
+
+		expect(parsed).toEqual([
+			{
+				mediaType: "application/pdf",
+				bytesBase64: Buffer.from("pdf").toString("base64"),
+				sizeBytes: 3,
+				redactedFilename: "Provider_Statement.pdf",
+			},
+		]);
+		const attachment = parsed[0];
+		if (!attachment) throw new Error("expected parsed bridge attachment");
+		expect(whatsappBridgeContentForAttachment(attachment, "caption")).toMatchObject({
+			mimetype: "application/pdf",
+			fileName: "Provider_Statement.pdf",
+			caption: "caption",
+		});
+		expect(JSON.stringify(parsed)).not.toContain("tc-quarantine");
+		expect(JSON.stringify(parsed)).not.toContain("/private/provider");
+
+		const request = { ...sendRequest(), attachments: parsed };
+		expect(digestWhatsAppBridgeSendRequest(request)).not.toBe(
+			digestWhatsAppBridgeSendRequest({
+				...request,
+				attachments: [{ ...parsed[0], redactedFilename: "mutated.pdf" }],
+			}),
+		);
 	});
 
 	it("signs inbound events compatibly with the relay CL-1 endpoint", async () => {

@@ -48,8 +48,24 @@ const PreparedMediaRefSchema = z
 	.object({
 		quarantineId: NonEmptyString,
 		contentHash: HashSchema,
+		mediaType: NonEmptyString.regex(/^[^\s/]+\/[^\s/]+$/u).optional(),
+		redactedFilename: z
+			.string()
+			.trim()
+			.min(1)
+			.max(180)
+			.regex(/^[A-Za-z0-9][A-Za-z0-9._ -]*$/u)
+			.refine((value) => value !== "." && value !== "..")
+			.optional(),
+		sizeBytes: z.number().int().nonnegative().optional(),
 	})
-	.strict();
+	.strict()
+	.refine((value) => {
+		const count = [value.mediaType, value.redactedFilename, value.sizeBytes].filter(
+			(item) => item !== undefined,
+		).length;
+		return count === 0 || count === 3;
+	}, "prepared media metadata must be complete");
 const AuthorizationStateSchema = z.enum(["authorized", "approval_required", "denied", "revoked"]);
 const HouseholdReplyBindingSchema = z
 	.object({

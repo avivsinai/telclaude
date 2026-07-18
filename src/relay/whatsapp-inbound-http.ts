@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { type EffectiveOperatorProfile, getOperatorProfile } from "../config/profiles.js";
+import { type InboundEvent, InboundEventSchema } from "../hermes/edge-adapter-contract.js";
 import {
 	createRelayConversationStore,
 	type RelayConversationStore,
@@ -10,6 +11,7 @@ import {
 	type AttachmentQuarantineStore,
 	createAttachmentQuarantineStore,
 } from "./attachment-quarantine-store.js";
+import type { InboundMediaProcessingInput } from "./inbound-media-processor.js";
 import {
 	combineWhatsAppIdentityResolvers,
 	createWhatsAppHouseholdIdentityResolver,
@@ -29,6 +31,7 @@ import {
 	type WhatsAppInboundDispatchInput,
 	type WhatsAppInboundDispatchResult,
 } from "./whatsapp-inbound-dispatcher.js";
+import type { WhatsAppMediaActionConfirmationInterceptor } from "./whatsapp-media-action-confirmation-interceptor.js";
 import type { WhatsAppProviderChallengeInterceptor } from "./whatsapp-provider-challenge-interceptor.js";
 import type { WhatsAppReminderConfirmationInterceptor } from "./whatsapp-reminder-confirmation-interceptor.js";
 
@@ -63,12 +66,14 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly conversationStore?: RelayConversationStore;
 	readonly quarantineStore?: AttachmentQuarantineStore;
 	readonly dispatch?: WhatsAppInboundDispatch;
+	readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
 	readonly nowMs?: () => number;
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
 	readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
 	readonly providerChallengeInterceptor?: WhatsAppProviderChallengeInterceptor;
 	readonly reminderConfirmationInterceptor?: WhatsAppReminderConfirmationInterceptor;
+	readonly mediaActionConfirmationInterceptor?: WhatsAppMediaActionConfirmationInterceptor;
 };
 
 let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | undefined;
@@ -76,8 +81,13 @@ let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | unde
 export function composeWhatsAppInboundInterceptors(input: {
 	readonly providerChallenge?: WhatsAppProviderChallengeInterceptor;
 	readonly reminderConfirmation?: WhatsAppReminderConfirmationInterceptor;
+	readonly mediaActionConfirmation?: WhatsAppMediaActionConfirmationInterceptor;
 }): CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"] | undefined {
-	const interceptors = [input.providerChallenge, input.reminderConfirmation].filter(
+	const interceptors = [
+		input.providerChallenge,
+		input.reminderConfirmation,
+		input.mediaActionConfirmation,
+	].filter(
 		(interceptor): interceptor is NonNullable<typeof interceptor> => interceptor !== undefined,
 	);
 	if (interceptors.length === 0) return undefined;
@@ -186,8 +196,28 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		);
 	}
 
+	let dispatchEvent = cl1.event;
+	if (resolved.processInboundMedia) {
+		try {
+			dispatchEvent = InboundEventSchema.parse(
+				await resolved.processInboundMedia({
+					event: cl1.event,
+					identity: cl1.identity,
+					conversation: cl1.conversation,
+					turn: cl1.turn,
+				}),
+			);
+		} catch {
+			return failure(
+				500,
+				"whatsapp_inbound_media_processing_failed",
+				"WhatsApp inbound media processing failed",
+				true,
+			);
+		}
+	}
 	const dispatch = await resolved.dispatch({
-		event: cl1.event,
+		event: dispatchEvent,
 		conversation: cl1.conversation,
 		turn: cl1.turn,
 		config: resolved.config,
@@ -205,8 +235,8 @@ export async function handleWhatsAppInboundBridgePost(input: {
 			duplicate: false,
 			dispatched: dispatch.ok,
 			dispatch: publicDispatchResult(dispatch),
-			sourceAudit: cl1.event.sourceAudit,
-			ordering: cl1.event.ordering,
+			sourceAudit: dispatchEvent.sourceAudit,
+			ordering: dispatchEvent.ordering,
 		},
 	};
 }
@@ -223,6 +253,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 			readonly conversationStore: RelayConversationStore;
 			readonly quarantineStore: AttachmentQuarantineStore;
 			readonly dispatch: WhatsAppInboundDispatch;
+			readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
 			readonly nowMs?: () => number;
 			readonly cwd?: string;
 			readonly timeoutMs?: number;
@@ -307,6 +338,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		composeWhatsAppInboundInterceptors({
 			providerChallenge: options?.providerChallengeInterceptor,
 			reminderConfirmation: options?.reminderConfirmationInterceptor,
+			mediaActionConfirmation: options?.mediaActionConfirmationInterceptor,
 		});
 	return {
 		ok: true,
@@ -320,6 +352,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		conversationStore: options?.conversationStore ?? createRelayConversationStore(),
 		quarantineStore: options?.quarantineStore ?? createAttachmentQuarantineStore(),
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,
+		...(options?.processInboundMedia ? { processInboundMedia: options.processInboundMedia } : {}),
 		...(composedInterceptor ? { interceptBeforePersistence: composedInterceptor } : {}),
 		...(options?.nowMs ? { nowMs: options.nowMs } : {}),
 		...(options?.cwd ? { cwd: options.cwd } : {}),

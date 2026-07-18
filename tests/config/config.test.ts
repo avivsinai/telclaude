@@ -90,6 +90,7 @@ describe("config defaults", () => {
 
 		const cfg = loadConfig();
 		expect(cfg.householdReminders).toEqual({ enabled: false });
+		expect(cfg.householdMedia).toEqual({ enabled: false });
 		expect(cfg.webhooks).toEqual({
 			enabled: false,
 			port: 3015,
@@ -224,6 +225,7 @@ describe("config defaults", () => {
 						whatsappHouseholdBindings: [
 							{
 								bindingId: "parent-a",
+								addresseeGender: "f",
 								address: "+15551234567",
 								replyAddress: "whatsapp:+15551234567",
 								displayName: "Parent A",
@@ -239,12 +241,52 @@ describe("config defaults", () => {
 		expect(cfg.profiles[0]?.whatsappHouseholdBindings).toEqual([
 			{
 				bindingId: "parent-a",
+				addresseeGender: "f",
 				address: "whatsapp:+15551234567",
 				replyAddress: "whatsapp:+15551234567",
 				displayName: "Parent A",
 				subjectUserId: "household:parent-a",
 			},
 		]);
+	});
+
+	it("requires a reviewed household addressee gender", () => {
+		setConfigPath(configPath());
+		const binding = {
+			bindingId: "parent-a",
+			address: "whatsapp:+15551234567",
+			replyAddress: "whatsapp:+15551234567",
+			displayName: "Parent A",
+			subjectUserId: "household:parent-a",
+		};
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [binding],
+		};
+
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		expect(() => loadConfig()).toThrow(/addresseeGender/i);
+
+		for (const addresseeGender of ["female", "unknown", ""] as const) {
+			resetConfigCache();
+			fs.writeFileSync(
+				configPath(),
+				JSON.stringify({
+					profiles: [
+						{
+							...profile,
+							whatsappHouseholdBindings: [{ ...binding, addresseeGender }],
+						},
+					],
+				}),
+			);
+			expect(() => loadConfig()).toThrow(/addresseeGender/i);
+		}
 	});
 
 	it("rejects unsafe household subjects, broad profiles, and duplicate addresses", () => {
@@ -259,6 +301,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: "whatsapp:+15551234567",
 					replyAddress: "whatsapp:+15551234567",
 					displayName: "Parent A",
@@ -276,6 +319,7 @@ describe("config defaults", () => {
 						whatsappHouseholdBindings: [
 							{
 								bindingId: "parent-a",
+								addresseeGender: "f",
 								address: "whatsapp:+15551234567",
 								replyAddress: "whatsapp:+15551234567",
 								displayName: "Parent A",
@@ -307,6 +351,7 @@ describe("config defaults", () => {
 						whatsappHouseholdBindings: [
 							{
 								bindingId: "parent-b",
+								addresseeGender: "m",
 								address: "+15551234567",
 								replyAddress: "+15551234567",
 								displayName: "Parent B",
@@ -348,6 +393,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address,
 					replyAddress: address,
 					displayName: "Parent A",
@@ -431,6 +477,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address,
 					replyAddress: address,
 					displayName: "Parent A",
@@ -479,6 +526,7 @@ describe("config defaults", () => {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: "whatsapp:+15551234567",
 					replyAddress: "whatsapp:+15551234567",
 					displayName: "Parent A",
@@ -509,6 +557,48 @@ describe("config defaults", () => {
 		cfg = loadConfig();
 		expect(cfg.householdReminders.enabled).toBe(true);
 		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.remindersEnabled).toBe(true);
+	});
+
+	it("keeps household media absent-config behavior dark and parses explicit two-level flags", () => {
+		setConfigPath(configPath());
+		const binding = {
+			bindingId: "parent-a",
+			addresseeGender: "f",
+			address: "whatsapp:+15551234567",
+			replyAddress: "whatsapp:+15551234567",
+			displayName: "Parent A",
+			subjectUserId: "household:parent-a",
+		};
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [binding],
+		};
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		let cfg = loadConfig();
+		expect(cfg.householdMedia).toEqual({ enabled: false });
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.mediaEnabled).toBeUndefined();
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				householdMedia: { enabled: true },
+				profiles: [
+					{
+						...profile,
+						whatsappHouseholdBindings: [{ ...binding, mediaEnabled: true }],
+					},
+				],
+			}),
+		);
+		cfg = loadConfig();
+		expect(cfg.householdMedia).toEqual({ enabled: true });
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.mediaEnabled).toBe(true);
 	});
 
 	it("rejects reserved, duplicate, and unsafe operator profiles", () => {

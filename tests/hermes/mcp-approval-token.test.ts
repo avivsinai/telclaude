@@ -62,6 +62,51 @@ const outboundMutations: Array<[string, Partial<TelclaudeMcpOutboundApprovalBind
 				{
 					quarantineId: "attachment:menu",
 					contentHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					mediaType: "application/pdf",
+					sizeBytes: 2048,
+					redactedFilename: "provider-statement.pdf",
+				},
+			],
+		},
+	],
+	[
+		"prepared media MIME",
+		{
+			preparedMediaRefs: [
+				{
+					quarantineId: "attachment:menu",
+					contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					mediaType: "text/plain",
+					sizeBytes: 1234,
+					redactedFilename: "provider-statement.pdf",
+				},
+			],
+		},
+	],
+	[
+		"prepared media filename",
+		{
+			preparedMediaRefs: [
+				{
+					quarantineId: "attachment:menu",
+					contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					mediaType: "application/pdf",
+					sizeBytes: 1234,
+					redactedFilename: "mutated-statement.pdf",
+				},
+			],
+		},
+	],
+	[
+		"prepared media size",
+		{
+			preparedMediaRefs: [
+				{
+					quarantineId: "attachment:menu",
+					contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					mediaType: "application/pdf",
+					sizeBytes: 4321,
+					redactedFilename: "provider-statement.pdf",
 				},
 			],
 		},
@@ -795,6 +840,9 @@ function outboundPrepareInput(
 		{
 			quarantineId: "attachment:menu",
 			contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			mediaType: "application/pdf",
+			sizeBytes: 1234,
+			redactedFilename: "provider-statement.pdf",
 		},
 	];
 	return {

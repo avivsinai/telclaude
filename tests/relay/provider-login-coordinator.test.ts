@@ -230,6 +230,7 @@ function configFor(providerConsent?: Record<string, unknown>): TelclaudeConfig {
 		whatsappHouseholdBindings: [
 			{
 				bindingId: id,
+				addresseeGender: id === "parent-a" ? "f" : "m",
 				address,
 				replyAddress: address,
 				displayName: id,

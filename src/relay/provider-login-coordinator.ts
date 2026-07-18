@@ -6,8 +6,8 @@ import type { PendingProviderChallengeRegistry } from "./pending-provider-challe
 import { pendingProviderChallengeRegistry } from "./pending-provider-challenge.js";
 import type { ProviderChallengeSidecar } from "./provider-challenge-sidecar.js";
 import {
-	WHATSAPP_PROVIDER_CHALLENGE_COPY,
 	type WhatsAppProviderChallengeControlSender,
+	whatsAppProviderChallengeCopy,
 } from "./whatsapp-provider-challenge-interceptor.js";
 
 const CHALLENGE_TTL_MS = 3 * 60 * 1_000;
@@ -100,7 +100,7 @@ export function createProviderLoginCoordinator(options: {
 			try {
 				await options.sendControl({
 					templateId: "challenge_sent",
-					body: WHATSAPP_PROVIDER_CHALLENGE_COPY.challenge_sent,
+					body: whatsAppProviderChallengeCopy("challenge_sent", binding.addresseeGender),
 					replyAddressRef: binding.replyAddress,
 					bindingId: binding.bindingId,
 				});

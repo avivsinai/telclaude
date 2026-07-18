@@ -145,6 +145,83 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 		});
 	});
 
+	it("sniffs household media into an owner-bound processor-only pending ref", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { createWhatsAppInboundCl1Pipeline, signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const quarantineStore = createAttachmentQuarantineStore({ now: () => NOW });
+		const pipeline = createWhatsAppInboundCl1Pipeline({
+			signatureSecret: SECRET,
+			conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+			quarantineStore,
+			resolveIdentity: () => ({
+				domain: "household",
+				bindingId: "parent-a",
+				actorId: "household:whatsapp:parent-a",
+				subjectUserId: "household:parent-a",
+				profileId: "parent-a",
+				principalId: OPERATOR_PHONE,
+				memorySource: "household:parent-a",
+				writableNamespace: "household:parent-a",
+				replyAddressRef: OPERATOR_PHONE,
+				expectedConversationKey: OPERATOR_PHONE,
+				conversationId: "whatsapp:household:parent-a",
+				identityAssurance: "strong_link",
+				authorizationScopes: ["message:read", "message:reply"],
+				actorScopes: [],
+				humanPairingProvenance: true,
+			}),
+			nowMs: () => NOW,
+			onInboundEvent: async () => {},
+		});
+		const event = whatsappEvent({
+			attachments: [
+				{
+					mediaType: "image/png",
+					bytesBase64: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString(
+						"base64",
+					),
+					scanState: "clean",
+				},
+			],
+		});
+
+		const result = await pipeline.ingest({
+			event,
+			signature: signWhatsAppInboundBridgeEvent(event, SECRET),
+		});
+		if (!result.ok || result.duplicate || result.intercepted) {
+			throw new Error("expected household media event");
+		}
+		const [attachment] = result.event.normalized.mediaRefs;
+		expect(attachment).toMatchObject({
+			mediaType: "image/png",
+			scanState: "pending",
+			lifecycle: { state: "quarantined" },
+		});
+		expect(
+			quarantineStore.resolve(attachment.quarantineId, {
+				conversationToken: result.conversation.token,
+			}),
+		).toBeNull();
+		expect(
+			quarantineStore.inspect(attachment.quarantineId, {
+				actorId: result.identity.actorId,
+				subjectUserId: "household:parent-a",
+				bindingId: "parent-a",
+				senderPrincipalId: OPERATOR_PHONE,
+				conversationId: "whatsapp:household:parent-a",
+				conversationToken: result.conversation.token,
+			})?.state,
+		).toBe("pending");
+	});
+
 	it("mints reply-capable member scopes that live MCP can auto-grant for paired replies", async () => {
 		const { createAttachmentQuarantineStore } = await import(
 			"../../src/relay/attachment-quarantine-store.js"

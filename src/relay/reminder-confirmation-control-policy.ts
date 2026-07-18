@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import { type PreparedOutbound, PreparedOutboundSchema } from "../hermes/edge-adapter-contract.js";
 import type { RelayConversationStore } from "../hermes/relay-conversation-store.js";
 import {
-	HOUSEHOLD_REMINDER_CONFIRMATION_COPY,
 	type HouseholdReminderConfirmationTemplateId,
+	householdReminderConfirmationCopy,
 } from "../household-reminders/copy.js";
 import type { OutboundConversationContext } from "./outbound-delivery-dispatcher.js";
 
@@ -14,6 +14,7 @@ export type ReminderConfirmationControlPolicyRecord = {
 	readonly origin: "relay_system_reminder_confirmation_control";
 	readonly templateId: HouseholdReminderConfirmationTemplateId;
 	readonly bindingId: string;
+	readonly addresseeGender: "f" | "m";
 	readonly conversationToken: string;
 	readonly preparedOutboundRef: string;
 	readonly preparedOutboundHash: string;
@@ -30,6 +31,7 @@ export type ReminderConfirmationControlPolicyStore = {
 		readonly prepared: PreparedOutbound;
 		readonly templateId: HouseholdReminderConfirmationTemplateId;
 		readonly bindingId: string;
+		readonly addresseeGender: "f" | "m";
 		readonly conversationToken: string;
 		readonly expectedAddress: string;
 		readonly deliveryRef?: string;
@@ -60,7 +62,8 @@ export function createReminderConfirmationControlPolicyStore(options: {
 			record.idempotencyKey !== prepared.idempotencyKey ||
 			record.bodyHash !== digest(prepared.finalRenderedBody) ||
 			record.destinationHash !== digest(JSON.stringify(prepared.resolvedDestination)) ||
-			HOUSEHOLD_REMINDER_CONFIRMATION_COPY[record.templateId] !== prepared.finalRenderedBody
+			householdReminderConfirmationCopy(record.templateId, record.addresseeGender) !==
+				prepared.finalRenderedBody
 		) {
 			return null;
 		}
@@ -71,7 +74,10 @@ export function createReminderConfirmationControlPolicyStore(options: {
 		authorize(input) {
 			const prepared = PreparedOutboundSchema.parse(input.prepared);
 			if (prepared.channel !== "whatsapp") throw new Error("reminder control channel denied");
-			if (prepared.finalRenderedBody !== HOUSEHOLD_REMINDER_CONFIRMATION_COPY[input.templateId]) {
+			if (
+				prepared.finalRenderedBody !==
+				householdReminderConfirmationCopy(input.templateId, input.addresseeGender)
+			) {
 				throw new Error("reminder control body is not the fixed template");
 			}
 			if (
@@ -96,6 +102,7 @@ export function createReminderConfirmationControlPolicyStore(options: {
 				origin: "relay_system_reminder_confirmation_control",
 				templateId: input.templateId,
 				bindingId: input.bindingId,
+				addresseeGender: input.addresseeGender,
 				conversationToken: required(input.conversationToken, "conversationToken"),
 				preparedOutboundRef: authorized.outboundRef,
 				preparedOutboundHash: authorized.edgePreparedHash,

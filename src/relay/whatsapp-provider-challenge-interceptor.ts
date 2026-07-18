@@ -12,16 +12,36 @@ import type {
 } from "./whatsapp-inbound-cl1.js";
 
 export const WHATSAPP_PROVIDER_CHALLENGE_COPY = Object.freeze({
-	challenge_sent: "שלחנו עכשיו קוד אימות ב-SMS. שלחי כאן רק את הספרות מההודעה.",
-	challenge_type_digits: "תכתבי את המספרים בהודעה",
-	challenge_invalid_format: "שלחי רק את קוד האימות בן 4 עד 8 הספרות.",
-	challenge_success_repeat_request: "האימות הושלם. עכשיו שלחי שוב את הבקשה המקורית.",
-	challenge_expired_restart: "קוד האימות פג. התחילי שוב את החיבור לשירות.",
-	challenge_failed_restart: "לא הצלחנו לאמת את הקוד. התחילי שוב את החיבור לשירות.",
-	challenge_unarmed_safety: "אין כרגע אימות שממתין לקוד. אל תשלחי קודי אימות בצ׳אט.",
+	f: Object.freeze({
+		challenge_sent: "שלחנו עכשיו קוד אימות ב-SMS. שלחי כאן רק את הספרות מההודעה.",
+		challenge_type_digits: "תכתבי את המספרים בהודעה",
+		challenge_invalid_format: "שלחי רק את קוד האימות בן 4 עד 8 הספרות.",
+		challenge_success_repeat_request: "האימות הושלם. עכשיו שלחי שוב את הבקשה המקורית.",
+		challenge_expired_restart: "קוד האימות פג. התחילי שוב את החיבור לשירות.",
+		challenge_failed_restart: "לא הצלחנו לאמת את הקוד. התחילי שוב את החיבור לשירות.",
+		challenge_unarmed_safety: "אין כרגע אימות שממתין לקוד. אל תשלחי קודי אימות בצ׳אט.",
+	}),
+	m: Object.freeze({
+		challenge_sent: "שלחנו עכשיו קוד אימות ב-SMS. שלח כאן רק את הספרות מההודעה.",
+		challenge_type_digits: "תכתוב את המספרים בהודעה",
+		challenge_invalid_format: "שלח רק את קוד האימות בן 4 עד 8 הספרות.",
+		challenge_success_repeat_request: "האימות הושלם. עכשיו שלח שוב את הבקשה המקורית.",
+		challenge_expired_restart: "קוד האימות פג. התחל שוב את החיבור לשירות.",
+		challenge_failed_restart: "לא הצלחנו לאמת את הקוד. התחל שוב את החיבור לשירות.",
+		challenge_unarmed_safety: "אין כרגע אימות שממתין לקוד. אל תשלח קודי אימות בצ׳אט.",
+	}),
 });
 
-export type WhatsAppProviderChallengeTemplateId = keyof typeof WHATSAPP_PROVIDER_CHALLENGE_COPY;
+export type WhatsAppProviderChallengeTemplateId = keyof typeof WHATSAPP_PROVIDER_CHALLENGE_COPY.f;
+
+export function whatsAppProviderChallengeCopy(
+	templateId: WhatsAppProviderChallengeTemplateId,
+	addresseeGender: "f" | "m",
+): string {
+	const variants = WHATSAPP_PROVIDER_CHALLENGE_COPY[addresseeGender];
+	if (!variants) throw new Error("provider challenge addressee gender is unavailable");
+	return variants[templateId];
+}
 
 export type WhatsAppProviderChallengeControlSender = (input: {
 	readonly templateId: WhatsAppProviderChallengeTemplateId;
@@ -166,7 +186,7 @@ async function sendTemplate(
 ): Promise<Extract<WhatsAppProviderChallengeInterceptResult, { handled: true }>> {
 	await sendControl({
 		templateId,
-		body: WHATSAPP_PROVIDER_CHALLENGE_COPY[templateId],
+		body: whatsAppProviderChallengeCopy(templateId, identity.addresseeGender),
 		replyAddressRef: identity.replyAddressRef,
 		bindingId: identity.bindingId,
 	});

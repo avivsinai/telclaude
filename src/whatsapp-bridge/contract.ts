@@ -25,7 +25,7 @@ export type WhatsAppBridgeAttachment = {
 	readonly mediaType: string;
 	readonly bytesBase64: string;
 	readonly sizeBytes?: number;
-	readonly quarantineId?: string;
+	readonly redactedFilename?: string;
 };
 
 export type WhatsAppBridgeSendRequest = {
@@ -65,6 +65,51 @@ export function digestWhatsAppBridgeSendRequest(request: unknown): `sha256:${str
 	const canonical = JSON.stringify(sortKeysDeep(request));
 	const digest = crypto.createHash("sha256").update(canonical).digest("hex");
 	return `sha256:${digest}`;
+}
+
+export function parseWhatsAppBridgeAttachments(
+	value: unknown,
+): readonly WhatsAppBridgeAttachment[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item) => {
+		if (typeof item !== "object" || item === null) return [];
+		const record = item as Record<string, unknown>;
+		if (typeof record.mediaType !== "string" || typeof record.bytesBase64 !== "string") return [];
+		const sizeBytes = record.sizeBytes;
+		const redactedFilename = safeRedactedFilename(record.redactedFilename);
+		return [
+			{
+				mediaType: record.mediaType,
+				bytesBase64: record.bytesBase64,
+				...(typeof sizeBytes === "number" && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0
+					? { sizeBytes }
+					: {}),
+				...(redactedFilename ? { redactedFilename } : {}),
+			},
+		];
+	});
+}
+
+export function whatsappBridgeContentForAttachment(
+	attachment: WhatsAppBridgeAttachment,
+	caption: string,
+): Record<string, unknown> {
+	const buffer = Buffer.from(attachment.bytesBase64, "base64");
+	const mimetype = attachment.mediaType;
+	const captionValue = caption.trim();
+	if (mimetype.startsWith("image/")) {
+		return { image: buffer, ...(captionValue ? { caption: captionValue } : {}) };
+	}
+	if (mimetype.startsWith("video/")) {
+		return { video: buffer, mimetype, ...(captionValue ? { caption: captionValue } : {}) };
+	}
+	if (mimetype.startsWith("audio/")) return { audio: buffer, mimetype };
+	return {
+		document: buffer,
+		mimetype,
+		fileName: safeRedactedFilename(attachment.redactedFilename) ?? "attachment",
+		...(captionValue ? { caption: captionValue } : {}),
+	};
 }
 
 export function deterministicWhatsAppBridgeMessageId(
@@ -193,6 +238,21 @@ export function isWhatsAppGroupJid(jid: string): boolean {
 function firstHeader(value: string | readonly string[] | undefined): string | undefined {
 	if (typeof value === "string") return value;
 	return value?.[0];
+}
+
+function safeRedactedFilename(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const filename = value.trim();
+	if (
+		filename.length === 0 ||
+		filename.length > 180 ||
+		filename === "." ||
+		filename === ".." ||
+		!/^[A-Za-z0-9][A-Za-z0-9._ -]*$/u.test(filename)
+	) {
+		return null;
+	}
+	return filename;
 }
 
 function timingSafeEqualText(left: string, right: string): boolean {

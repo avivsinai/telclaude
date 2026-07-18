@@ -64,6 +64,7 @@ describe("WhatsApp household bindings", () => {
 			duplicate: false,
 			identity: {
 				bindingId: "parent-a",
+				addresseeGender: "f",
 				actorId: "household:whatsapp:parent-a",
 				subjectUserId: "household:parent-a",
 				profileId: "parent-a",
@@ -82,6 +83,7 @@ describe("WhatsApp household bindings", () => {
 			duplicate: false,
 			identity: {
 				bindingId: "parent-b",
+				addresseeGender: "m",
 				actorId: "household:whatsapp:parent-b",
 				subjectUserId: "household:parent-b",
 				profileId: "parent-b",
@@ -192,6 +194,7 @@ const config = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: "whatsapp:+15551234567",
 					replyAddress: "whatsapp:+15551234567",
 					displayName: "Parent A",
@@ -209,6 +212,7 @@ const config = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-b",
+					addresseeGender: "m",
 					address: "whatsapp:+15557654321",
 					replyAddress: "whatsapp:+15557654321",
 					displayName: "Parent B",

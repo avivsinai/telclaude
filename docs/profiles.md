@@ -50,6 +50,7 @@ Each household WhatsApp principal gets a separate explicit profile and one bindi
   "whatsappHouseholdBindings": [
     {
       "bindingId": "parent-a",
+      "addresseeGender": "f",
       "address": "whatsapp:+15550001001",
       "replyAddress": "whatsapp:+15550001001",
       "displayName": "Parent A",
@@ -64,6 +65,8 @@ The binding entry is the Phase 0 pairing attestation. Someone with administrativ
 The fields deliberately separate local identity from provider credentials:
 
 - `bindingId` is an opaque local slug containing at least one letter. It is not a phone number, national ID, provider account, or credential.
+- `addresseeGender` is required and is exactly `"f"` or `"m"`. It selects reviewed deterministic Hebrew control-copy variants (for example OTP and reminder prompts); the model never inflects security or confirmation copy.
+- Household media processing is dark by default. Activation requires all three controls: root `householdMedia.enabled: true`, `mediaEnabled: true` on the exact binding, and a stable relay-owned media-confirmation encryption key of at least 32 characters. Missing configuration preserves the pre-media behavior.
 - `subjectUserId` must equal `household:<bindingId>`. Never paste an Israeli ID number, phone number, or provider username into it. Provider ID and phone enrollment data belong only in the vault/provider sidecar.
 - `address` and `replyAddress` must be the same enrolled E.164 WhatsApp address. Telclaude derives actor, conversation, reply, memory, and writable namespace authority from this binding; the model cannot choose them.
 - Household scope arrays are exact, not defaults: no skills, only the `clalit` provider, schedule read/write capabilities, and WhatsApp outbound. Missing or broader arrays fail config validation.

@@ -52,7 +52,8 @@ export type TelclaudeMcpOutboundResolvedDestination = PreparedOutbound["resolved
 export type TelclaudeMcpOutboundPreparedMediaRef = Pick<
 	EdgeAttachmentRef,
 	"quarantineId" | "contentHash"
->;
+> &
+	Partial<Pick<EdgeAttachmentRef, "mediaType" | "redactedFilename" | "sizeBytes">>;
 export type TelclaudeMcpOutboundAuthorizationState =
 	| "authorized"
 	| "approval_required"
@@ -1650,7 +1651,43 @@ function normalizePreparedMediaRefs(
 			if (!EDGE_CONTENT_HASH_RE.test(contentHash)) {
 				throw new Error("side-effect preparedMediaRefs contentHash must be a sha256 digest");
 			}
-			return { quarantineId, contentHash };
+			const metadataCount = [value.mediaType, value.redactedFilename, value.sizeBytes].filter(
+				(item) => item !== undefined,
+			).length;
+			if (metadataCount === 0) return { quarantineId, contentHash };
+			if (metadataCount !== 3) {
+				throw new Error("side-effect preparedMediaRefs metadata must be complete");
+			}
+			const mediaType = requiredTrimmed(
+				value.mediaType ?? "",
+				`preparedMediaRefs[${index}].mediaType`,
+			);
+			if (!/^[^\s/]+\/[^\s/]+$/u.test(mediaType)) {
+				throw new Error("side-effect preparedMediaRefs mediaType is invalid");
+			}
+			const redactedFilename = requiredTrimmed(
+				value.redactedFilename ?? "",
+				`preparedMediaRefs[${index}].redactedFilename`,
+			);
+			if (
+				redactedFilename.length > 180 ||
+				!/^[A-Za-z0-9][A-Za-z0-9._ -]*$/u.test(redactedFilename) ||
+				redactedFilename === "." ||
+				redactedFilename === ".."
+			) {
+				throw new Error("side-effect preparedMediaRefs redactedFilename is invalid");
+			}
+			const sizeBytes = value.sizeBytes;
+			if (!Number.isSafeInteger(sizeBytes) || sizeBytes === undefined || sizeBytes < 0) {
+				throw new Error("side-effect preparedMediaRefs sizeBytes is invalid");
+			}
+			return {
+				quarantineId,
+				contentHash,
+				mediaType,
+				redactedFilename,
+				sizeBytes,
+			};
 		}),
 		"preparedMediaRefs",
 	);

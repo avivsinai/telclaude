@@ -287,6 +287,7 @@ const HouseholdReminderConsentSchema = z
 const WhatsAppHouseholdBindingSchema = z
 	.object({
 		bindingId: z.string().refine(isValidHouseholdBindingId, "invalid opaque household binding id"),
+		addresseeGender: z.enum(["f", "m"]),
 		address: WhatsAppAddressRefSchema,
 		replyAddress: WhatsAppAddressRefSchema,
 		displayName: z.string().trim().min(1).max(80),
@@ -294,6 +295,7 @@ const WhatsAppHouseholdBindingSchema = z
 		providerConsent: HouseholdProviderConsentSchema.optional(),
 		reminderConsent: HouseholdReminderConsentSchema.optional(),
 		remindersEnabled: z.boolean().optional(),
+		mediaEnabled: z.boolean().optional(),
 	})
 	.superRefine((binding, ctx) => {
 		if (binding.replyAddress !== binding.address) {
@@ -853,6 +855,7 @@ const TelclaudeConfigSchema = z.object({
 			}
 		}),
 	householdReminders: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
+	householdMedia: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
 	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),

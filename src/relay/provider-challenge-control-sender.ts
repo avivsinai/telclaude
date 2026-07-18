@@ -17,9 +17,9 @@ import type {
 	OutboundDeliveryDispatcher,
 } from "./outbound-delivery-dispatcher.js";
 import {
-	WHATSAPP_PROVIDER_CHALLENGE_COPY,
 	type WhatsAppProviderChallengeControlSender,
 	type WhatsAppProviderChallengeTemplateId,
+	whatsAppProviderChallengeCopy,
 } from "./whatsapp-provider-challenge-interceptor.js";
 
 const RECORD_TTL_MS = 5 * 60 * 1_000;
@@ -29,6 +29,7 @@ export type ProviderChallengeControlPolicyRecord = {
 	readonly origin: "relay_system_provider_challenge_control";
 	readonly templateId: WhatsAppProviderChallengeTemplateId;
 	readonly bindingId: string;
+	readonly addresseeGender: "f" | "m";
 	readonly conversationToken: string;
 	readonly preparedOutboundRef: string;
 	readonly preparedOutboundHash: string;
@@ -45,6 +46,7 @@ export type ProviderChallengeControlPolicyStore = {
 		readonly prepared: PreparedOutbound;
 		readonly templateId: WhatsAppProviderChallengeTemplateId;
 		readonly bindingId: string;
+		readonly addresseeGender: "f" | "m";
 		readonly conversationToken: string;
 		readonly expectedAddress: string;
 	}): PreparedOutbound;
@@ -73,7 +75,8 @@ export function createProviderChallengeControlPolicyStore(options: {
 			record.idempotencyKey !== prepared.idempotencyKey ||
 			record.bodyHash !== digest(prepared.finalRenderedBody) ||
 			record.destinationHash !== digest(JSON.stringify(prepared.resolvedDestination)) ||
-			WHATSAPP_PROVIDER_CHALLENGE_COPY[record.templateId] !== prepared.finalRenderedBody
+			whatsAppProviderChallengeCopy(record.templateId, record.addresseeGender) !==
+				prepared.finalRenderedBody
 		) {
 			return null;
 		}
@@ -84,7 +87,10 @@ export function createProviderChallengeControlPolicyStore(options: {
 		authorize(input) {
 			const prepared = PreparedOutboundSchema.parse(input.prepared);
 			if (prepared.channel !== "whatsapp") throw new Error("provider control channel denied");
-			if (prepared.finalRenderedBody !== WHATSAPP_PROVIDER_CHALLENGE_COPY[input.templateId]) {
+			if (
+				prepared.finalRenderedBody !==
+				whatsAppProviderChallengeCopy(input.templateId, input.addresseeGender)
+			) {
 				throw new Error("provider control body is not the fixed template");
 			}
 			if (
@@ -106,6 +112,7 @@ export function createProviderChallengeControlPolicyStore(options: {
 				origin: "relay_system_provider_challenge_control",
 				templateId: input.templateId,
 				bindingId: required(input.bindingId),
+				addresseeGender: input.addresseeGender,
 				conversationToken: required(input.conversationToken),
 				preparedOutboundRef: authorized.outboundRef,
 				preparedOutboundHash: authorized.edgePreparedHash,
@@ -167,7 +174,7 @@ export function createProviderChallengeControlSender(options: {
 		if (!binding || binding.replyAddress !== input.replyAddressRef) {
 			throw new Error("provider control binding is unavailable");
 		}
-		if (input.body !== WHATSAPP_PROVIDER_CHALLENGE_COPY[input.templateId]) {
+		if (input.body !== whatsAppProviderChallengeCopy(input.templateId, binding.addresseeGender)) {
 			throw new Error("provider control body is not relay-owned");
 		}
 		const conversations = options.conversationStore
@@ -195,6 +202,7 @@ export function createProviderChallengeControlSender(options: {
 			prepared,
 			templateId: input.templateId,
 			bindingId: binding.bindingId,
+			addresseeGender: binding.addresseeGender,
 			conversationToken: conversation.token,
 			expectedAddress: binding.replyAddress,
 		});

@@ -21,6 +21,7 @@ export type EffectiveOperatorProfile = {
 
 export type ResolvedWhatsAppHouseholdBinding = {
 	readonly bindingId: string;
+	readonly addresseeGender: "f" | "m";
 	readonly actorId: string;
 	readonly subjectUserId: string;
 	readonly memorySource: ReturnType<typeof householdMemorySource>;
@@ -37,6 +38,7 @@ export type ResolvedWhatsAppHouseholdBinding = {
 		OperatorProfileConfig["whatsappHouseholdBindings"]
 	>[number]["reminderConsent"];
 	readonly remindersEnabled?: boolean;
+	readonly mediaEnabled?: boolean;
 	readonly profile: EffectiveOperatorProfile;
 };
 
@@ -122,6 +124,7 @@ export function resolveWhatsAppHouseholdBinding(
 		const memorySource = householdMemorySource(binding.bindingId);
 		return {
 			bindingId: binding.bindingId,
+			addresseeGender: binding.addresseeGender,
 			actorId: `household:whatsapp:${binding.bindingId}`,
 			subjectUserId: binding.subjectUserId,
 			memorySource,
@@ -136,10 +139,41 @@ export function resolveWhatsAppHouseholdBinding(
 			...(binding.remindersEnabled === undefined
 				? {}
 				: { remindersEnabled: binding.remindersEnabled }),
+			...(binding.mediaEnabled === undefined ? {} : { mediaEnabled: binding.mediaEnabled }),
 			profile,
 		};
 	}
 	return null;
+}
+
+export type HouseholdMediaActivation =
+	| {
+			readonly enabled: false;
+			readonly reason: "global_disabled" | "binding_disabled" | "key_unavailable";
+	  }
+	| {
+			readonly enabled: true;
+			readonly encryptionKey: string;
+			readonly eligibleBindingIds: ReadonlySet<string>;
+	  };
+
+export function resolveHouseholdMediaActivation(
+	config: Pick<TelclaudeConfig, "householdMedia" | "profiles">,
+	encryptionKey: string | undefined,
+): HouseholdMediaActivation {
+	if (!config.householdMedia?.enabled) return { enabled: false, reason: "global_disabled" };
+	const eligibleBindingIds = new Set(
+		(config.profiles ?? []).flatMap((profile) =>
+			(profile.whatsappHouseholdBindings ?? [])
+				.filter((binding) => binding.mediaEnabled === true)
+				.map((binding) => binding.bindingId),
+		),
+	);
+	if (eligibleBindingIds.size === 0) return { enabled: false, reason: "binding_disabled" };
+	if (!encryptionKey || Array.from(encryptionKey).length < 32) {
+		return { enabled: false, reason: "key_unavailable" };
+	}
+	return { enabled: true, encryptionKey, eligibleBindingIds };
 }
 
 export function resolveWhatsAppHouseholdBindingById(

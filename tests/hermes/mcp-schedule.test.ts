@@ -541,6 +541,7 @@ const householdConfig = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: "whatsapp:+15557654321",
 					replyAddress: "whatsapp:+15557654321",
 					displayName: "Parent A",

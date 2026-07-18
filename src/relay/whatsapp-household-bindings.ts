@@ -37,6 +37,7 @@ export function createWhatsAppHouseholdIdentityResolver(
 		const grantedAt = new Date(0).toISOString();
 		return {
 			bindingId: resolved.bindingId,
+			addresseeGender: resolved.addresseeGender,
 			actorId: resolved.actorId,
 			subjectUserId: resolved.subjectUserId,
 			profileId: resolved.profile.id,

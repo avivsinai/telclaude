@@ -290,6 +290,47 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_attachment_refs_expires ON attachment_refs(expires_at);
 		CREATE INDEX IF NOT EXISTS idx_attachment_refs_actor ON attachment_refs(actor_user_id);
 
+		-- Relay-local raw attachment quarantine. Paths and owner tokens never leave
+		-- this private table; Hermes receives only the AttachmentRef projection.
+		CREATE TABLE IF NOT EXISTS attachment_quarantine (
+			quarantine_id TEXT PRIMARY KEY,
+			owner_scope_hash TEXT NOT NULL,
+			conversation_token TEXT NOT NULL,
+			supplied_media_type TEXT NOT NULL,
+			sniffed_media_type TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			content_hash TEXT NOT NULL,
+			trust_label TEXT NOT NULL,
+			access_class TEXT NOT NULL CHECK(access_class IN ('outbound-delivery','media-processor')),
+			state TEXT NOT NULL CHECK(state IN ('pending','clean','blocked','expired','deleted')),
+			byte_path TEXT,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL,
+			lease_id TEXT,
+			lease_expires_at_ms INTEGER,
+			deleted_at_ms INTEGER,
+			deletion_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_attachment_quarantine_expiry
+			ON attachment_quarantine(state, expires_at_ms);
+		CREATE INDEX IF NOT EXISTS idx_attachment_quarantine_owner
+			ON attachment_quarantine(owner_scope_hash, created_at_ms DESC);
+
+		-- Content-free terminal deletion evidence. The source quarantine id is
+		-- represented only by a SHA-256 digest so receipts are safe to retain.
+		CREATE TABLE IF NOT EXISTS attachment_quarantine_deletion_receipts (
+			receipt_id TEXT PRIMARY KEY,
+			quarantine_id_hash TEXT NOT NULL UNIQUE,
+			content_hash TEXT NOT NULL,
+			owner_scope_hash TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			received_at_ms INTEGER NOT NULL,
+			deleted_at_ms INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_attachment_quarantine_receipts_deleted
+			ON attachment_quarantine_deletion_receipts(deleted_at_ms);
+
 		-- Memory entries (social memory with provenance tracking)
 		CREATE TABLE IF NOT EXISTS memory_entries (
 			id TEXT PRIMARY KEY,
@@ -496,6 +537,107 @@ function initializeSchema(database: Database.Database): void {
 			ON household_reminder_proposals(conversation_id) WHERE status = 'pending';
 		CREATE INDEX IF NOT EXISTS idx_household_reminder_proposals_authority
 			ON household_reminder_proposals(actor_id, subject_user_id, profile_id, created_at_ms DESC);
+
+		-- A reminder proposal and a media action confirmation both consume the
+		-- same small choice vocabulary. One durable conversation-keyed lease keeps
+		-- them mutually exclusive even when their creation attempts race.
+		CREATE TABLE IF NOT EXISTS household_interactive_choice_leases (
+			conversation_id TEXT PRIMARY KEY,
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			owner_kind TEXT NOT NULL CHECK(owner_kind IN ('reminder','media_confirmation')),
+			owner_ref TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_interactive_choice_lease_expiry
+			ON household_interactive_choice_leases(expires_at_ms);
+		INSERT OR IGNORE INTO household_interactive_choice_leases (
+			actor_id, subject_user_id, profile_id, binding_id, conversation_id,
+			owner_kind, owner_ref, created_at_ms, expires_at_ms
+		)
+		SELECT actor_id, subject_user_id, profile_id, binding_id, conversation_id,
+			'reminder', ref, created_at_ms, expires_at_ms
+		FROM household_reminder_proposals WHERE status = 'pending';
+
+		-- Media-derived text and canonical action parameters remain encrypted.
+		-- The control table carries only content-free owner bindings and digests.
+		CREATE TABLE IF NOT EXISTS household_media_turn_derivations (
+			turn_ref TEXT PRIMARY KEY,
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			sender_principal_hash TEXT NOT NULL,
+			owner_scope_hash TEXT NOT NULL,
+			source_digest TEXT NOT NULL,
+			derived_digest TEXT NOT NULL,
+			media_kinds_json TEXT NOT NULL,
+			provenance_json TEXT NOT NULL,
+			action_bearing INTEGER NOT NULL CHECK(action_bearing IN (0,1)),
+			low_confidence INTEGER NOT NULL CHECK(low_confidence IN (0,1)),
+			kdf_salt TEXT NOT NULL,
+			iv TEXT NOT NULL,
+			auth_tag TEXT NOT NULL,
+			ciphertext TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_media_turn_derivation_expiry
+			ON household_media_turn_derivations(expires_at_ms);
+
+		CREATE TABLE IF NOT EXISTS household_media_action_confirmations (
+			confirmation_id TEXT PRIMARY KEY,
+			jti_hash TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL CHECK(status IN ('pending','confirmed','rejected','expired','revoked')),
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			sender_principal_hash TEXT NOT NULL,
+			original_turn_ref TEXT NOT NULL,
+			owner_scope_hash TEXT NOT NULL,
+			source_digest TEXT NOT NULL,
+			derived_digest TEXT NOT NULL,
+			action_digest TEXT NOT NULL,
+			action_tool_name TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms),
+			resolved_at_ms INTEGER,
+			resolution_event_hash TEXT,
+			resolution_message_hash TEXT,
+			resolution_template_id TEXT,
+			fresh_turn_ref TEXT,
+			action_consumed_at_ms INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_media_action_confirmation_pending
+			ON household_media_action_confirmations(conversation_id, status, expires_at_ms);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_media_action_confirmation_turn_action_pending
+			ON household_media_action_confirmations(original_turn_ref, action_digest)
+			WHERE status = 'pending';
+
+		CREATE TABLE IF NOT EXISTS household_media_action_confirmation_content (
+			confirmation_id TEXT PRIMARY KEY,
+			kdf_salt TEXT NOT NULL,
+			iv TEXT NOT NULL,
+			auth_tag TEXT NOT NULL,
+			ciphertext TEXT NOT NULL
+		);
+
+		CREATE TRIGGER IF NOT EXISTS expire_household_media_confirmation_with_lease
+		AFTER DELETE ON household_interactive_choice_leases
+		WHEN OLD.owner_kind = 'media_confirmation'
+		BEGIN
+			DELETE FROM household_media_action_confirmation_content
+			 WHERE confirmation_id = OLD.owner_ref;
+			UPDATE household_media_action_confirmations
+			 SET status = 'expired', resolved_at_ms = expires_at_ms
+			 WHERE confirmation_id = OLD.owner_ref AND status = 'pending';
+		END;
 
 		CREATE TABLE IF NOT EXISTS household_reminder_interception_receipts (
 			receipt_id TEXT PRIMARY KEY,
@@ -880,11 +1022,37 @@ function initializeSchema(database: Database.Database): void {
 		"ALTER TABLE plan_approvals ADD COLUMN turn_conversation_ref TEXT",
 	);
 	ensureHouseholdReminderColumns(database);
+	ensureMediaActionConfirmationColumns(database);
 	ensureMemoryEntriesColumns(database);
 	migrateDefaultTelegramMemorySource(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
+}
+
+function ensureMediaActionConfirmationColumns(database: Database.Database): void {
+	for (const [column, type] of [
+		["resolution_event_hash", "TEXT"],
+		["resolution_message_hash", "TEXT"],
+		["resolution_template_id", "TEXT"],
+		["fresh_turn_ref", "TEXT"],
+		["action_consumed_at_ms", "INTEGER"],
+	] as const) {
+		ensureColumn(
+			database,
+			"household_media_action_confirmations",
+			column,
+			`ALTER TABLE household_media_action_confirmations ADD COLUMN ${column} ${type}`,
+		);
+	}
+	database.exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_media_confirmation_resolution_event
+			ON household_media_action_confirmations(resolution_event_hash)
+			WHERE resolution_event_hash IS NOT NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_media_confirmation_fresh_turn
+			ON household_media_action_confirmations(fresh_turn_ref)
+			WHERE fresh_turn_ref IS NOT NULL;
+	`);
 }
 
 function ensureHouseholdReminderColumns(database: Database.Database): void {

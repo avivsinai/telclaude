@@ -107,6 +107,7 @@ describe("operator profile resolution", () => {
 					whatsappHouseholdBindings: [
 						{
 							bindingId: "parent-a",
+							addresseeGender: "f",
 							address: "whatsapp:+15551234567",
 							replyAddress: "whatsapp:+15551234567",
 							displayName: "Parent A",
@@ -125,6 +126,7 @@ describe("operator profile resolution", () => {
 					whatsappHouseholdBindings: [
 						{
 							bindingId: "parent-b",
+							addresseeGender: "m",
 							address: "whatsapp:+15557654321",
 							replyAddress: "whatsapp:+15557654321",
 							displayName: "Parent B",
@@ -137,6 +139,7 @@ describe("operator profile resolution", () => {
 
 		expect(resolveWhatsAppHouseholdBinding("+15551234567", cfg)).toMatchObject({
 			bindingId: "parent-a",
+			addresseeGender: "f",
 			actorId: "household:whatsapp:parent-a",
 			subjectUserId: "household:parent-a",
 			memorySource: "household:parent-a",
@@ -147,11 +150,61 @@ describe("operator profile resolution", () => {
 		});
 		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15557654321", cfg)).toMatchObject({
 			bindingId: "parent-b",
+			addresseeGender: "m",
 			actorId: "household:whatsapp:parent-b",
 			subjectUserId: "household:parent-b",
 			memorySource: "household:parent-b",
 			profile: { id: "parent-b" },
 		});
 		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15550000000", cfg)).toBeNull();
+	});
+
+	it("requires independent global, binding, and key gates for household media activation", async () => {
+		const { resolveHouseholdMediaActivation } = await import("../../src/config/profiles.js");
+		const key = "household-media-test-encryption-key-32chars";
+		const configFor = (globalEnabled: boolean, bindingEnabled: boolean) =>
+			({
+				householdMedia: { enabled: globalEnabled },
+				profiles: [
+					{
+						whatsappHouseholdBindings: [{ bindingId: "parent-a", mediaEnabled: bindingEnabled }],
+					},
+				],
+			}) as never;
+
+		expect(resolveHouseholdMediaActivation(configFor(false, true), key)).toEqual({
+			enabled: false,
+			reason: "global_disabled",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, false), key)).toEqual({
+			enabled: false,
+			reason: "binding_disabled",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, true), undefined)).toEqual({
+			enabled: false,
+			reason: "key_unavailable",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, true), "short")).toEqual({
+			enabled: false,
+			reason: "key_unavailable",
+		});
+		const active = resolveHouseholdMediaActivation(configFor(true, true), key);
+		expect(active).toMatchObject({ enabled: true, encryptionKey: key });
+		expect(active.enabled && active.eligibleBindingIds).toEqual(new Set(["parent-a"]));
+	});
+
+	it("keeps the relay media seam dark when the whole config is absent", async () => {
+		const { HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV, resolveConfiguredHouseholdMediaActivation } =
+			await import("../../src/commands/relay.js");
+		const env = {
+			[HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV]: "household-media-test-encryption-key-32chars",
+		};
+
+		expect(
+			resolveConfiguredHouseholdMediaActivation(
+				{ householdMedia: { enabled: false }, profiles: [] } as never,
+				env,
+			),
+		).toEqual({ enabled: false, reason: "global_disabled" });
 	});
 });

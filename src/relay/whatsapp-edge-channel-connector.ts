@@ -33,9 +33,8 @@ export const WHATSAPP_SIDECAR_ALLOWED_HOST = "whatsapp-bridge";
 export const DEFAULT_WHATSAPP_BRIDGE_SESSION_TTL_MS = 60_000;
 
 export type WhatsAppSidecarAttachment = {
-	readonly quarantineId: string;
 	readonly mediaType: string;
-	readonly contentHash: string;
+	readonly redactedFilename?: string;
 	readonly sizeBytes: number;
 	readonly bytesBase64: string;
 };
@@ -207,7 +206,20 @@ async function buildWhatsAppSidecarSendRequest(context: OutboundDeliveryContext)
 			return {
 				ok: false,
 				code: "attachment_missing",
-				reason: `prepared attachment is unavailable: ${mediaRef.quarantineId}`,
+				reason: "prepared attachment is unavailable",
+				retryable: false,
+			};
+		}
+		if (
+			mediaRef.redactedFilename !== undefined &&
+			(released.mediaType !== mediaRef.mediaType ||
+				released.bytes.byteLength !== mediaRef.sizeBytes ||
+				released.contentHash !== mediaRef.contentHash)
+		) {
+			return {
+				ok: false,
+				code: "attachment_metadata_mismatch",
+				reason: "prepared attachment metadata does not match released bytes",
 				retryable: false,
 			};
 		}
@@ -224,9 +236,8 @@ async function buildWhatsAppSidecarSendRequest(context: OutboundDeliveryContext)
 			};
 		}
 		attachments.push({
-			quarantineId: released.quarantineId,
 			mediaType: released.mediaType,
-			contentHash: released.contentHash,
+			...(mediaRef.redactedFilename ? { redactedFilename: mediaRef.redactedFilename } : {}),
 			sizeBytes: released.bytes.byteLength,
 			bytesBase64: Buffer.from(released.bytes).toString("base64"),
 		});

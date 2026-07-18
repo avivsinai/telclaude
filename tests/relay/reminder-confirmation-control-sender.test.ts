@@ -12,7 +12,7 @@ import {
 	createRelayConversationStore,
 	type RelayConversationStore,
 } from "../../src/hermes/relay-conversation-store.js";
-import { HOUSEHOLD_REMINDER_CONFIRMATION_COPY } from "../../src/household-reminders/copy.js";
+import { householdReminderConfirmationCopy } from "../../src/household-reminders/copy.js";
 import { createReminderConfirmationControlPolicyStore } from "../../src/relay/reminder-confirmation-control-policy.js";
 import { createReminderConfirmationControlSender } from "../../src/relay/reminder-confirmation-control-sender.js";
 import { closeDb, resetDatabase } from "../../src/storage/db.js";
@@ -73,7 +73,7 @@ describe("reminder confirmation control sender", () => {
 
 		await sender({
 			templateId: "confirmed",
-			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.confirmed,
+			body: householdReminderConfirmationCopy("confirmed", "f"),
 			replyAddressRef: ADDRESS,
 			bindingId: "parent-a",
 		});
@@ -83,6 +83,7 @@ describe("reminder confirmation control sender", () => {
 			expect.objectContaining({
 				origin: "relay_system_reminder_confirmation_control",
 				templateId: "confirmed",
+				addresseeGender: "f",
 				status: "sent",
 			}),
 		]);
@@ -116,7 +117,7 @@ describe("reminder confirmation control sender", () => {
 		await expect(
 			sender({
 				templateId: "confirmed",
-				body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.confirmed,
+				body: householdReminderConfirmationCopy("confirmed", "f"),
 				replyAddressRef: "whatsapp:+15550000999",
 				bindingId: "parent-a",
 			}),
@@ -160,7 +161,7 @@ describe("reminder confirmation control sender", () => {
 		});
 		const input = {
 			templateId: "confirmed" as const,
-			body: HOUSEHOLD_REMINDER_CONFIRMATION_COPY.confirmed,
+			body: householdReminderConfirmationCopy("confirmed", "f"),
 			replyAddressRef: ADDRESS,
 			bindingId: "parent-a",
 			deliveryRef: `reminder-interception:${"a".repeat(64)}`,
@@ -238,6 +239,7 @@ const config = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					addresseeGender: "f",
 					address: ADDRESS,
 					replyAddress: ADDRESS,
 					displayName: "Parent A",
