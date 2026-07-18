@@ -190,7 +190,7 @@ export type RelayConversationStore = {
 	recordThreadMessageId(token: string, messageId: string): RelayConversation | null;
 	updateInboundCursor(token: string, cursor: string): RelayConversation | null;
 	linkAuditId(token: string, auditId: string): RelayConversation | null;
-	revoke(token: string, reason: string): RelayConversation | null;
+	revoke(token: string, reason: string, nowMs?: number): RelayConversation | null;
 	list(filters?: {
 		readonly channel?: EdgeChannel;
 		readonly domain?: RelayConversationDomainInput;
@@ -494,20 +494,30 @@ export function createRelayConversationStore(
 			return this.resolve(token);
 		},
 
-		revoke(token, reason) {
+		revoke(token, reason, atMs = nowMs()) {
 			const conversation = this.inspect(token);
 			if (!conversation) return null;
-			const now = nowMs();
-			getDb()
-				.prepare(
-					`UPDATE hermes_relay_conversations
-					 SET authorization_state = 'revoked',
-					     revoked_at_ms = ?,
-					     revoke_reason = ?,
-					     updated_at_ms = ?
-					 WHERE token = ?`,
-				)
-				.run(now, requiredTrimmed(reason, "reason"), now, token);
+			const now = normalizeTimestamp(atMs, "nowMs");
+			const revokeReason = requiredTrimmed(reason, "reason");
+			getDb().transaction(() => {
+				getDb()
+					.prepare(
+						`UPDATE hermes_relay_conversations
+						 SET authorization_state = 'revoked',
+						     revoked_at_ms = ?,
+						     revoke_reason = ?,
+						     updated_at_ms = ?
+						 WHERE token = ? AND revoked_at_ms IS NULL`,
+					)
+					.run(now, revokeReason, now, token);
+				getDb()
+					.prepare(
+						`UPDATE hermes_relay_conversation_turns
+						 SET revoked_at_ms = ?, revoke_reason = ?
+						 WHERE conversation_token = ? AND revoked_at_ms IS NULL`,
+					)
+					.run(now, revokeReason, token);
+			})();
 			return this.inspect(token);
 		},
 

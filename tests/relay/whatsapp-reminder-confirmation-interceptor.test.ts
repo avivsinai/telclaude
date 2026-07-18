@@ -564,6 +564,7 @@ function digest(value: string): `sha256:${string}` {
 }
 
 const config = {
+	householdReminders: { enabled: true },
 	profiles: [
 		{
 			id: "parent-a",
@@ -575,6 +576,7 @@ const config = {
 			whatsappHouseholdBindings: [
 				{
 					bindingId: "parent-a",
+					remindersEnabled: true,
 					addresseeGender: "f",
 					address: ADDRESS,
 					replyAddress: ADDRESS,

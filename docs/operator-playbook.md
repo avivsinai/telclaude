@@ -143,6 +143,45 @@ Docker volumes mirror this split: per-agent profile volumes, vault-socket tmpfs,
 
 Operators edit the control room and deploy; telclaude consumes. Never edit runtime SQLite or vault files by hand.
 
+## Household WhatsApp activation
+
+Household access is a rung-by-rung production rollout, not a single feature flag. Keep every household root switch and every per-binding switch false until the matching gate below is complete. Use opaque example identifiers in version-controlled material; real addresses, enrollment records, keys, and operator destinations stay in private deployment configuration.
+
+### Activation ceremony
+
+1. Record the current deployment image digest and the inode of the mounted `telclaude.json`. Edit that file in place through the deployment's config writer; do not replace it with a renamed temporary file. Verify the inode is unchanged before restarting the relay.
+2. Add one narrow profile per household principal. Each profile has `allowedSkills: []`, `providerScopes: ["clalit"]`, `capabilityScopes: ["schedule.read", "schedule.write"]`, and `outboundChannels: ["whatsapp"]`.
+3. Add one `whatsappHouseholdBindings` entry to each profile. Use a distinct opaque `bindingId`, the reviewed `addresseeGender`, identical enrolled `address` and `replyAddress`, and `subjectUserId: "household:<bindingId>"`. Leave `emergencyEnabled`, `mediaEnabled`, and `remindersEnabled` false.
+4. Provision the relay-owned media-confirmation encryption key in private deployment secrets. It must contain at least 32 characters. Configure operator notification destinations privately; never commit them.
+5. Restart the relay and confirm the dark-state checks: all household root switches are false, per-binding switches are false, and no household binding can reach a capability that has not completed its rollout rung.
+
+Before the first household message, close all four operator gates:
+
+- **eSIM and bridge pairing:** the dedicated channel is active, the bridge is paired, and inbound and reply addresses resolve to the intended binding.
+- **Model data controls:** the operator has made and recorded the OpenAI zero-data-retention or equivalent data-control decision for this deployment.
+- **Provider re-enrollment:** the household principal has completed fresh Clalit enrollment through the provider sidecar. Do not copy a previous principal's provider session.
+- **Consent receipt:** record affirmative consent for every enabled category, including proactive delivery, schedule management, provider access, media/document processing, and indefinite retention where applicable. A missing category stays disabled.
+
+### Rollout ladder
+
+Advance only one rung at a time, with the previous rung green:
+
+1. Operator shadow traffic with all household switches dark.
+2. Parent A text conversation only.
+3. Read-only Clalit access.
+4. Media and document understanding with confirmation enabled.
+5. One deliberately reviewed prescription renewal through prepare, operator approval, and execute.
+6. One-shot reminders with confirmation and delivery proof.
+7. Hold for 72 hours with no unexplained alerts, retries, or stale confirmations.
+8. Repeat the ladder for Parent B; do not copy Parent A's binding, consent, or enrollment state.
+9. Keep a 30-day tally of reads, renewal preparations/executions, reminder proposals/deliveries, confirmation outcomes, authentication challenges, and emergency signals. Metrics contain counts and opaque binding keys, never message or provider content.
+
+### Emergency stop and rollback
+
+For an immediate household stop, set the affected root switch and per-binding switch false, then restart the relay. Remove the binding when access itself is revoked; startup reconciliation durably cancels its pending reminders and fires and revokes its outstanding conversations and turns. Do not delete runtime SQLite rows by hand.
+
+If the current image is suspect, redeploy the previously recorded image digest with the same private mounts and secrets. Re-run dark-state checks before restoring any rung. Rollback does not authorize new enrollment, consent, or activation; those gates remain separate.
+
 ## Prototype to production for cron jobs
 
 Move workflows up this ladder one rung at a time.

@@ -62,6 +62,7 @@ import {
 	readHouseholdReminderKillSwitches,
 	resolveHouseholdReminderLiveDeliveryTarget,
 } from "../household-reminders/fire-executor.js";
+import { reconcileHouseholdReminderBindings } from "../household-reminders/reconcile.js";
 import { renderHouseholdReminderBody } from "../household-reminders/render.js";
 import { getHouseholdReminderFire } from "../household-reminders/store.js";
 import { createHouseholdReminderSystemOriginAuthorizer } from "../household-reminders/system-origin-authorizer.js";
@@ -399,6 +400,17 @@ export function registerRelayCommand(program: Command): void {
 						? createLiveMcpSideEffectApprovalKit(vaultSocketPath)
 						: null;
 				const liveMcpConversationStore = createRelayConversationStore();
+				const reminderReconciliation = reconcileHouseholdReminderBindings(
+					cfg,
+					Date.now(),
+					liveMcpConversationStore,
+				);
+				if (
+					reminderReconciliation.bindingsRevoked > 0 ||
+					reminderReconciliation.conversationsRevoked > 0
+				) {
+					logger.info(reminderReconciliation, "revoked stale household bindings");
+				}
 				const mediaActionConfirmationStore = householdMediaActivation.enabled
 					? createMediaActionConfirmationStore({
 							encryptionKey: householdMediaActivation.encryptionKey,

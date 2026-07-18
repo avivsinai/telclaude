@@ -1356,7 +1356,9 @@ function householdReminderContext(
 		},
 		config ?? loadConfig(),
 	);
-	if (!context) throw new Error("household reminder binding or consent is unavailable");
+	if (!context) {
+		throw new Error("household reminder binding or consent is unavailable or disabled");
+	}
 	return context;
 }
 
