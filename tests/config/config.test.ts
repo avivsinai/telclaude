@@ -605,6 +605,62 @@ describe("config defaults", () => {
 		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.mediaEnabled).toBe(true);
 	});
 
+	it("defaults the household rollout to shadow and parses a recorded media data-control decision", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({}));
+		let cfg = loadConfig();
+		expect(cfg.householdRollout).toEqual({ rung: "shadow" });
+		expect(cfg.householdMedia).toEqual({ enabled: false });
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				householdRollout: { rung: "parentA_media" },
+				householdMedia: {
+					enabled: true,
+					dataControlAck: {
+						acknowledged: true,
+						posture: "zdr",
+						recordedAt: "2026-07-18T12:00:00.000Z",
+						operatorId: "operator:aviv",
+					},
+				},
+			}),
+		);
+		cfg = loadConfig();
+		expect(cfg.householdRollout.rung).toBe("parentA_media");
+		expect(cfg.householdMedia.dataControlAck).toEqual({
+			acknowledged: true,
+			posture: "zdr",
+			recordedAt: "2026-07-18T12:00:00.000Z",
+			operatorId: "operator:aviv",
+		});
+	});
+
+	it("rejects invalid household rollout rungs and malformed data-control acknowledgements", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({ householdRollout: { rung: "parentC" } }));
+		expect(() => loadConfig()).toThrow();
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				householdMedia: {
+					enabled: true,
+					dataControlAck: {
+						acknowledged: true,
+						posture: "zdr",
+						recordedAt: "not-a-date",
+						operatorId: "aviv",
+					},
+				},
+			}),
+		);
+		expect(() => loadConfig()).toThrow();
+	});
+
 	it("keeps household emergency handling dark unless both global and binding flags are enabled", () => {
 		setConfigPath(configPath());
 		const binding = {

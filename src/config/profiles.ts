@@ -173,7 +173,11 @@ export function resolveHouseholdEmergencyActivation(
 export type HouseholdMediaActivation =
 	| {
 			readonly enabled: false;
-			readonly reason: "global_disabled" | "binding_disabled" | "key_unavailable";
+			readonly reason:
+				| "global_disabled"
+				| "binding_disabled"
+				| "data_control_unacknowledged"
+				| "key_unavailable";
 	  }
 	| {
 			readonly enabled: true;
@@ -194,6 +198,9 @@ export function resolveHouseholdMediaActivation(
 		),
 	);
 	if (eligibleBindingIds.size === 0) return { enabled: false, reason: "binding_disabled" };
+	if (config.householdMedia.dataControlAck?.acknowledged !== true) {
+		return { enabled: false, reason: "data_control_unacknowledged" };
+	}
 	if (!encryptionKey || Array.from(encryptionKey).length < 32) {
 		return { enabled: false, reason: "key_unavailable" };
 	}

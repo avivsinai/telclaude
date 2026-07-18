@@ -212,6 +212,34 @@ const WhatsAppAddressRefSchema = z.string().transform((value, ctx) => {
 
 const Sha256RefSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
+export const HOUSEHOLD_ROLLOUT_RUNGS = [
+	"shadow",
+	"parentA_text",
+	"parentA_clalit",
+	"parentA_media",
+	"parentA_renewal",
+	"parentA_reminders",
+	"hold_72h",
+	"parentB_text",
+	"parentB_clalit",
+	"parentB_media",
+	"parentB_renewal",
+	"parentB_reminders",
+	"parentB_hold_72h",
+	"complete",
+] as const;
+
+const HouseholdRolloutRungSchema = z.enum(HOUSEHOLD_ROLLOUT_RUNGS);
+
+const HouseholdDataControlAckSchema = z
+	.object({
+		acknowledged: z.boolean(),
+		posture: z.enum(["zdr", "standard-abuse-monitoring"]),
+		recordedAt: z.iso.datetime(),
+		operatorId: z.string().regex(/^operator:[a-z0-9-]{1,64}$/),
+	})
+	.strict();
+
 const HouseholdProviderConsentSchema = z
 	.object({
 		service: z.literal("clalit"),
@@ -856,8 +884,16 @@ const TelclaudeConfigSchema = z.object({
 			}
 		}),
 	householdReminders: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
-	householdMedia: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
+	householdMedia: z
+		.object({
+			enabled: z.boolean().default(false),
+			dataControlAck: HouseholdDataControlAckSchema.optional(),
+		})
+		.default({ enabled: false }),
 	householdEmergency: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
+	householdRollout: z
+		.object({ rung: HouseholdRolloutRungSchema.default("shadow") })
+		.default({ rung: "shadow" }),
 	householdMetrics: z
 		.object({
 			enabled: z.boolean().default(false),
@@ -875,6 +911,7 @@ const TelclaudeConfigSchema = z.object({
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
+export type HouseholdRolloutRung = (typeof HOUSEHOLD_ROLLOUT_RUNGS)[number];
 export type ReplyConfig = z.infer<typeof ReplyConfigSchema>;
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
