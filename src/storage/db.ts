@@ -290,6 +290,47 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_attachment_refs_expires ON attachment_refs(expires_at);
 		CREATE INDEX IF NOT EXISTS idx_attachment_refs_actor ON attachment_refs(actor_user_id);
 
+		-- Relay-local raw attachment quarantine. Paths and owner tokens never leave
+		-- this private table; Hermes receives only the AttachmentRef projection.
+		CREATE TABLE IF NOT EXISTS attachment_quarantine (
+			quarantine_id TEXT PRIMARY KEY,
+			owner_scope_hash TEXT NOT NULL,
+			conversation_token TEXT NOT NULL,
+			supplied_media_type TEXT NOT NULL,
+			sniffed_media_type TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			content_hash TEXT NOT NULL,
+			trust_label TEXT NOT NULL,
+			access_class TEXT NOT NULL CHECK(access_class IN ('outbound-delivery','media-processor')),
+			state TEXT NOT NULL CHECK(state IN ('pending','clean','blocked','expired','deleted')),
+			byte_path TEXT,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL,
+			lease_id TEXT,
+			lease_expires_at_ms INTEGER,
+			deleted_at_ms INTEGER,
+			deletion_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_attachment_quarantine_expiry
+			ON attachment_quarantine(state, expires_at_ms);
+		CREATE INDEX IF NOT EXISTS idx_attachment_quarantine_owner
+			ON attachment_quarantine(owner_scope_hash, created_at_ms DESC);
+
+		-- Content-free terminal deletion evidence. The source quarantine id is
+		-- represented only by a SHA-256 digest so receipts are safe to retain.
+		CREATE TABLE IF NOT EXISTS attachment_quarantine_deletion_receipts (
+			receipt_id TEXT PRIMARY KEY,
+			quarantine_id_hash TEXT NOT NULL UNIQUE,
+			content_hash TEXT NOT NULL,
+			owner_scope_hash TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			received_at_ms INTEGER NOT NULL,
+			deleted_at_ms INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_attachment_quarantine_receipts_deleted
+			ON attachment_quarantine_deletion_receipts(deleted_at_ms);
+
 		-- Memory entries (social memory with provenance tracking)
 		CREATE TABLE IF NOT EXISTS memory_entries (
 			id TEXT PRIMARY KEY,

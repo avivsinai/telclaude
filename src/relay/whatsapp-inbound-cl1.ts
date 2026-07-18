@@ -16,12 +16,16 @@ import {
 } from "../hermes/relay-conversation-store.js";
 import { assessRisk, wrapExternalContent } from "../security/external-content.js";
 import { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
-import type { AttachmentQuarantineStore } from "./attachment-quarantine-store.js";
+import {
+	type AttachmentQuarantineStore,
+	QUARANTINE_MAX_BYTES,
+} from "./attachment-quarantine-store.js";
 
 export { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 
 export const WHATSAPP_INBOUND_BRIDGE_SCHEMA_VERSION = "telclaude.edge.whatsapp.inbound.v1";
 export const DEFAULT_WHATSAPP_INBOUND_MAX_SKEW_MS = 5 * 60 * 1000;
+export const WHATSAPP_INBOUND_MAX_ATTACHMENTS = 8;
 
 const NonEmptyString = z.string().trim().min(1);
 
@@ -43,7 +47,10 @@ export const WhatsAppInboundBridgeEventSchema = z
 		senderAddressRef: NonEmptyString,
 		conversationKey: NonEmptyString,
 		text: z.string().optional(),
-		attachments: z.array(WhatsAppInboundAttachmentSchema).default([]),
+		attachments: z
+			.array(WhatsAppInboundAttachmentSchema)
+			.max(WHATSAPP_INBOUND_MAX_ATTACHMENTS)
+			.default([]),
 		receivedAtMs: z.number().int().positive(),
 	})
 	.strict();
@@ -295,11 +302,19 @@ export function createWhatsAppInboundCl1Pipeline(
 				readonly scanState: WhatsAppInboundBridgeEvent["attachments"][number]["scanState"];
 			}[];
 			try {
-				decodedAttachments = event.attachments.map((attachment) => ({
-					bytes: decodeBase64Bytes(attachment.bytesBase64),
-					mediaType: attachment.mediaType,
-					scanState: attachment.scanState,
-				}));
+				let decodedBytes = 0;
+				decodedAttachments = event.attachments.map((attachment) => {
+					const bytes = decodeBase64Bytes(attachment.bytesBase64, QUARANTINE_MAX_BYTES);
+					decodedBytes += bytes.byteLength;
+					if (decodedBytes > QUARANTINE_MAX_BYTES) {
+						throw new Error("WhatsApp inbound attachments exceed the total byte cap");
+					}
+					return {
+						bytes,
+						mediaType: attachment.mediaType,
+						scanState: attachment.scanState,
+					};
+				});
 			} catch (error) {
 				return failure(
 					"whatsapp_inbound_attachment_invalid",
@@ -339,7 +354,20 @@ export function createWhatsAppInboundCl1Pipeline(
 						bytes: attachment.bytes,
 						mediaType: attachment.mediaType,
 						conversationToken: conversation.token,
-						scanState: attachment.scanState ?? "pending",
+						...(identity.domain === "household"
+							? {
+									owner: {
+										actorId: identity.actorId,
+										subjectUserId: identity.subjectUserId,
+										bindingId: identity.bindingId,
+										senderPrincipalId: identity.principalId,
+										conversationId,
+										conversationToken: conversation.token,
+									},
+									accessClass: "media-processor" as const,
+									receivedAtMs: event.receivedAtMs,
+								}
+							: { scanState: attachment.scanState ?? "pending" }),
 						trustLabel: "untrusted",
 					}),
 				);
@@ -470,8 +498,12 @@ function auditIdFor(event: WhatsAppInboundBridgeEvent): string {
 	return `wa-audit:${hashShort({ eventId: event.eventId, messageId: event.messageId })}`;
 }
 
-function decodeBase64Bytes(value: string): Uint8Array {
+function decodeBase64Bytes(value: string, maxBytes: number): Uint8Array {
 	const trimmed = value.trim();
+	const maximumEncodedLength = Math.ceil(maxBytes / 3) * 4;
+	if (trimmed.length > maximumEncodedLength) {
+		throw new Error("WhatsApp inbound attachment bytes exceed the byte cap");
+	}
 	if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(trimmed)) {
 		throw new Error("WhatsApp inbound attachment bytesBase64 is not valid base64");
 	}

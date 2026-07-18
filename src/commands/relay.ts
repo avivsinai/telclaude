@@ -66,6 +66,7 @@ import {
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
 import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
+import { startAttachmentQuarantineSweeper } from "../relay/attachment-quarantine-sweeper.js";
 import { createBrowserActDriverFactory } from "../relay/browser-act-driver.js";
 import {
 	BrowserActExecutor,
@@ -139,7 +140,6 @@ import { startWebhookServer } from "../webhooks/server.js";
 import { findInstalledSkills } from "./doctor-helpers.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
-const LIVE_MCP_ATTACHMENT_QUARANTINE_CLEANUP_INTERVAL_MS = 60 * 1000;
 
 export type RelayOptions = {
 	verbose?: boolean;
@@ -422,20 +422,21 @@ export function registerRelayCommand(program: Command): void {
 						"  tc_browse_act: disabled (TELCLAUDE_HERMES_BROWSER_WRITE_APPROVER_ACTOR_ID unset)",
 					);
 				}
-				const liveMcpAttachmentQuarantineStore = createAttachmentQuarantineStore();
-				const liveMcpAttachmentQuarantineCleanup = setInterval(() => {
-					const removed = liveMcpAttachmentQuarantineStore.cleanupExpired();
-					if (removed > 0) {
-						logger.debug(
-							{ removed },
-							"expired Hermes live-MCP attachment quarantine entries cleaned",
-						);
-					}
-				}, LIVE_MCP_ATTACHMENT_QUARANTINE_CLEANUP_INTERVAL_MS);
-				liveMcpAttachmentQuarantineCleanup.unref();
-				schedulerHandles.push({
-					stop: () => clearInterval(liveMcpAttachmentQuarantineCleanup),
+				const liveMcpAttachmentQuarantineStore = createAttachmentQuarantineStore({
+					durable: true,
 				});
+				const liveMcpAttachmentQuarantineSweeper = startAttachmentQuarantineSweeper({
+					store: liveMcpAttachmentQuarantineStore,
+					onSweep: ({ expired, orphanedFilesDeleted }) => {
+						if (expired > 0 || orphanedFilesDeleted > 0) {
+							logger.debug(
+								{ expired, orphanedFilesDeleted },
+								"Hermes live-MCP attachment quarantine swept",
+							);
+						}
+					},
+				});
+				schedulerHandles.push(liveMcpAttachmentQuarantineSweeper);
 				const householdReminderFailureClassifier = createOutboundDeliveryFailureClassifier();
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
 					registry: createDefaultEdgeOutboundExecutorRegistry(),
