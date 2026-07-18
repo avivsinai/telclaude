@@ -158,4 +158,53 @@ describe("operator profile resolution", () => {
 		});
 		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15550000000", cfg)).toBeNull();
 	});
+
+	it("requires independent global, binding, and key gates for household media activation", async () => {
+		const { resolveHouseholdMediaActivation } = await import("../../src/config/profiles.js");
+		const key = "household-media-test-encryption-key-32chars";
+		const configFor = (globalEnabled: boolean, bindingEnabled: boolean) =>
+			({
+				householdMedia: { enabled: globalEnabled },
+				profiles: [
+					{
+						whatsappHouseholdBindings: [{ bindingId: "parent-a", mediaEnabled: bindingEnabled }],
+					},
+				],
+			}) as never;
+
+		expect(resolveHouseholdMediaActivation(configFor(false, true), key)).toEqual({
+			enabled: false,
+			reason: "global_disabled",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, false), key)).toEqual({
+			enabled: false,
+			reason: "binding_disabled",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, true), undefined)).toEqual({
+			enabled: false,
+			reason: "key_unavailable",
+		});
+		expect(resolveHouseholdMediaActivation(configFor(true, true), "short")).toEqual({
+			enabled: false,
+			reason: "key_unavailable",
+		});
+		const active = resolveHouseholdMediaActivation(configFor(true, true), key);
+		expect(active).toMatchObject({ enabled: true, encryptionKey: key });
+		expect(active.enabled && active.eligibleBindingIds).toEqual(new Set(["parent-a"]));
+	});
+
+	it("keeps the relay media seam dark when the whole config is absent", async () => {
+		const { HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV, resolveConfiguredHouseholdMediaActivation } =
+			await import("../../src/commands/relay.js");
+		const env = {
+			[HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV]: "household-media-test-encryption-key-32chars",
+		};
+
+		expect(
+			resolveConfiguredHouseholdMediaActivation(
+				{ householdMedia: { enabled: false }, profiles: [] } as never,
+				env,
+			),
+		).toEqual({ enabled: false, reason: "global_disabled" });
+	});
 });

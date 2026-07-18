@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { getDb } from "../storage/db.js";
 import type { DerivedMediaEnvelopeV1 } from "./inbound-media-processor.js";
-import { claimInteractiveChoiceLease } from "./interactive-choice-lease.js";
+import {
+	claimInteractiveChoiceLease,
+	releaseInteractiveChoiceLease,
+} from "./interactive-choice-lease.js";
 
 const DEFAULT_CONFIRMATION_TTL_MS = 10 * 60_000;
 const MAX_ACTION_PAYLOAD_BYTES = 32 * 1024;
@@ -55,6 +58,18 @@ export type MediaActionConfirmationPayload = {
 	readonly action: MediaConsequentialAction;
 };
 
+export type MediaActionConfirmationChoice = "confirm" | "reject";
+export type MediaActionConfirmationChoiceTemplateId = "confirmed" | "rejected" | "expired";
+
+export type MediaActionConfirmationChoiceReceipt = {
+	readonly confirmationId: string;
+	readonly status: "confirmed" | "rejected" | "expired";
+	readonly templateId: MediaActionConfirmationChoiceTemplateId;
+	readonly newlyResolved: boolean;
+	readonly freshTurnRef?: string;
+	readonly payload?: MediaActionConfirmationPayload;
+};
+
 export type MediaActionConfirmationGate = {
 	guardConsequentialAction(input: {
 		readonly turnRef: string;
@@ -79,6 +94,18 @@ export type MediaActionConfirmationStore = MediaActionConfirmationGate & {
 		readonly owner: MediaConfirmationOwner;
 		readonly nowMs?: number;
 	}): MediaActionConfirmationPayload | null;
+	peekPendingForOwner(input: {
+		readonly owner: MediaConfirmationOwner;
+		readonly nowMs?: number;
+	}): MediaActionConfirmation | null;
+	resolveChoice(input: {
+		readonly owner: MediaConfirmationOwner;
+		readonly eventId: string;
+		readonly messageId: string;
+		readonly choice: MediaActionConfirmationChoice;
+		readonly mintFreshTurn: (confirmation: MediaActionConfirmation) => { readonly ref: string };
+		readonly nowMs?: number;
+	}): MediaActionConfirmationChoiceReceipt | null;
 };
 
 type DerivationRow = {
@@ -123,6 +150,11 @@ type ConfirmationRow = {
 	created_at_ms: number;
 	expires_at_ms: number;
 	resolved_at_ms: number | null;
+	resolution_event_hash: string | null;
+	resolution_message_hash: string | null;
+	resolution_template_id: MediaActionConfirmationChoiceTemplateId | null;
+	fresh_turn_ref: string | null;
+	action_consumed_at_ms: number | null;
 };
 
 type CipherRow = {
@@ -154,6 +186,15 @@ export class MediaActionConfirmationRequiredError extends Error {
 	constructor() {
 		super("media-derived consequential action requires relay confirmation");
 		this.name = "MediaActionConfirmationRequiredError";
+	}
+}
+
+export class MediaConfirmedActionDeniedError extends Error {
+	readonly code = "media_confirmed_action_denied";
+
+	constructor() {
+		super("confirmed media action capability denied");
+		this.name = "MediaConfirmedActionDeniedError";
 	}
 }
 
@@ -266,6 +307,11 @@ export function createMediaActionConfirmationStore(options: {
 		const turnRef = turnRefValue(input.turnRef);
 		const atMs = timestamp(input.nowMs ?? nowMs(), "nowMs");
 		const authority = normalizeAuthority(input.authority);
+		const confirmedCapability = readConfirmationForFreshTurn(turnRef);
+		if (confirmedCapability) {
+			consumeConfirmedActionCapability(confirmedCapability, authority, input.action, atMs);
+			return { required: false };
+		}
 		const derivation = readDerivation(turnRef);
 		if (!derivation) return { required: false };
 		if (derivation.expires_at_ms <= atMs) {
@@ -283,7 +329,10 @@ export function createMediaActionConfirmationStore(options: {
 		const action = normalizeAction(input.action);
 		const actionDigest = digest("telclaude.media-confirmation.action.v1", action);
 		const existing = readPendingForTurnAction(turnRef, actionDigest);
-		if (existing) return { required: true, confirmation: rowToConfirmation(existing) };
+		if (existing && existing.expires_at_ms > atMs) {
+			return { required: true, confirmation: rowToConfirmation(existing) };
+		}
+		if (existing) expireConfirmation(existing, atMs);
 
 		return getDb().transaction(() => {
 			const payload = decryptJson<{ envelopes: DerivedMediaEnvelopeV1[] }>(
@@ -412,6 +461,102 @@ export function createMediaActionConfirmationStore(options: {
 		}
 	}
 
+	function peekPendingForOwner(input: {
+		readonly owner: MediaConfirmationOwner;
+		readonly nowMs?: number;
+	}): MediaActionConfirmation | null {
+		const owner = normalizeOwner(input.owner);
+		const atMs = timestamp(input.nowMs ?? nowMs(), "nowMs");
+		const row = readPendingForOwner(owner);
+		if (!row) return null;
+		if (row.expires_at_ms <= atMs) {
+			expireConfirmation(row, atMs);
+			return null;
+		}
+		return rowToConfirmation(row);
+	}
+
+	function resolveChoice(input: {
+		readonly owner: MediaConfirmationOwner;
+		readonly eventId: string;
+		readonly messageId: string;
+		readonly choice: MediaActionConfirmationChoice;
+		readonly mintFreshTurn: (confirmation: MediaActionConfirmation) => { readonly ref: string };
+		readonly nowMs?: number;
+	}): MediaActionConfirmationChoiceReceipt | null {
+		const owner = normalizeOwner(input.owner);
+		const atMs = timestamp(input.nowMs ?? nowMs(), "nowMs");
+		const eventHash = digest("telclaude.media-confirmation.event.v1", {
+			eventId: required(input.eventId, "eventId"),
+			messageId: required(input.messageId, "messageId"),
+		});
+		const messageHash = digest(
+			"telclaude.media-confirmation.message.v1",
+			required(input.messageId, "messageId"),
+		);
+		if (input.choice !== "confirm" && input.choice !== "reject") {
+			throw new Error("media confirmation choice is invalid");
+		}
+		return getDb().transaction(() => {
+			const replay = readConfirmationForResolutionEvent(eventHash);
+			if (replay) {
+				return rowOwnerMatches(replay, owner) ? choiceReceipt(replay, false) : null;
+			}
+			const row = readPendingForOwner(owner);
+			if (!row) return null;
+			if (row.expires_at_ms <= atMs) {
+				resolveConfirmationRow(row, {
+					status: "expired",
+					templateId: "expired",
+					eventHash,
+					messageHash,
+					atMs,
+				});
+				return choiceReceipt(requireConfirmationRow(row.confirmation_id), true);
+			}
+			if (input.choice === "reject") {
+				resolveConfirmationRow(row, {
+					status: "rejected",
+					templateId: "rejected",
+					eventHash,
+					messageHash,
+					atMs,
+				});
+				return choiceReceipt(requireConfirmationRow(row.confirmation_id), true);
+			}
+			const content = getDb()
+				.prepare(
+					"SELECT kdf_salt, iv, auth_tag, ciphertext FROM household_media_action_confirmation_content WHERE confirmation_id = ?",
+				)
+				.get(row.confirmation_id) as CipherRow | undefined;
+			if (!content) throw new Error("media confirmation content is unavailable");
+			const payload = decryptJson<MediaActionConfirmationPayload>(
+				rawKey,
+				rowCipher(content),
+				confirmationAad(row.confirmation_id, row.owner_scope_hash),
+			);
+			if (!payload || !payloadMatchesRow(payload, row)) {
+				throw new Error("media confirmation content authentication failed");
+			}
+			const freshTurnRef = turnRefValue(input.mintFreshTurn(rowToConfirmation(row)).ref);
+			resolveConfirmationRow(row, {
+				status: "confirmed",
+				templateId: "confirmed",
+				eventHash,
+				messageHash,
+				freshTurnRef,
+				atMs,
+			});
+			return {
+				...choiceReceipt(requireConfirmationRow(row.confirmation_id), true),
+				payload: {
+					envelopes: normalizeEnvelopes(payload.envelopes),
+					action: normalizeAction(payload.action),
+				},
+			};
+		})();
+	}
+
 	return {
 		registerTurnDerivation,
 		guardConsequentialAction,
@@ -420,6 +565,8 @@ export function createMediaActionConfirmationStore(options: {
 			return row ? rowToConfirmation(row) : null;
 		},
 		readPendingPayload,
+		peekPendingForOwner,
+		resolveChoice,
 	};
 }
 
@@ -446,6 +593,12 @@ function readConfirmation(confirmationId: string): ConfirmationRow | null {
 	);
 }
 
+function requireConfirmationRow(confirmationId: string): ConfirmationRow {
+	const row = readConfirmation(confirmationId);
+	if (!row) throw new Error("media confirmation row is unavailable");
+	return row;
+}
+
 function readPendingForTurnAction(turnRef: string, actionDigest: string): ConfirmationRow | null {
 	return (
 		(getDb()
@@ -455,6 +608,169 @@ function readPendingForTurnAction(turnRef: string, actionDigest: string): Confir
 			)
 			.get(turnRef, actionDigest) as ConfirmationRow | undefined) ?? null
 	);
+}
+
+function readPendingForOwner(owner: MediaConfirmationOwner): ConfirmationRow | null {
+	return (
+		(getDb()
+			.prepare(
+				`SELECT * FROM household_media_action_confirmations
+				 WHERE actor_id = ? AND subject_user_id = ? AND profile_id = ? AND binding_id = ?
+				 AND conversation_id = ? AND sender_principal_hash = ? AND status = 'pending'`,
+			)
+			.get(
+				owner.actorId,
+				owner.subjectUserId,
+				owner.profileId,
+				owner.bindingId,
+				owner.conversationId,
+				owner.senderPrincipalHash,
+			) as ConfirmationRow | undefined) ?? null
+	);
+}
+
+function readConfirmationForResolutionEvent(eventHash: string): ConfirmationRow | null {
+	return (
+		(getDb()
+			.prepare("SELECT * FROM household_media_action_confirmations WHERE resolution_event_hash = ?")
+			.get(eventHash) as ConfirmationRow | undefined) ?? null
+	);
+}
+
+function readConfirmationForFreshTurn(turnRef: string): ConfirmationRow | null {
+	return (
+		(getDb()
+			.prepare("SELECT * FROM household_media_action_confirmations WHERE fresh_turn_ref = ?")
+			.get(turnRef) as ConfirmationRow | undefined) ?? null
+	);
+}
+
+function consumeConfirmedActionCapability(
+	row: ConfirmationRow,
+	authority: MediaConfirmationAuthority,
+	actionInput: MediaConsequentialAction,
+	atMs: number,
+): void {
+	const action = normalizeAction(actionInput);
+	const actionDigest = digest("telclaude.media-confirmation.action.v1", action);
+	getDb().transaction(() => {
+		const current = readConfirmation(row.confirmation_id);
+		if (!current) throw new MediaConfirmedActionDeniedError();
+		if (
+			current.status !== "confirmed" ||
+			current.expires_at_ms <= atMs ||
+			current.actor_id !== authority.actorId ||
+			current.subject_user_id !== authority.subjectUserId ||
+			current.profile_id !== authority.profileId ||
+			current.action_digest !== actionDigest ||
+			current.action_consumed_at_ms !== null
+		) {
+			throw new MediaConfirmedActionDeniedError();
+		}
+		const updated = getDb()
+			.prepare(
+				`UPDATE household_media_action_confirmations
+				 SET action_consumed_at_ms = ?
+				 WHERE confirmation_id = ? AND action_consumed_at_ms IS NULL`,
+			)
+			.run(atMs, current.confirmation_id);
+		if (updated.changes !== 1) throw new MediaConfirmedActionDeniedError();
+	})();
+}
+
+function expireConfirmation(row: ConfirmationRow, atMs: number): void {
+	getDb().transaction(() => {
+		const current = readConfirmation(row.confirmation_id);
+		if (!current) return;
+		if (current.status !== "pending") return;
+		resolveConfirmationRow(current, {
+			status: "expired",
+			templateId: "expired",
+			atMs,
+		});
+	})();
+}
+
+function resolveConfirmationRow(
+	row: ConfirmationRow,
+	resolution: {
+		readonly status: "confirmed" | "rejected" | "expired";
+		readonly templateId: MediaActionConfirmationChoiceTemplateId;
+		readonly eventHash?: string;
+		readonly messageHash?: string;
+		readonly freshTurnRef?: string;
+		readonly atMs: number;
+	},
+): void {
+	const updated = getDb()
+		.prepare(
+			`UPDATE household_media_action_confirmations
+			 SET status = ?, resolved_at_ms = ?, resolution_event_hash = ?,
+			     resolution_message_hash = ?, resolution_template_id = ?, fresh_turn_ref = ?
+			 WHERE confirmation_id = ? AND status = 'pending'`,
+		)
+		.run(
+			resolution.status,
+			resolution.atMs,
+			resolution.eventHash ?? null,
+			resolution.messageHash ?? null,
+			resolution.templateId,
+			resolution.freshTurnRef ?? null,
+			row.confirmation_id,
+		);
+	if (updated.changes !== 1) throw new Error("media confirmation resolution race denied");
+	getDb()
+		.prepare("DELETE FROM household_media_action_confirmation_content WHERE confirmation_id = ?")
+		.run(row.confirmation_id);
+	if (!releaseInteractiveChoiceLease(mediaLeaseOwner(row))) {
+		throw new Error("media confirmation lease release failed");
+	}
+}
+
+function mediaLeaseOwner(row: ConfirmationRow) {
+	return {
+		actorId: row.actor_id,
+		subjectUserId: row.subject_user_id,
+		profileId: row.profile_id,
+		bindingId: row.binding_id,
+		conversationId: row.conversation_id,
+		kind: "media_confirmation" as const,
+		ownerRef: row.confirmation_id,
+	};
+}
+
+function choiceReceipt(
+	row: ConfirmationRow,
+	newlyResolved: boolean,
+): MediaActionConfirmationChoiceReceipt {
+	if (
+		(row.status !== "confirmed" && row.status !== "rejected" && row.status !== "expired") ||
+		!row.resolution_template_id
+	) {
+		throw new Error("media confirmation resolution receipt is invalid");
+	}
+	return {
+		confirmationId: row.confirmation_id,
+		status: row.status,
+		templateId: row.resolution_template_id,
+		newlyResolved,
+		...(row.fresh_turn_ref ? { freshTurnRef: row.fresh_turn_ref } : {}),
+	};
+}
+
+function payloadMatchesRow(payload: MediaActionConfirmationPayload, row: ConfirmationRow): boolean {
+	try {
+		return (
+			digest("telclaude.media-confirmation.action.v1", normalizeAction(payload.action)) ===
+				row.action_digest &&
+			digest(
+				"telclaude.media-confirmation.derivation.v1",
+				normalizeEnvelopes(payload.envelopes),
+			) === row.derived_digest
+		);
+	} catch {
+		return false;
+	}
 }
 
 function rowToConfirmation(row: ConfirmationRow): MediaActionConfirmation {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MediaActionConfirmationStore } from "../../src/relay/media-action-confirmation-store.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
 const NOW_MS = Date.parse("2026-07-18T12:00:00.000Z");
@@ -268,7 +269,244 @@ describe("media action confirmation store", () => {
 				.get(),
 		).toEqual({ count: 0 });
 	});
+
+	it("confirms once into an exact fresh-turn capability and replays only the durable receipt", async () => {
+		const { createMediaActionConfirmationStore } = await import(
+			"../../src/relay/media-action-confirmation-store.js"
+		);
+		const { getDb } = await import("../../src/storage/db.js");
+		const store = createMediaActionConfirmationStore({
+			encryptionKey: ENCRYPTION_KEY,
+			nowMs: () => NOW_MS,
+			makeConfirmationId: () => "media-confirmation-fresh",
+			makeJti: () => "fresh-action-jti",
+		});
+		armProviderAction(store, `turn_${"3".repeat(32)}`);
+		const mintFreshTurn = vi.fn(() => ({ ref: `turn_${"4".repeat(32)}` }));
+
+		const confirmed = store.resolveChoice({
+			owner: OWNER_A,
+			eventId: "event-confirm-once",
+			messageId: "message-confirm-once",
+			choice: "confirm",
+			mintFreshTurn,
+			nowMs: NOW_MS + 10,
+		});
+
+		expect(confirmed).toMatchObject({
+			status: "confirmed",
+			templateId: "confirmed",
+			newlyResolved: true,
+			freshTurnRef: `turn_${"4".repeat(32)}`,
+			payload: {
+				envelopes: [expect.objectContaining({ kind: "document_extract" })],
+				action: expect.objectContaining({ toolName: "tc_provider_prepare_write" }),
+			},
+		});
+		expect(mintFreshTurn).toHaveBeenCalledTimes(1);
+		expect(
+			getDb().prepare("SELECT COUNT(*) AS count FROM household_interactive_choice_leases").get(),
+		).toEqual({ count: 0 });
+		expect(
+			getDb()
+				.prepare("SELECT COUNT(*) AS count FROM household_media_action_confirmation_content")
+				.get(),
+		).toEqual({ count: 0 });
+
+		expect(
+			store.resolveChoice({
+				owner: OWNER_A,
+				eventId: "event-confirm-once",
+				messageId: "message-confirm-once",
+				choice: "confirm",
+				mintFreshTurn,
+				nowMs: NOW_MS + 11,
+			}),
+		).toMatchObject({
+			status: "confirmed",
+			templateId: "confirmed",
+			newlyResolved: false,
+			freshTurnRef: `turn_${"4".repeat(32)}`,
+		});
+		expect(mintFreshTurn).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows exactly one exact action on the fresh turn and denies changes or replay", async () => {
+		const { createMediaActionConfirmationStore } = await import(
+			"../../src/relay/media-action-confirmation-store.js"
+		);
+		let confirmationId = 0;
+		let jti = 0;
+		const store = createMediaActionConfirmationStore({
+			encryptionKey: ENCRYPTION_KEY,
+			makeConfirmationId: () => `media-confirmation-capability-${++confirmationId}`,
+			makeJti: () => `capability-jti-${++jti}`,
+		});
+		const action = armProviderAction(store, `turn_${"5".repeat(32)}`);
+		const freshTurnRef = `turn_${"6".repeat(32)}`;
+		store.resolveChoice({
+			owner: OWNER_A,
+			eventId: "event-capability",
+			messageId: "message-capability",
+			choice: "confirm",
+			mintFreshTurn: () => ({ ref: freshTurnRef }),
+			nowMs: NOW_MS + 10,
+		});
+
+		expect(() =>
+			store.guardConsequentialAction({
+				turnRef: freshTurnRef,
+				authority: mediaAuthority(OWNER_A),
+				action: {
+					...action,
+					params: { ...action.params, action: "appointment_booking" },
+				},
+				nowMs: NOW_MS + 11,
+			}),
+		).toThrowError(expect.objectContaining({ code: "media_confirmed_action_denied" }));
+		expect(
+			store.guardConsequentialAction({
+				turnRef: freshTurnRef,
+				authority: mediaAuthority(OWNER_A),
+				action,
+				nowMs: NOW_MS + 12,
+			}),
+		).toEqual({ required: false });
+		expect(() =>
+			store.guardConsequentialAction({
+				turnRef: freshTurnRef,
+				authority: mediaAuthority(OWNER_A),
+				action,
+				nowMs: NOW_MS + 13,
+			}),
+		).toThrowError(expect.objectContaining({ code: "media_confirmed_action_denied" }));
+
+		const laterTurnRef = `turn_${"a".repeat(32)}`;
+		store.registerTurnDerivation({
+			owner: OWNER_A,
+			turnRef: laterTurnRef,
+			envelopes: [documentEnvelope("בקשה חדשה מאותו מסמך")],
+			createdAtMs: NOW_MS + 14,
+		});
+		expect(
+			store.guardConsequentialAction({
+				turnRef: laterTurnRef,
+				authority: mediaAuthority(OWNER_A),
+				action,
+				nowMs: NOW_MS + 15,
+			}),
+		).toMatchObject({ required: true });
+	});
+
+	it("rejects durably without minting or dispatch payload and re-gates a later derived turn", async () => {
+		const { createMediaActionConfirmationStore } = await import(
+			"../../src/relay/media-action-confirmation-store.js"
+		);
+		let confirmationId = 0;
+		let jti = 0;
+		const store = createMediaActionConfirmationStore({
+			encryptionKey: ENCRYPTION_KEY,
+			makeConfirmationId: () => `media-confirmation-${++confirmationId}`,
+			makeJti: () => `reject-jti-${++jti}`,
+		});
+		armProviderAction(store, `turn_${"7".repeat(32)}`);
+		const mintFreshTurn = vi.fn(() => ({ ref: `turn_${"8".repeat(32)}` }));
+
+		expect(
+			store.resolveChoice({
+				owner: OWNER_A,
+				eventId: "event-reject",
+				messageId: "message-reject",
+				choice: "reject",
+				mintFreshTurn,
+				nowMs: NOW_MS + 10,
+			}),
+		).toMatchObject({
+			status: "rejected",
+			templateId: "rejected",
+			newlyResolved: true,
+		});
+		expect(mintFreshTurn).not.toHaveBeenCalled();
+
+		const laterTurnRef = `turn_${"9".repeat(32)}`;
+		const action = armProviderAction(store, laterTurnRef, "media-confirmation-later");
+		expect(
+			store.guardConsequentialAction({
+				turnRef: laterTurnRef,
+				authority: mediaAuthority(OWNER_A),
+				action,
+				nowMs: NOW_MS + 11,
+			}),
+		).toMatchObject({ required: true });
+	});
+
+	it("resolves a pending confirmation after the store is reopened with the same key", async () => {
+		const { createMediaActionConfirmationStore } = await import(
+			"../../src/relay/media-action-confirmation-store.js"
+		);
+		const first = createMediaActionConfirmationStore({
+			encryptionKey: ENCRYPTION_KEY,
+			makeConfirmationId: () => "media-confirmation-restart",
+			makeJti: () => "restart-jti",
+		});
+		armProviderAction(first, `turn_${"b".repeat(32)}`);
+		const { closeDb } = await import("../../src/storage/db.js");
+		closeDb();
+		const reopened = createMediaActionConfirmationStore({ encryptionKey: ENCRYPTION_KEY });
+
+		expect(
+			reopened.resolveChoice({
+				owner: OWNER_A,
+				eventId: "event-after-restart",
+				messageId: "message-after-restart",
+				choice: "confirm",
+				mintFreshTurn: () => ({ ref: `turn_${"c".repeat(32)}` }),
+				nowMs: NOW_MS + 10,
+			}),
+		).toMatchObject({
+			status: "confirmed",
+			newlyResolved: true,
+			freshTurnRef: `turn_${"c".repeat(32)}`,
+		});
+	});
 });
+
+function armProviderAction(
+	store: MediaActionConfirmationStore,
+	turnRef: string,
+	confirmationId?: string,
+) {
+	const action = {
+		toolName: "tc_provider_prepare_write" as const,
+		params: {
+			providerId: "clalit",
+			service: "clalit",
+			action: "prescription_renewal",
+			params: { prescriptionId: confirmationId ?? "synthetic-rx" },
+		},
+	};
+	store.registerTurnDerivation({
+		owner: OWNER_A,
+		turnRef,
+		envelopes: [documentEnvelope("נא לחדש את המרשם")],
+		createdAtMs: NOW_MS,
+	});
+	store.guardConsequentialAction({
+		turnRef,
+		authority: mediaAuthority(OWNER_A),
+		action,
+		nowMs: NOW_MS + 1,
+	});
+	return action;
+}
+
+function mediaAuthority(owner: typeof OWNER_A | typeof OWNER_B) {
+	return {
+		actorId: owner.actorId,
+		subjectUserId: owner.subjectUserId,
+		profileId: owner.profileId,
+	};
+}
 
 function documentEnvelope(text: string) {
 	return {

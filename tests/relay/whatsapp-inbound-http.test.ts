@@ -35,6 +35,43 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		}
 	});
 
+	it("composes inbound interceptors in OTP then reminder then media order", async () => {
+		const { composeWhatsAppInboundInterceptors } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const calls: string[] = [];
+		const interceptor = (name: string, handled: boolean) =>
+			vi.fn(async () => {
+				calls.push(name);
+				return handled
+					? ({ handled: true, templateId: `${name}_handled` } as const)
+					: ({ handled: false } as const);
+			});
+		const otp = interceptor("otp", false);
+		const reminder = interceptor("reminder", false);
+		const media = interceptor("media", true);
+		const composed = composeWhatsAppInboundInterceptors({
+			providerChallenge: otp as never,
+			reminderConfirmation: reminder as never,
+			mediaActionConfirmation: media as never,
+		});
+		if (!composed) throw new Error("composed interceptor missing");
+
+		expect(await composed({} as never)).toEqual({
+			handled: true,
+			templateId: "media_handled",
+		});
+		expect(calls).toEqual(["otp", "reminder", "media"]);
+
+		calls.length = 0;
+		otp.mockImplementationOnce(async () => {
+			calls.push("otp");
+			return { handled: true, templateId: "otp_handled" } as const;
+		});
+		expect(await composed({} as never)).toEqual({ handled: true, templateId: "otp_handled" });
+		expect(calls).toEqual(["otp"]);
+	});
+
 	it("accepts a signed direct event and dispatches only the CL-1 sanitized event", async () => {
 		const { createAttachmentQuarantineStore } = await import(
 			"../../src/relay/attachment-quarantine-store.js"

@@ -31,6 +31,7 @@ import {
 	type WhatsAppInboundDispatchInput,
 	type WhatsAppInboundDispatchResult,
 } from "./whatsapp-inbound-dispatcher.js";
+import type { WhatsAppMediaActionConfirmationInterceptor } from "./whatsapp-media-action-confirmation-interceptor.js";
 import type { WhatsAppProviderChallengeInterceptor } from "./whatsapp-provider-challenge-interceptor.js";
 import type { WhatsAppReminderConfirmationInterceptor } from "./whatsapp-reminder-confirmation-interceptor.js";
 
@@ -72,6 +73,7 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
 	readonly providerChallengeInterceptor?: WhatsAppProviderChallengeInterceptor;
 	readonly reminderConfirmationInterceptor?: WhatsAppReminderConfirmationInterceptor;
+	readonly mediaActionConfirmationInterceptor?: WhatsAppMediaActionConfirmationInterceptor;
 };
 
 let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | undefined;
@@ -79,8 +81,13 @@ let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | unde
 export function composeWhatsAppInboundInterceptors(input: {
 	readonly providerChallenge?: WhatsAppProviderChallengeInterceptor;
 	readonly reminderConfirmation?: WhatsAppReminderConfirmationInterceptor;
+	readonly mediaActionConfirmation?: WhatsAppMediaActionConfirmationInterceptor;
 }): CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"] | undefined {
-	const interceptors = [input.providerChallenge, input.reminderConfirmation].filter(
+	const interceptors = [
+		input.providerChallenge,
+		input.reminderConfirmation,
+		input.mediaActionConfirmation,
+	].filter(
 		(interceptor): interceptor is NonNullable<typeof interceptor> => interceptor !== undefined,
 	);
 	if (interceptors.length === 0) return undefined;
@@ -331,6 +338,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		composeWhatsAppInboundInterceptors({
 			providerChallenge: options?.providerChallengeInterceptor,
 			reminderConfirmation: options?.reminderConfirmationInterceptor,
+			mediaActionConfirmation: options?.mediaActionConfirmationInterceptor,
 		});
 	return {
 		ok: true,

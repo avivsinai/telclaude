@@ -357,10 +357,12 @@ describe("Telclaude live MCP relay-client adapters", () => {
 	it("blocks eligible media-derived provider writes before ledger preparation", async () => {
 		const ledger = testLedger();
 		const gate = eligibleMediaGate(`turn_${"a".repeat(32)}`);
+		const requestMediaActionConfirmation = vi.fn(async () => undefined);
 		const clients = createTelclaudeLiveMcpRelayClients({
 			ledger,
 			providerWriteApproverActorId: "operator:provider-approver",
 			mediaActionConfirmationGate: gate,
+			requestMediaActionConfirmation,
 		});
 
 		await expect(
@@ -375,9 +377,52 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			),
 		).rejects.toMatchObject({ code: "media_action_confirmation_required" });
 		expect(ledger.list()).toEqual([]);
+		expect(requestMediaActionConfirmation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				actionToolName: "tc_provider_prepare_write",
+				bindingId: "parent-a",
+			}),
+		);
 		expect(
 			getDb().prepare("SELECT action_tool_name FROM household_media_action_confirmations").all(),
 		).toEqual([{ action_tool_name: "tc_provider_prepare_write" }]);
+	});
+
+	it("consumes a confirmed fresh-turn provider capability exactly once", async () => {
+		const originalTurnRef = `turn_${"d".repeat(32)}`;
+		const freshTurnRef = `turn_${"e".repeat(32)}`;
+		const ledger = testLedger();
+		const gate = eligibleMediaGate(originalTurnRef);
+		const request = providerPrepare({
+			...householdStamp({ turnConversationRef: originalTurnRef }),
+			providerId: "clalit",
+			service: "clalit",
+			action: "prescription_renewal",
+			params: { prescriptionId: "synthetic-rx" },
+		});
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			providerWriteApproverActorId: "operator:provider-approver",
+			mediaActionConfirmationGate: gate,
+		});
+		await expect(clients.providerPrepareWrite(request)).rejects.toMatchObject({
+			code: "media_action_confirmation_required",
+		});
+		gate.resolveChoice({
+			owner: mediaGateOwner,
+			eventId: "event-live-fresh",
+			messageId: "message-live-fresh",
+			choice: "confirm",
+			mintFreshTurn: () => ({ ref: freshTurnRef }),
+		});
+
+		await expect(
+			clients.providerPrepareWrite({ ...request, turnConversationRef: freshTurnRef }),
+		).resolves.toMatchObject({ actionRef: expect.any(String) });
+		await expect(
+			clients.providerPrepareWrite({ ...request, turnConversationRef: freshTurnRef }),
+		).rejects.toMatchObject({ code: "media_confirmed_action_denied" });
+		expect(ledger.list()).toHaveLength(1);
 	});
 
 	it.each([
@@ -981,6 +1026,15 @@ function makeApprovalIds(): () => string {
 	return () => `approval-${++id}`;
 }
 
+const mediaGateOwner = {
+	actorId: "household:whatsapp:parent-a",
+	subjectUserId: "household:parent-a",
+	profileId: "parent-a",
+	bindingId: "parent-a",
+	conversationId: "whatsapp:household:parent-a",
+	senderPrincipalHash: `sha256:${"c".repeat(64)}` as const,
+};
+
 function eligibleMediaGate(turnRef: string) {
 	const gate = createMediaActionConfirmationStore({
 		encryptionKey: "media-confirmation-test-key-32-chars",
@@ -989,14 +1043,7 @@ function eligibleMediaGate(turnRef: string) {
 	});
 	gate.registerTurnDerivation({
 		turnRef,
-		owner: {
-			actorId: "household:whatsapp:parent-a",
-			subjectUserId: "household:parent-a",
-			profileId: "parent-a",
-			bindingId: "parent-a",
-			conversationId: "whatsapp:household:parent-a",
-			senderPrincipalHash: `sha256:${"c".repeat(64)}`,
-		},
+		owner: mediaGateOwner,
 		envelopes: [
 			{
 				kind: "document_extract",

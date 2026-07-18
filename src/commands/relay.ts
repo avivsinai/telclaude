@@ -1,7 +1,12 @@
 import fsSync from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
-import { loadConfig } from "../config/config.js";
+import { loadConfig, type TelclaudeConfig } from "../config/config.js";
+import {
+	getOperatorProfile,
+	resolveHouseholdMediaActivation,
+	resolveWhatsAppHouseholdBindingById,
+} from "../config/profiles.js";
 import { executeCronAction } from "../cron/actions.js";
 import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
@@ -91,6 +96,11 @@ import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
+import { createMediaActionConfirmationControlPolicyStore } from "../relay/media-action-confirmation-control-policy.js";
+import { createMediaActionConfirmationControlSender } from "../relay/media-action-confirmation-control-sender.js";
+import { mediaActionConfirmationCopy } from "../relay/media-action-confirmation-copy.js";
+import { createMediaActionConfirmationDispatcher } from "../relay/media-action-confirmation-dispatcher.js";
+import { createMediaActionConfirmationStore } from "../relay/media-action-confirmation-store.js";
 import {
 	createOutboundDeliveryDispatcher,
 	createOutboundDeliveryFailureClassifier,
@@ -112,7 +122,9 @@ import { createReminderConfirmationControlPolicyStore } from "../relay/reminder-
 import { createReminderConfirmationControlSender } from "../relay/reminder-confirmation-control-sender.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
+import { dispatchWhatsAppInboundToHermes } from "../relay/whatsapp-inbound-dispatcher.js";
 import { setDefaultWhatsAppInboundBridgeOptions } from "../relay/whatsapp-inbound-http.js";
+import { createWhatsAppMediaActionConfirmationInterceptor } from "../relay/whatsapp-media-action-confirmation-interceptor.js";
 import { createWhatsAppProviderChallengeInterceptor } from "../relay/whatsapp-provider-challenge-interceptor.js";
 import { createWhatsAppReminderConfirmationInterceptor } from "../relay/whatsapp-reminder-confirmation-interceptor.js";
 import {
@@ -140,6 +152,14 @@ import { startWebhookServer } from "../webhooks/server.js";
 import { findInstalledSkills } from "./doctor-helpers.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
+export const HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV = "TELCLAUDE_HOUSEHOLD_MEDIA_CONFIRMATION_KEY";
+
+export function resolveConfiguredHouseholdMediaActivation(
+	config: TelclaudeConfig,
+	env: NodeJS.ProcessEnv = process.env,
+) {
+	return resolveHouseholdMediaActivation(config, env[HOUSEHOLD_MEDIA_CONFIRMATION_KEY_ENV]?.trim());
+}
 
 export type RelayOptions = {
 	verbose?: boolean;
@@ -209,6 +229,7 @@ export function registerRelayCommand(program: Command): void {
 
 			try {
 				const cfg = loadConfig();
+				const householdMediaActivation = resolveConfiguredHouseholdMediaActivation(cfg);
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
@@ -345,6 +366,11 @@ export function registerRelayCommand(program: Command): void {
 						? createLiveMcpSideEffectApprovalKit(vaultSocketPath)
 						: null;
 				const liveMcpConversationStore = createRelayConversationStore();
+				const mediaActionConfirmationStore = householdMediaActivation.enabled
+					? createMediaActionConfirmationStore({
+							encryptionKey: householdMediaActivation.encryptionKey,
+						})
+					: null;
 				const liveMcpLedger = createTelclaudeMcpSideEffectLedger({
 					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval ?? denyRelayLiveMcpApproval,
 				});
@@ -357,6 +383,11 @@ export function registerRelayCommand(program: Command): void {
 						conversationStore: liveMcpConversationStore,
 					},
 				);
+				const mediaActionConfirmationControlPolicyStore = mediaActionConfirmationStore
+					? createMediaActionConfirmationControlPolicyStore({
+							conversationStore: liveMcpConversationStore,
+						})
+					: null;
 				// tc_browse broker: live only when the browser overlay env is set
 				// (TELCLAUDE_BROWSER_WS_ENDPOINT/_CONNECT_PROXY_URL/_PEER_ADDRESS/
 				// _CONTEXT_TOKEN_SECRET). Otherwise omitted → tc_browse fails closed.
@@ -444,6 +475,9 @@ export function registerRelayCommand(program: Command): void {
 						const systemControl =
 							await providerChallengeControlPolicyStore.resolveConversation(prepared);
 						if (systemControl) return systemControl;
+						const mediaControl =
+							await mediaActionConfirmationControlPolicyStore?.resolveConversation(prepared);
+						if (mediaControl) return mediaControl;
 						const reminderControl =
 							await reminderConfirmationControlPolicyStore.resolveConversation(prepared);
 						if (reminderControl) return reminderControl;
@@ -567,6 +601,22 @@ export function registerRelayCommand(program: Command): void {
 					dispatch: liveMcpOutboundDeliveryDispatcher,
 					policyStore: reminderConfirmationControlPolicyStore,
 				});
+				const mediaActionConfirmationControlSender =
+					mediaActionConfirmationControlPolicyStore && mediaActionConfirmationStore
+						? createMediaActionConfirmationControlSender({
+								config: cfg,
+								conversationStore: liveMcpConversationStore,
+								edgeRuntime: liveMcpEdgeRuntime,
+								dispatch: liveMcpOutboundDeliveryDispatcher,
+								policyStore: mediaActionConfirmationControlPolicyStore,
+							})
+						: null;
+				const mediaActionConfirmationDispatcher = mediaActionConfirmationStore
+					? createMediaActionConfirmationDispatcher({
+							conversationStore: liveMcpConversationStore,
+							dispatch: dispatchWhatsAppInboundToHermes,
+						})
+					: null;
 				let providerChallengeSidecar: ReturnType<
 					typeof createConfiguredProviderChallengeSidecar
 				> | null = null;
@@ -584,6 +634,20 @@ export function registerRelayCommand(program: Command): void {
 					config: cfg,
 					sendControl: reminderConfirmationControlSender,
 				});
+				const mediaActionConfirmationInterceptor =
+					mediaActionConfirmationStore &&
+					mediaActionConfirmationDispatcher &&
+					mediaActionConfirmationControlSender &&
+					householdMediaActivation.enabled
+						? createWhatsAppMediaActionConfirmationInterceptor({
+								store: mediaActionConfirmationStore,
+								dispatcher: mediaActionConfirmationDispatcher,
+								sendControl: mediaActionConfirmationControlSender,
+								config: cfg,
+								eligibleBindingIds: householdMediaActivation.eligibleBindingIds,
+								resolveProfile: (identity) => getOperatorProfile(identity.profileId, cfg),
+							})
+						: null;
 				setConfiguredProviderLoginCoordinator(
 					createProviderLoginCoordinator({
 						config: cfg,
@@ -601,6 +665,7 @@ export function registerRelayCommand(program: Command): void {
 					quarantineStore: liveMcpAttachmentQuarantineStore,
 					providerChallengeInterceptor,
 					reminderConfirmationInterceptor,
+					...(mediaActionConfirmationInterceptor ? { mediaActionConfirmationInterceptor } : {}),
 				});
 				schedulerHandles.push({
 					stop: () => {
@@ -709,6 +774,34 @@ export function registerRelayCommand(program: Command): void {
 											},
 										)
 								: undefined,
+							...(mediaActionConfirmationStore &&
+							mediaActionConfirmationControlSender &&
+							householdMediaActivation.enabled
+								? {
+										mediaActionConfirmationGate: mediaActionConfirmationStore,
+										requestMediaActionConfirmation: async (confirmation) => {
+											if (
+												!householdMediaActivation.eligibleBindingIds.has(confirmation.bindingId)
+											) {
+												throw new Error("media confirmation binding is not eligible");
+											}
+											const binding = resolveWhatsAppHouseholdBindingById(
+												confirmation.bindingId,
+												cfg,
+											);
+											if (!binding) throw new Error("media confirmation binding is unavailable");
+											await mediaActionConfirmationControlSender({
+												templateId: "choice_required",
+												body: mediaActionConfirmationCopy(
+													"choice_required",
+													binding.addresseeGender,
+												),
+												bindingId: binding.bindingId,
+												deliveryRef: `${confirmation.confirmationId}:choice_required`,
+											});
+										},
+									}
+								: {}),
 						});
 					},
 					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),

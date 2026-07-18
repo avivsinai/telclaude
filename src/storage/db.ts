@@ -607,7 +607,12 @@ function initializeSchema(database: Database.Database): void {
 			action_tool_name TEXT NOT NULL,
 			created_at_ms INTEGER NOT NULL,
 			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms),
-			resolved_at_ms INTEGER
+			resolved_at_ms INTEGER,
+			resolution_event_hash TEXT,
+			resolution_message_hash TEXT,
+			resolution_template_id TEXT,
+			fresh_turn_ref TEXT,
+			action_consumed_at_ms INTEGER
 		);
 		CREATE INDEX IF NOT EXISTS idx_household_media_action_confirmation_pending
 			ON household_media_action_confirmations(conversation_id, status, expires_at_ms);
@@ -1017,11 +1022,37 @@ function initializeSchema(database: Database.Database): void {
 		"ALTER TABLE plan_approvals ADD COLUMN turn_conversation_ref TEXT",
 	);
 	ensureHouseholdReminderColumns(database);
+	ensureMediaActionConfirmationColumns(database);
 	ensureMemoryEntriesColumns(database);
 	migrateDefaultTelegramMemorySource(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
+}
+
+function ensureMediaActionConfirmationColumns(database: Database.Database): void {
+	for (const [column, type] of [
+		["resolution_event_hash", "TEXT"],
+		["resolution_message_hash", "TEXT"],
+		["resolution_template_id", "TEXT"],
+		["fresh_turn_ref", "TEXT"],
+		["action_consumed_at_ms", "INTEGER"],
+	] as const) {
+		ensureColumn(
+			database,
+			"household_media_action_confirmations",
+			column,
+			`ALTER TABLE household_media_action_confirmations ADD COLUMN ${column} ${type}`,
+		);
+	}
+	database.exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_media_confirmation_resolution_event
+			ON household_media_action_confirmations(resolution_event_hash)
+			WHERE resolution_event_hash IS NOT NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_media_confirmation_fresh_turn
+			ON household_media_action_confirmations(fresh_turn_ref)
+			WHERE fresh_turn_ref IS NOT NULL;
+	`);
 }
 
 function ensureHouseholdReminderColumns(database: Database.Database): void {
