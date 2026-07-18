@@ -91,7 +91,7 @@ Isolation-first Telegram ⇄ agent relay for Claude Code, Codex, and operator wo
 ```
 
 ## Requirements
-- Node 20+, pnpm 9.x
+- Node 22.19+, pnpm 9.x
 - Claude CLI (`brew install anthropic-ai/cli/claude`) — optional for delegated Claude Code work-unit workflows and plugin management. It is not the Telegram/social runtime path; LLM/persona execution is Hermes-only.
 - Codex CLI (`codex`) — first-class peer runtime surface. For write-capable Codex work, configure a dedicated `CODEX_HOME`; `telclaude runtimes status` reports whether Codex would use controlled or global config.
 - Telegram bot token from @BotFather
