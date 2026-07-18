@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { InboundEvent } from "../hermes/edge-adapter-contract.js";
-import type { RelayConversation } from "../hermes/relay-conversation-store.js";
+import type {
+	RelayConversation,
+	RelayConversationInboundTurn,
+} from "../hermes/relay-conversation-store.js";
 import { getChildLogger } from "../logging.js";
 import { wrapExternalContent } from "../security/external-content.js";
 import { type TranscriptionResult, transcribeAudio } from "../services/transcription.js";
@@ -80,6 +83,14 @@ export type InboundMediaProcessingInput = {
 	readonly event: InboundEvent;
 	readonly identity: WhatsAppIdentityResolution;
 	readonly conversation: RelayConversation;
+	readonly turn: RelayConversationInboundTurn;
+};
+
+export type DerivedMediaBatchRegistration = {
+	readonly turn: RelayConversationInboundTurn;
+	readonly identity: WhatsAppIdentityResolution;
+	readonly conversation: RelayConversation;
+	readonly envelopes: readonly DerivedMediaEnvelopeV1[];
 };
 
 export type VoiceFfmpegInvocation = {
@@ -112,6 +123,9 @@ export type CreateInboundMediaProcessorOptions = {
 	readonly runFfmpeg?: (inputPath: string, outputPath: string) => Promise<void>;
 	readonly transcribe?: (wavPath: string) => Promise<TranscriptionResult>;
 	readonly documentAdapter?: DocumentUnderstandingAdapter;
+	readonly registerDerivedMediaBatch?: (
+		input: DerivedMediaBatchRegistration,
+	) => void | Promise<void>;
 };
 
 export type CreateInboundVoiceMediaProcessorOptions = CreateInboundMediaProcessorOptions;
@@ -383,6 +397,14 @@ export function createInboundMediaProcessor(
 		}
 		if (envelopes.length === 0 && retainedRefs.length === input.event.normalized.mediaRefs.length) {
 			return input.event;
+		}
+		if (envelopes.length > 0) {
+			await options.registerDerivedMediaBatch?.({
+				turn: input.turn,
+				identity: input.identity,
+				conversation: input.conversation,
+				envelopes,
+			});
 		}
 		const derivedText = envelopes
 			.map((envelope) =>

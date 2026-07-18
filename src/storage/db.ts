@@ -562,6 +562,78 @@ function initializeSchema(database: Database.Database): void {
 			'reminder', ref, created_at_ms, expires_at_ms
 		FROM household_reminder_proposals WHERE status = 'pending';
 
+		-- Media-derived text and canonical action parameters remain encrypted.
+		-- The control table carries only content-free owner bindings and digests.
+		CREATE TABLE IF NOT EXISTS household_media_turn_derivations (
+			turn_ref TEXT PRIMARY KEY,
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			sender_principal_hash TEXT NOT NULL,
+			owner_scope_hash TEXT NOT NULL,
+			source_digest TEXT NOT NULL,
+			derived_digest TEXT NOT NULL,
+			media_kinds_json TEXT NOT NULL,
+			provenance_json TEXT NOT NULL,
+			action_bearing INTEGER NOT NULL CHECK(action_bearing IN (0,1)),
+			low_confidence INTEGER NOT NULL CHECK(low_confidence IN (0,1)),
+			kdf_salt TEXT NOT NULL,
+			iv TEXT NOT NULL,
+			auth_tag TEXT NOT NULL,
+			ciphertext TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_media_turn_derivation_expiry
+			ON household_media_turn_derivations(expires_at_ms);
+
+		CREATE TABLE IF NOT EXISTS household_media_action_confirmations (
+			confirmation_id TEXT PRIMARY KEY,
+			jti_hash TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL CHECK(status IN ('pending','confirmed','rejected','expired','revoked')),
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			sender_principal_hash TEXT NOT NULL,
+			original_turn_ref TEXT NOT NULL,
+			owner_scope_hash TEXT NOT NULL,
+			source_digest TEXT NOT NULL,
+			derived_digest TEXT NOT NULL,
+			action_digest TEXT NOT NULL,
+			action_tool_name TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms),
+			resolved_at_ms INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_media_action_confirmation_pending
+			ON household_media_action_confirmations(conversation_id, status, expires_at_ms);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_media_action_confirmation_turn_action_pending
+			ON household_media_action_confirmations(original_turn_ref, action_digest)
+			WHERE status = 'pending';
+
+		CREATE TABLE IF NOT EXISTS household_media_action_confirmation_content (
+			confirmation_id TEXT PRIMARY KEY,
+			kdf_salt TEXT NOT NULL,
+			iv TEXT NOT NULL,
+			auth_tag TEXT NOT NULL,
+			ciphertext TEXT NOT NULL
+		);
+
+		CREATE TRIGGER IF NOT EXISTS expire_household_media_confirmation_with_lease
+		AFTER DELETE ON household_interactive_choice_leases
+		WHEN OLD.owner_kind = 'media_confirmation'
+		BEGIN
+			DELETE FROM household_media_action_confirmation_content
+			 WHERE confirmation_id = OLD.owner_ref;
+			UPDATE household_media_action_confirmations
+			 SET status = 'expired', resolved_at_ms = expires_at_ms
+			 WHERE confirmation_id = OLD.owner_ref AND status = 'pending';
+		END;
+
 		CREATE TABLE IF NOT EXISTS household_reminder_interception_receipts (
 			receipt_id TEXT PRIMARY KEY,
 			event_id_hash TEXT NOT NULL,

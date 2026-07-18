@@ -593,6 +593,8 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			}),
 		});
 		let seenPrompt = "";
+		let mediaTurnRef = "";
+		let dispatchTurnRef = "";
 		const householdPhone = "whatsapp:+15557654321";
 		const event = whatsappEvent({
 			eventId: "wa-event-hebrew-voice",
@@ -622,14 +624,16 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				quarantineStore,
 				nowMs: () => NOW,
 				processInboundMedia: async (input) => {
+					mediaTurnRef = input.turn.ref;
 					for (const ref of input.event.normalized.mediaRefs) {
 						const owner = processor.ownerFor(input);
 						quarantineStore.recordScanResult(ref.quarantineId, owner, "clean");
 					}
 					return processor.processInbound(input);
 				},
-				dispatch: (input) =>
-					dispatchWhatsAppInboundToHermes({
+				dispatch: (input) => {
+					dispatchTurnRef = input.turn.ref;
+					return dispatchWhatsAppInboundToHermes({
 						...input,
 						executeHermes: async function* (prompt): AsyncIterable<StreamChunk> {
 							seenPrompt = prompt;
@@ -644,11 +648,14 @@ describe("WhatsApp inbound HTTP bridge", () => {
 								},
 							};
 						},
-					}),
+					});
+				},
 			},
 		});
 
 		expect(result).toMatchObject({ status: 202, payload: { dispatched: true } });
+		expect(mediaTurnRef).toMatch(/^turn_[a-f0-9]{32}$/u);
+		expect(mediaTurnRef).toBe(dispatchTurnRef);
 		expect(seenPrompt).toContain("[FORWARDED CONTENT (WHATSAPP-VOICE-TRANSCRIPT) - UNTRUSTED]");
 		expect(seenPrompt).toContain("היה לי תור היום והרופאה הייתה נחמדה");
 		expect(seenPrompt).not.toContain("<attachments>");

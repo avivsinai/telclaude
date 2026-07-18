@@ -197,6 +197,7 @@ export async function handleWhatsAppInboundBridgePost(input: {
 					event: cl1.event,
 					identity: cl1.identity,
 					conversation: cl1.conversation,
+					turn: cl1.turn,
 				}),
 			);
 		} catch {

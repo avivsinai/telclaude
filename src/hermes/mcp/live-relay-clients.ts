@@ -42,6 +42,11 @@ import type {
 } from "../../relay/browser-act-relay-surface.js";
 import type { BrowseRequest, BrowseResult } from "../../relay/browser-broker.js";
 import { browserAuthorityDomainFromMcp } from "../../relay/browser-cookie-store.js";
+import {
+	type MediaActionConfirmationGate,
+	MediaActionConfirmationRequiredError,
+	type MediaActionToolName,
+} from "../../relay/media-action-confirmation-store.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp-household-bindings.js";
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
@@ -212,6 +217,8 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly resolveScheduleOwner?: ScheduleOwnerResolver;
 	/** Injectable config for household reminder binding/consent resolution. */
 	readonly householdReminderConfig?: TelclaudeConfig;
+	/** Optional dark-state guard for consequential actions derived from inbound media. */
+	readonly mediaActionConfirmationGate?: MediaActionConfirmationGate;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
@@ -526,6 +533,17 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
 			assertProviderOperationPolicy(operation, request.domain, "write");
+			guardMediaDerivedAction(options.mediaActionConfirmationGate, request, {
+				toolName: "tc_provider_prepare_write",
+				params: {
+					providerId: operation.providerId,
+					service: operation.service,
+					action: operation.action,
+					params: operation.params,
+					providerAccountRef: providerAccountRefFor(operation),
+					...(request.subjectUserId ? { subjectUserId: request.subjectUserId } : {}),
+				},
+			});
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
@@ -1100,12 +1118,21 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			if (request.domain === "household") {
 				const context = householdReminderContext(request, options.householdReminderConfig);
+				const schedule = householdOneShotSchedule(request.schedule);
+				guardMediaDerivedAction(options.mediaActionConfirmationGate, request, {
+					toolName: "tc_schedule_create",
+					params: {
+						text: request.prompt,
+						...(request.label ? { label: request.label } : {}),
+						schedule,
+					},
+				});
 				const prepared = prepareHouseholdReminderCreate({
 					...context,
 					text: request.prompt,
 					...(request.label ? { label: request.label } : {}),
 					source: { kind: "parent" },
-					schedule: householdOneShotSchedule(request.schedule),
+					schedule,
 				});
 				await auditFromRequest(request, "schedule.create", {
 					reminderId: prepared.reminder.id,
@@ -1164,6 +1191,10 @@ export function createTelclaudeLiveMcpRelayClients(
 			assertAuthorityMemoryBoundary(request);
 			if (request.domain === "household") {
 				const context = householdReminderContext(request, options.householdReminderConfig);
+				guardMediaDerivedAction(options.mediaActionConfirmationGate, request, {
+					toolName: "tc_schedule_cancel",
+					params: { reminderId: request.jobId },
+				});
 				const prepared = prepareHouseholdReminderCancellation({
 					...context,
 					reminderId: request.jobId,
@@ -1204,12 +1235,22 @@ export function createTelclaudeLiveMcpRelayClients(
 				);
 			}
 			const context = householdReminderContext(request, options.householdReminderConfig);
+			const schedule = householdOneShotSchedule(request.schedule);
+			guardMediaDerivedAction(options.mediaActionConfirmationGate, request, {
+				toolName: "tc_schedule_update",
+				params: {
+					reminderId: request.jobId,
+					text: request.prompt,
+					...(request.label ? { label: request.label } : {}),
+					schedule,
+				},
+			});
 			const prepared = prepareHouseholdReminderUpdate({
 				...context,
 				reminderId: request.jobId,
 				text: request.prompt,
 				...(request.label ? { label: request.label } : {}),
-				schedule: householdOneShotSchedule(request.schedule),
+				schedule,
 			});
 			await auditFromRequest(request, "schedule.update", {
 				reminderId: prepared.reminder.id,
@@ -1242,6 +1283,31 @@ function householdReminderContext(
 	);
 	if (!context) throw new Error("household reminder binding or consent is unavailable");
 	return context;
+}
+
+function guardMediaDerivedAction(
+	gate: MediaActionConfirmationGate | undefined,
+	request: TelclaudeMcpAuthorityStamp,
+	action: { readonly toolName: MediaActionToolName; readonly params: Record<string, unknown> },
+): void {
+	if (
+		!gate ||
+		request.domain !== "household" ||
+		!request.turnConversationRef ||
+		!request.subjectUserId
+	) {
+		return;
+	}
+	const result = gate.guardConsequentialAction({
+		turnRef: request.turnConversationRef,
+		authority: {
+			actorId: request.actorId,
+			subjectUserId: request.subjectUserId,
+			profileId: request.profileId,
+		},
+		action,
+	});
+	if (result.required) throw new MediaActionConfirmationRequiredError();
 }
 
 function householdOneShotSchedule(schedule: TelclaudeMcpScheduleInput) {

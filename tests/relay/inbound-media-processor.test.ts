@@ -93,6 +93,38 @@ describe("inbound document media processor", () => {
 		expect(processed.normalized.text).not.toContain(fixture.tempRoot);
 	});
 
+	it("registers the derived batch against the exact inbound turn after raw deletion", async () => {
+		const fixture = cleanDocumentFixture();
+		const registrations: unknown[] = [];
+		const processor = createInboundMediaProcessor({
+			quarantineStore: fixture.store,
+			processorCapability: fixture.capability,
+			documentAdapter: {
+				extract: async () => ({
+					text: "לקבוע תור מחר",
+					pageCount: 1,
+					blocks: [{ page: 1, block: 0, text: "לקבוע תור מחר" }],
+				}),
+			},
+			registerDerivedMediaBatch: (input) => {
+				expect(fixture.store.inspect(fixture.ref.quarantineId, OWNER)?.state).toBe("deleted");
+				registrations.push(input);
+			},
+		});
+		const input = householdProcessingInput(fixture.ref);
+
+		await processor.processInbound(input);
+
+		expect(registrations).toEqual([
+			{
+				turn: input.turn,
+				identity: input.identity,
+				conversation: input.conversation,
+				envelopes: [expect.objectContaining({ kind: "document_extract", lowConfidence: true })],
+			},
+		]);
+	});
+
 	it("deletes raw bytes when document extraction fails", async () => {
 		const fixture = cleanDocumentFixture();
 		const processor = createInboundMediaProcessor({
@@ -348,6 +380,13 @@ function householdProcessingInput(
 		conversation: {
 			conversationId: OWNER.conversationId,
 			token: OWNER.conversationToken,
+		} as never,
+		turn: {
+			ref: `turn_${"a".repeat(32)}`,
+			conversationToken: OWNER.conversationToken,
+			conversationId: OWNER.conversationId,
+			profileId: "parent-a",
+			senderPrincipalId: OWNER.senderPrincipalId,
 		} as never,
 	};
 }

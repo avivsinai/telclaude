@@ -1,7 +1,9 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TelclaudeConfig } from "../../src/config/config.js";
 import { TelclaudeEdgeRuntime } from "../../src/hermes/edge-adapter-runtime.js";
 import type {
 	TelclaudeMcpAttachmentGetRequest,
@@ -16,8 +18,9 @@ import { createTelclaudeLiveMcpRelayClients } from "../../src/hermes/mcp/live-re
 import { startTelclaudeLiveMcpRuntime } from "../../src/hermes/mcp/live-runtime.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
 import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
+import { createMediaActionConfirmationStore } from "../../src/relay/media-action-confirmation-store.js";
 import type { AttachmentRef } from "../../src/storage/attachment-refs.js";
-import { resetDatabase } from "../../src/storage/db.js";
+import { getDb, resetDatabase } from "../../src/storage/db.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
 
@@ -31,6 +34,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		resetDatabase();
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		if (ORIGINAL_DATA_DIR === undefined) {
@@ -289,6 +293,138 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		).rejects.toThrow("household Phase 0 provider action denied");
 		expect(providerCalls).toHaveLength(1);
 		expect(ledger.list()).toHaveLength(1);
+	});
+
+	it("keeps provider-write and household schedule results byte-identical with no eligible media", async () => {
+		const turnConversationRef = `turn_${"9".repeat(32)}`;
+		const gate = createMediaActionConfirmationStore({ encryptionKey: "k".repeat(32) });
+		const providerRequest = providerPrepare({
+			...householdStamp({ turnConversationRef }),
+			providerId: "clalit",
+			service: "clalit",
+			action: "prescription_renewal",
+			params: { prescriptionId: "synthetic-rx" },
+		});
+		const baselineProvider = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			makeApprovalRequestId: makeApprovalIds(),
+			providerWriteApproverActorId: "operator:provider-approver",
+		});
+		const guardedProvider = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			makeApprovalRequestId: makeApprovalIds(),
+			providerWriteApproverActorId: "operator:provider-approver",
+			mediaActionConfirmationGate: gate,
+		});
+
+		const baselineProviderBytes = JSON.stringify(
+			await baselineProvider.providerPrepareWrite(providerRequest),
+		);
+		const guardedProviderBytes = JSON.stringify(
+			await guardedProvider.providerPrepareWrite(providerRequest),
+		);
+		expect(guardedProviderBytes).toBe(baselineProviderBytes);
+
+		let uuid = 0;
+		vi.spyOn(crypto, "randomUUID").mockImplementation(
+			() => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}`,
+		);
+		const scheduleRequest = {
+			...householdStamp({ turnConversationRef }),
+			schedule: { kind: "at" as const, at: futureJerusalemMinute(60) },
+			prompt: "לקחת מסמכים",
+		};
+		const baselineSchedule = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			householdReminderConfig: mediaConfirmationHouseholdConfig,
+		});
+		const baselineScheduleBytes = JSON.stringify(
+			await baselineSchedule.scheduleCreate(scheduleRequest),
+		);
+		resetDatabase();
+		uuid = 0;
+		const guardedSchedule = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			householdReminderConfig: mediaConfirmationHouseholdConfig,
+			mediaActionConfirmationGate: gate,
+		});
+		const guardedScheduleBytes = JSON.stringify(
+			await guardedSchedule.scheduleCreate(scheduleRequest),
+		);
+		expect(guardedScheduleBytes).toBe(baselineScheduleBytes);
+	});
+
+	it("blocks eligible media-derived provider writes before ledger preparation", async () => {
+		const ledger = testLedger();
+		const gate = eligibleMediaGate(`turn_${"a".repeat(32)}`);
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			providerWriteApproverActorId: "operator:provider-approver",
+			mediaActionConfirmationGate: gate,
+		});
+
+		await expect(
+			clients.providerPrepareWrite(
+				providerPrepare({
+					...householdStamp({ turnConversationRef: `turn_${"a".repeat(32)}` }),
+					providerId: "clalit",
+					service: "clalit",
+					action: "prescription_renewal",
+					params: { prescriptionId: "synthetic-rx" },
+				}),
+			),
+		).rejects.toMatchObject({ code: "media_action_confirmation_required" });
+		expect(ledger.list()).toEqual([]);
+		expect(
+			getDb().prepare("SELECT action_tool_name FROM household_media_action_confirmations").all(),
+		).toEqual([{ action_tool_name: "tc_provider_prepare_write" }]);
+	});
+
+	it.each([
+		{
+			toolName: "tc_schedule_create" as const,
+			invoke: (clients: ReturnType<typeof createTelclaudeLiveMcpRelayClients>, turnRef: string) =>
+				clients.scheduleCreate({
+					...householdStamp({ turnConversationRef: turnRef }),
+					schedule: { kind: "at", at: futureJerusalemMinute(60) },
+					prompt: "לקחת מסמכים",
+				}),
+		},
+		{
+			toolName: "tc_schedule_update" as const,
+			invoke: (clients: ReturnType<typeof createTelclaudeLiveMcpRelayClients>, turnRef: string) =>
+				clients.scheduleUpdate({
+					...householdStamp({ turnConversationRef: turnRef }),
+					jobId: "reminder-absent",
+					schedule: { kind: "at", at: futureJerusalemMinute(60) },
+					prompt: "לקחת מסמכים",
+				}),
+		},
+		{
+			toolName: "tc_schedule_cancel" as const,
+			invoke: (clients: ReturnType<typeof createTelclaudeLiveMcpRelayClients>, turnRef: string) =>
+				clients.scheduleCancel({
+					...householdStamp({ turnConversationRef: turnRef }),
+					jobId: "reminder-absent",
+				}),
+		},
+	])("blocks eligible media-derived $toolName before any reminder mutation", async (fixture) => {
+		const turnConversationRef = `turn_${"b".repeat(32)}`;
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			householdReminderConfig: mediaConfirmationHouseholdConfig,
+			mediaActionConfirmationGate: eligibleMediaGate(turnConversationRef),
+		});
+
+		await expect(fixture.invoke(clients, turnConversationRef)).rejects.toMatchObject({
+			code: "media_action_confirmation_required",
+		});
+		expect(getDb().prepare("SELECT COUNT(*) AS count FROM household_reminders").get()).toEqual({
+			count: 0,
+		});
+		expect(
+			getDb().prepare("SELECT action_tool_name FROM household_media_action_confirmations").all(),
+		).toEqual([{ action_tool_name: fixture.toolName }]);
 	});
 
 	it("derives household WhatsApp replies from the current sender and rejects alternate targets", async () => {
@@ -844,6 +980,95 @@ function makeApprovalIds(): () => string {
 	let id = 0;
 	return () => `approval-${++id}`;
 }
+
+function eligibleMediaGate(turnRef: string) {
+	const gate = createMediaActionConfirmationStore({
+		encryptionKey: "media-confirmation-test-key-32-chars",
+		makeConfirmationId: () => `media-confirmation-${turnRef.slice(-8)}`,
+		makeJti: () => `jti-${turnRef.slice(-8)}`,
+	});
+	gate.registerTurnDerivation({
+		turnRef,
+		owner: {
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			bindingId: "parent-a",
+			conversationId: "whatsapp:household:parent-a",
+			senderPrincipalHash: `sha256:${"c".repeat(64)}`,
+		},
+		envelopes: [
+			{
+				kind: "document_extract",
+				text: "נא לחדש את המרשם",
+				sourceSha256: "d".repeat(64),
+				sourceMediaType: "image/jpeg",
+				sourcePageCount: 1,
+				extractor: "openai_responses_document_extract_v1",
+				confidenceSource: "document_confidence_unavailable_v1",
+				confirmed: false,
+				confidencePolicyVersion: "media-confidence.v1",
+				lowConfidence: true,
+				lowConfidenceReasonCodes: ["document_confidence_unavailable"],
+				classifierVersion: "derived-media-action-classifier.v1",
+				actionBearing: true,
+				actionBearingReasonCodes: ["action_verb"],
+			},
+		],
+	});
+	return gate;
+}
+
+function futureJerusalemMinute(minutesFromNow: number): string {
+	const parts = new Intl.DateTimeFormat("en-CA", {
+		timeZone: "Asia/Jerusalem",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+	}).formatToParts(Date.now() + minutesFromNow * 60_000);
+	const value = (name: string) => parts.find((part) => part.type === name)?.value;
+	return `${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}`;
+}
+
+const mediaConfirmationHouseholdConfig = {
+	profiles: [
+		{
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					addresseeGender: "f",
+					address: "whatsapp:+15557654321",
+					replyAddress: "whatsapp:+15557654321",
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+					reminderConsent: {
+						state: "granted",
+						ceremonyVersion: "phase0.v1",
+						ceremonyHash: `sha256:${"a".repeat(64)}`,
+						verifiedChannelHash:
+							"sha256:a0237ae1db3c517ae525a8b60cb1b956bf87d4369f0b7533204cd7706236bce6",
+						categories: {
+							proactiveDelivery: true,
+							scheduleManagement: true,
+							retentionDisclosure: true,
+						},
+						recordedAt: "2026-07-17T09:00:00.000Z",
+						operatorId: "operator:phase0-admin",
+					},
+				},
+			],
+		},
+	],
+} as TelclaudeConfig;
 
 class CountingEdgeRuntime extends TelclaudeEdgeRuntime {
 	prepareOutboundCalls = 0;
