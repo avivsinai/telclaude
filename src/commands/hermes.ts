@@ -57,6 +57,13 @@ import {
 	runHermesHostilePeerProbe,
 } from "../hermes/hostile-peer-probes.js";
 import {
+	DEFAULT_HOUSEHOLD_REMINDER_EVIDENCE_PATH,
+	HOUSEHOLD_REMINDER_PROBE_ID,
+	householdReminderProbeEvidenceFailure,
+	runHouseholdReminderProbe,
+	writeHouseholdReminderProbeEvidence,
+} from "../hermes/household-reminder-probe.js";
+import {
 	DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET,
 	requestTelclaudeLiveMcpCanaryWindowClose,
 	requestTelclaudeLiveMcpCanaryWindowOpen,
@@ -3578,6 +3585,42 @@ export function registerHermesCommand(program: Command): void {
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}
 				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === HOUSEHOLD_REMINDER_PROBE_ID) {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
+				const report = await runHouseholdReminderProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_HOUSEHOLD_REMINDER_EVIDENCE_PATH,
+					);
+					writeHouseholdReminderProbeEvidence(report, outPath, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = householdReminderProbeEvidenceFailure(report, {
+					allowStaleAttestations: true,
+				})
+					? 1
+					: 0;
 				return;
 			}
 

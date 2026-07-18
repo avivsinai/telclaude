@@ -89,6 +89,7 @@ describe("config defaults", () => {
 		fs.writeFileSync(configPath(), JSON.stringify({}));
 
 		const cfg = loadConfig();
+		expect(cfg.householdReminders).toEqual({ enabled: false });
 		expect(cfg.webhooks).toEqual({
 			enabled: false,
 			port: 3015,
@@ -397,6 +398,117 @@ describe("config defaults", () => {
 			}),
 		);
 		expect(() => loadConfig()).toThrow();
+	});
+
+	it("keeps reminder consent content-free, channel-bound, and independently revocable", () => {
+		setConfigPath(configPath());
+		const address = "whatsapp:+15551234567";
+		const verifiedChannelHash = `sha256:${crypto
+			.createHash("sha256")
+			.update(address)
+			.digest("hex")}`;
+		const reminderConsent = {
+			state: "revoked",
+			ceremonyVersion: "phase0.v1",
+			ceremonyHash: `sha256:${"c".repeat(64)}`,
+			verifiedChannelHash,
+			categories: {
+				proactiveDelivery: true,
+				scheduleManagement: true,
+				retentionDisclosure: true,
+			},
+			recordedAt: "2026-07-17T09:00:00.000Z",
+			operatorId: "operator:phase0-admin",
+			revokedAt: "2026-07-18T09:00:00.000Z",
+		};
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					address,
+					replyAddress: address,
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+					reminderConsent,
+				},
+			],
+		};
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		expect(loadConfig().profiles[0]?.whatsappHouseholdBindings?.[0]?.reminderConsent).toEqual(
+			reminderConsent,
+		);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{
+						...profile,
+						whatsappHouseholdBindings: [
+							{
+								...profile.whatsappHouseholdBindings[0],
+								reminderConsent: {
+									...reminderConsent,
+									verifiedChannelHash: `sha256:${"d".repeat(64)}`,
+								},
+							},
+						],
+					},
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/reminder.*channel|channel.*reminder/i);
+	});
+
+	it("keeps all configured household reminder delivery switches dark by default", () => {
+		setConfigPath(configPath());
+		const profile = {
+			id: "parent-a",
+			label: "Parent A",
+			allowedSkills: [],
+			providerScopes: ["clalit"],
+			capabilityScopes: ["schedule.read", "schedule.write"],
+			outboundChannels: ["whatsapp"],
+			whatsappHouseholdBindings: [
+				{
+					bindingId: "parent-a",
+					address: "whatsapp:+15551234567",
+					replyAddress: "whatsapp:+15551234567",
+					displayName: "Parent A",
+					subjectUserId: "household:parent-a",
+				},
+			],
+		};
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [profile] }));
+		let cfg = loadConfig();
+		expect(cfg.householdReminders.enabled).toBe(false);
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.remindersEnabled).toBeUndefined();
+
+		resetConfigCache();
+		const binding = profile.whatsappHouseholdBindings?.[0];
+		if (!binding) throw new Error("household test binding missing");
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				householdReminders: { enabled: true },
+				profiles: [
+					{
+						...profile,
+						whatsappHouseholdBindings: [{ ...binding, remindersEnabled: true }],
+					},
+				],
+			}),
+		);
+		cfg = loadConfig();
+		expect(cfg.householdReminders.enabled).toBe(true);
+		expect(cfg.profiles[0]?.whatsappHouseholdBindings?.[0]?.remindersEnabled).toBe(true);
 	});
 
 	it("rejects reserved, duplicate, and unsafe operator profiles", () => {

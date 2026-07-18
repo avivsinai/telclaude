@@ -1479,6 +1479,44 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("writes signed sanitized household reminder acceptance evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-household-reminder-probe-"));
+		const evidencePath = path.join(tempDir, "household-reminders.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"household.reminders",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			probeId: string;
+			status: string;
+			observations: Record<string, unknown>;
+			runnerAttestation?: { evidenceSha256?: string };
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(artifact).toMatchObject({
+			probeId: "household.reminders",
+			status: "pass",
+			observations: {
+				whatsappSendCount: 1,
+				telegramSendCount: 0,
+				hermesSendCount: 0,
+			},
+			runnerAttestation: {
+				evidenceSha256: expect.stringMatching(/^sha256:/),
+			},
+		});
+		expect(JSON.stringify(artifact)).not.toMatch(
+			/תזכורת|מסמכים|"(?:body|destination|recipient|address|actorId|subjectUserId)"\s*:/,
+		);
+	});
+
 	it("refuses to run signed probe surfaces without the operator relay signing key", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-signed-probe-missing-key-"));
 		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
@@ -1489,6 +1527,7 @@ describe("Hermes wrapper foundation", () => {
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 			for (const [surface, filename] of [
 				["edge.whatsapp", "edge-whatsapp.json"],
+				["household.reminders", "household-reminders.json"],
 				["sideeffect.ledger", "sideeffect-ledger.json"],
 				["providers.approval-binding", "providers-approval-binding.json"],
 				["workflow.cron", "workflow-cron.json"],
@@ -1538,6 +1577,7 @@ describe("Hermes wrapper foundation", () => {
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 			for (const [surface, filename] of [
 				["edge.whatsapp", "edge-whatsapp.json"],
+				["household.reminders", "household-reminders.json"],
 				["workflow.cron", "workflow-cron.json"],
 				["workflow.longrun", "workflow-longrun.json"],
 				["served_mcp.memory", "served-mcp-memory.json"],

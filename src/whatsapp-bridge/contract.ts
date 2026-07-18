@@ -67,6 +67,20 @@ export function digestWhatsAppBridgeSendRequest(request: unknown): `sha256:${str
 	return `sha256:${digest}`;
 }
 
+export function deterministicWhatsAppBridgeMessageId(
+	idempotencyKeyInput: string,
+	partIndex: number,
+): string {
+	const idempotencyKey = idempotencyKeyInput.trim();
+	if (!idempotencyKey) throw new Error("WhatsApp idempotency key is required");
+	if (!Number.isSafeInteger(partIndex) || partIndex < 0) {
+		throw new Error("WhatsApp message part index must be a non-negative integer");
+	}
+	const material = partIndex === 0 ? idempotencyKey : `${idempotencyKey}:part:${partIndex}`;
+	const digest = crypto.createHash("sha256").update(material).digest("hex").slice(0, 32);
+	return `TCREMINDER${digest}`;
+}
+
 export function signWhatsAppInboundBridgeEvent(event: unknown, secret: string): `sha256:${string}` {
 	const digest = crypto
 		.createHmac("sha256", secret)

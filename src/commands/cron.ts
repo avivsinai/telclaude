@@ -218,6 +218,9 @@ function formatAction(action: CronAction): string {
 		const preprocess = action.preprocess ? ", preprocess=yes" : "";
 		return `agent prompt (${action.prompt.slice(0, 32)}${skills}${preprocess})`;
 	}
+	if (action.kind === "household-reminder") {
+		return `household reminder (${action.reminderId}, revision=${action.revision})`;
+	}
 	if (action.serviceId) {
 		return `social heartbeat (${action.serviceId})`;
 	}
@@ -294,6 +297,12 @@ export function formatCronOverview(overview: CronOverview): string {
 	}
 
 	return lines.join("\n");
+}
+
+export function assertCronJobMayBeQueuedFromCli(job: CronJob): void {
+	if (job.action.kind === "household-reminder") {
+		throw new Error("household reminder wake-ups cannot be queued from the CLI");
+	}
 }
 
 function printJobs(jobs: CronJob[]): void {
@@ -450,6 +459,8 @@ export function registerCronCommand(program: Command): void {
 		.description("Enable a cron job")
 		.argument("<id>", "Job id")
 		.action((id: string) => {
+			const existing = getCronJob(id);
+			if (existing) assertCronJobMayBeQueuedFromCli(existing);
 			const job = setCronJobEnabled(id, true);
 			if (!job) {
 				console.error(`Error: unknown cron job id '${id}'`);
@@ -485,6 +496,7 @@ export function registerCronCommand(program: Command): void {
 				if (!existing) {
 					throw new Error(`unknown cron job id '${id}'`);
 				}
+				assertCronJobMayBeQueuedFromCli(existing);
 				const result = await runCronJobNow({
 					jobId: id,
 					timeoutMs: cfg.cron.timeoutSeconds * 1000,

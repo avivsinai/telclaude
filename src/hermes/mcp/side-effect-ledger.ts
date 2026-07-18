@@ -8,6 +8,7 @@ import {
 	TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
 import type {
 	AttachmentRef as EdgeAttachmentRef,
@@ -18,6 +19,7 @@ export {
 	TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
 
 const DEFAULT_SIDE_EFFECT_TTL_MS = 5 * 60 * 1_000;
@@ -25,6 +27,10 @@ const PROVIDER_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.p
 const PROVIDER_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.body.v1";
 const OUTBOUND_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.params.v1";
 const OUTBOUND_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.body.v1";
+const SCHEDULED_OUTBOUND_PARAMS_HASH_DOMAIN =
+	"telclaude.hermes.mcp.side-effect.scheduled-outbound.params.v1";
+const SCHEDULED_OUTBOUND_BODY_HASH_DOMAIN =
+	"telclaude.hermes.mcp.side-effect.scheduled-outbound.body.v1";
 const EDGE_PREPARED_HASH_RE = /^[a-f0-9]{64}$/;
 const EDGE_CONTENT_HASH_RE = /^sha256:[a-f0-9]{64}$/;
 const RELAY_CONVERSATION_TURN_REF_RE = /^turn_[0-9a-f]{32}$/;
@@ -59,6 +65,22 @@ export type TelclaudeMcpHouseholdReplyBinding = {
 	readonly senderPrincipalHash: `sha256:${string}`;
 	readonly recipientPrincipalHash: `sha256:${string}`;
 	readonly identityAssurance: "strong_link";
+};
+
+export type TelclaudeMcpHouseholdReminderPolicyEvidence = {
+	readonly reminderId: string;
+	readonly fireId: string;
+	readonly revision: number;
+	readonly confirmedProposalHash: `sha256:${string}`;
+	readonly scheduleHash: `sha256:${string}`;
+	readonly contentHash: `sha256:${string}`;
+	readonly bindingFingerprint: `sha256:${string}`;
+	readonly actorId: string;
+	readonly subjectUserId: string;
+	readonly profileId: string;
+	readonly recipientPrincipalHash: `sha256:${string}`;
+	readonly systemPolicyPrincipal: "telclaude:household-reminder-system";
+	readonly systemPolicyVersion: "phase0.v1";
 };
 
 export type TelclaudeMcpProviderSideEffectRecord = {
@@ -134,6 +156,40 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly failReason?: string;
 };
 
+export type TelclaudeMcpScheduledOutboundSideEffectRecord = {
+	readonly ref: string;
+	readonly kind: "scheduled-outbound";
+	readonly source: "household-reminder-system.v1";
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly domain: "household";
+	readonly subjectUserId: string;
+	readonly channel: "whatsapp";
+	readonly destination: string;
+	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
+	readonly requestedBody: string;
+	readonly renderedBody: string;
+	readonly preparedMediaRefs: readonly TelclaudeMcpOutboundPreparedMediaRef[];
+	readonly conversationRef: string;
+	readonly edgePreparedRef: string;
+	readonly edgePreparedHash: string;
+	readonly idempotencyKey: string;
+	readonly householdReminderPolicy: TelclaudeMcpHouseholdReminderPolicyEvidence;
+	readonly paramsHash: string;
+	readonly bodyHash: string;
+	readonly status: TelclaudeMcpSideEffectStatus;
+	readonly createdAtMs: number;
+	readonly expiresAtMs: number;
+	readonly executingAtMs?: number;
+	readonly executionApprovalId?: string;
+	readonly executedAtMs?: number;
+	readonly approvalId?: string;
+	readonly revokedAtMs?: number;
+	readonly revokeReason?: string;
+	readonly failedAtMs?: number;
+	readonly failReason?: string;
+};
+
 export type TelclaudeMcpBrowserWriteSideEffectRecord = {
 	readonly ref: string;
 	readonly kind: "browser-write";
@@ -183,6 +239,7 @@ export type TelclaudeMcpBrowserWriteSideEffectRecord = {
 export type TelclaudeMcpSideEffectRecord =
 	| TelclaudeMcpProviderSideEffectRecord
 	| TelclaudeMcpOutboundSideEffectRecord
+	| TelclaudeMcpScheduledOutboundSideEffectRecord
 	| TelclaudeMcpBrowserWriteSideEffectRecord;
 
 export type TelclaudeMcpProviderSideEffectPrepareInput = {
@@ -232,6 +289,29 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly ttlMs?: number;
 };
 
+export type TelclaudeMcpScheduledOutboundSideEffectPrepareInput = {
+	readonly kind: "scheduled-outbound";
+	/** Server-owned deterministic fire ref; never accepted from an MCP caller. */
+	readonly ref?: `scheduled-effect:${string}`;
+	readonly source: "household-reminder-system.v1";
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly domain: "household";
+	readonly subjectUserId: string;
+	readonly channel: "whatsapp";
+	readonly destination: string;
+	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
+	readonly requestedBody: string;
+	readonly renderedBody: string;
+	readonly preparedMediaRefs: readonly TelclaudeMcpOutboundPreparedMediaRef[];
+	readonly conversationRef: string;
+	readonly edgePreparedRef: string;
+	readonly edgePreparedHash: string;
+	readonly idempotencyKey: string;
+	readonly householdReminderPolicy: TelclaudeMcpHouseholdReminderPolicyEvidence;
+	readonly ttlMs?: number;
+};
+
 export type TelclaudeMcpBrowserWriteSideEffectPrepareInput = {
 	readonly kind: "browser-write";
 	/**
@@ -270,7 +350,18 @@ export type TelclaudeMcpBrowserWriteSideEffectPrepareInput = {
 export type TelclaudeMcpSideEffectPrepareInput =
 	| TelclaudeMcpProviderSideEffectPrepareInput
 	| TelclaudeMcpOutboundSideEffectPrepareInput
+	| TelclaudeMcpScheduledOutboundSideEffectPrepareInput
 	| TelclaudeMcpBrowserWriteSideEffectPrepareInput;
+
+export type TelclaudeMcpSideEffectRecordForPrepareInput<
+	T extends TelclaudeMcpSideEffectPrepareInput,
+> = T extends TelclaudeMcpProviderSideEffectPrepareInput
+	? TelclaudeMcpProviderSideEffectRecord
+	: T extends TelclaudeMcpOutboundSideEffectPrepareInput
+		? TelclaudeMcpOutboundSideEffectRecord
+		: T extends TelclaudeMcpScheduledOutboundSideEffectPrepareInput
+			? TelclaudeMcpScheduledOutboundSideEffectRecord
+			: TelclaudeMcpBrowserWriteSideEffectRecord;
 
 export type TelclaudeMcpProviderApprovalBinding = {
 	readonly domainSeparator: typeof TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN;
@@ -322,6 +413,30 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly contentHash: string;
 };
 
+export type TelclaudeMcpScheduledOutboundApprovalBinding = {
+	readonly domainSeparator: typeof TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN;
+	readonly ref: string;
+	readonly kind: "scheduled-outbound";
+	readonly source: "household-reminder-system.v1";
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly domain: "household";
+	readonly subjectUserId: string;
+	readonly channel: "whatsapp";
+	readonly destination: string;
+	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
+	readonly requestedBody: string;
+	readonly preparedMediaRefs: readonly TelclaudeMcpOutboundPreparedMediaRef[];
+	readonly conversationRef: string;
+	readonly edgePreparedRef: string;
+	readonly edgePreparedHash: string;
+	readonly idempotencyKey: string;
+	readonly householdReminderPolicy: TelclaudeMcpHouseholdReminderPolicyEvidence;
+	readonly paramsHash: string;
+	readonly bodyHash: string;
+	readonly contentHash: string;
+};
+
 export type TelclaudeMcpBrowserWriteApprovalBinding = {
 	readonly domainSeparator: typeof TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN;
 	readonly ref: string;
@@ -352,6 +467,7 @@ export type TelclaudeMcpBrowserWriteApprovalBinding = {
 export type TelclaudeMcpSideEffectApprovalBinding =
 	| TelclaudeMcpProviderApprovalBinding
 	| TelclaudeMcpOutboundApprovalBinding
+	| TelclaudeMcpScheduledOutboundApprovalBinding
 	| TelclaudeMcpBrowserWriteApprovalBinding;
 
 export type TelclaudeMcpSideEffectApprovalVerification = {
@@ -431,7 +547,9 @@ export type TelclaudeMcpSideEffectClaimResult =
 	| TelclaudeMcpSideEffectTerminalFailure;
 
 export type TelclaudeMcpSideEffectLedger = {
-	prepare(input: TelclaudeMcpSideEffectPrepareInput): TelclaudeMcpSideEffectRecord;
+	prepare<T extends TelclaudeMcpSideEffectPrepareInput>(
+		input: T,
+	): TelclaudeMcpSideEffectRecordForPrepareInput<T>;
 	get(ref: string): TelclaudeMcpSideEffectRecord | null;
 	list(): TelclaudeMcpSideEffectRecord[];
 	revoke(ref: string, reason?: string): TelclaudeMcpSideEffectRevokeResult;
@@ -482,7 +600,7 @@ export function createTelclaudeMcpSideEffectLedger(
 				throw new Error(`duplicate side-effect ref: ${record.ref}`);
 			}
 			records.set(record.ref, record);
-			return cloneRecord(record);
+			return cloneRecord(record) as TelclaudeMcpSideEffectRecordForPrepareInput<typeof input>;
 		},
 
 		get(ref) {
@@ -720,6 +838,19 @@ export function telclaudeMcpSideEffectRecordIntegrityFailures(
 		}
 		return failures;
 	}
+	if (record.kind === "scheduled-outbound") {
+		const paramsHash = hashScheduledOutboundParams(record);
+		const bodyHash = hashScheduledOutboundBody(record);
+		if (record.paramsHash !== paramsHash) {
+			failures.push(
+				"scheduled outbound paramsHash does not match current policy/prepared outbound",
+			);
+		}
+		if (record.bodyHash !== bodyHash) {
+			failures.push("scheduled outbound bodyHash does not match current policy/prepared outbound");
+		}
+		return failures;
+	}
 	const paramsHash = hashOutboundParams(record);
 	const bodyHash = hashOutboundBody(record);
 	if (record.paramsHash !== paramsHash) {
@@ -742,11 +873,94 @@ function prepareRecord(
 			return prepareProviderRecord(input, makeRef, nowMs, defaultTtlMs);
 		case "outbound":
 			return prepareOutboundRecord(input, makeRef, nowMs, defaultTtlMs);
+		case "scheduled-outbound":
+			return prepareScheduledOutboundRecord(input, nowMs, defaultTtlMs);
 		case "browser-write":
 			return prepareBrowserWriteRecord(input, makeRef, nowMs, defaultTtlMs);
 		default:
 			throw new Error("unknown side-effect prepare kind");
 	}
+}
+
+function prepareScheduledOutboundRecord(
+	input: TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
+	nowMs: number,
+	defaultTtlMs: number,
+): TelclaudeMcpScheduledOutboundSideEffectRecord {
+	if ("approverActorId" in input) {
+		throw new Error("scheduled outbound must not carry approverActorId");
+	}
+	if ("turnConversationRef" in input) {
+		throw new Error("scheduled outbound must not carry turnConversationRef");
+	}
+	if (input.domain !== "household") {
+		throw new Error("scheduled outbound is allowed only for the household domain");
+	}
+	if (input.channel !== "whatsapp") {
+		throw new Error("scheduled outbound is allowed only for WhatsApp");
+	}
+	if (input.source !== "household-reminder-system.v1") {
+		throw new Error("scheduled outbound source is invalid");
+	}
+	if (input.preparedMediaRefs.length !== 0) {
+		throw new Error("scheduled outbound reminder media must be empty");
+	}
+	const actorId = requiredTrimmed(input.actorId, "actorId");
+	const subjectUserId = requiredTrimmed(input.subjectUserId, "subjectUserId");
+	const profileId = requiredTrimmed(input.profileId, "profileId");
+	const householdReminderPolicy = normalizeHouseholdReminderPolicy(input.householdReminderPolicy, {
+		actorId,
+		subjectUserId,
+		profileId,
+	});
+	const base = {
+		ref: normalizeScheduledOutboundRef(input.ref ?? `scheduled-effect:${crypto.randomUUID()}`),
+		kind: "scheduled-outbound" as const,
+		source: "household-reminder-system.v1" as const,
+		actorId,
+		profileId,
+		domain: "household" as const,
+		subjectUserId,
+		channel: "whatsapp" as const,
+		destination: requiredTrimmed(input.destination, "destination"),
+		resolvedDestination: normalizeResolvedDestination(input.resolvedDestination),
+		requestedBody: requiredString(input.requestedBody, "requestedBody"),
+		renderedBody: requiredTrimmed(input.renderedBody, "renderedBody"),
+		preparedMediaRefs: [] as const,
+		conversationRef: requiredTrimmed(input.conversationRef, "conversationRef"),
+		edgePreparedRef: requiredTrimmed(input.edgePreparedRef, "edgePreparedRef"),
+		edgePreparedHash: normalizeEdgePreparedHash(input.edgePreparedHash),
+		idempotencyKey: requiredTrimmed(input.idempotencyKey, "idempotencyKey"),
+		householdReminderPolicy,
+	};
+	if (base.renderedBody !== base.requestedBody) {
+		throw new Error("scheduled outbound rendered body must match requested body");
+	}
+	if (
+		base.resolvedDestination.kind !== "address" ||
+		!base.resolvedDestination.addressRef ||
+		base.destination !== base.resolvedDestination.addressRef ||
+		base.resolvedDestination.conversationId !== base.conversationRef
+	) {
+		throw new Error("scheduled outbound destination must match the server-resolved conversation");
+	}
+	const ttlMs = normalizeDuration(input.ttlMs ?? defaultTtlMs, "ttlMs");
+	return deepFreeze({
+		...base,
+		paramsHash: hashScheduledOutboundParams(base),
+		bodyHash: hashScheduledOutboundBody(base),
+		status: "prepared" as const,
+		createdAtMs: nowMs,
+		expiresAtMs: nowMs + ttlMs,
+	});
+}
+
+function normalizeScheduledOutboundRef(value: string): `scheduled-effect:${string}` {
+	const normalized = requiredTrimmed(value, "ref");
+	if (!/^scheduled-effect:[A-Za-z0-9._:-]{1,240}$/.test(normalized)) {
+		throw new Error("scheduled outbound ref must use the scheduled-effect namespace");
+	}
+	return normalized as `scheduled-effect:${string}`;
 }
 
 function prepareBrowserWriteRecord(
@@ -992,6 +1206,49 @@ function hashOutboundBody(record: OutboundBindingFields): string {
 	});
 }
 
+function hashScheduledOutboundParams(record: ScheduledOutboundBindingFields): string {
+	return canonicalDigest({
+		domainSeparator: SCHEDULED_OUTBOUND_PARAMS_HASH_DOMAIN,
+		source: record.source,
+		actorId: record.actorId,
+		profileId: record.profileId,
+		domain: record.domain,
+		subjectUserId: record.subjectUserId,
+		channel: record.channel,
+		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
+		preparedMediaRefs: record.preparedMediaRefs,
+		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
+		idempotencyKey: record.idempotencyKey,
+		householdReminderPolicy: record.householdReminderPolicy,
+	});
+}
+
+function hashScheduledOutboundBody(record: ScheduledOutboundBindingFields): string {
+	return canonicalDigest({
+		domainSeparator: SCHEDULED_OUTBOUND_BODY_HASH_DOMAIN,
+		source: record.source,
+		actorId: record.actorId,
+		profileId: record.profileId,
+		domain: record.domain,
+		subjectUserId: record.subjectUserId,
+		channel: record.channel,
+		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
+		renderedBody: record.renderedBody,
+		preparedMediaRefs: record.preparedMediaRefs,
+		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
+		idempotencyKey: record.idempotencyKey,
+		householdReminderPolicy: record.householdReminderPolicy,
+	});
+}
+
 function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecord): string {
 	return canonicalDigest({
 		domainSeparator: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
@@ -1040,6 +1297,31 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 	});
 }
 
+function hashScheduledOutboundApprovalContent(
+	record: TelclaudeMcpScheduledOutboundSideEffectRecord,
+): string {
+	return canonicalDigest({
+		domainSeparator: TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN,
+		source: record.source,
+		actorId: record.actorId,
+		profileId: record.profileId,
+		domain: record.domain,
+		subjectUserId: record.subjectUserId,
+		channel: record.channel,
+		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
+		preparedMediaRefs: record.preparedMediaRefs,
+		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
+		idempotencyKey: record.idempotencyKey,
+		householdReminderPolicy: record.householdReminderPolicy,
+		paramsHash: record.paramsHash,
+		bodyHash: record.bodyHash,
+	});
+}
+
 function hashBrowserWriteApprovalContent(record: TelclaudeMcpBrowserWriteSideEffectRecord): string {
 	return canonicalDigest({
 		domainSeparator: TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
@@ -1069,6 +1351,31 @@ function hashBrowserWriteApprovalContent(record: TelclaudeMcpBrowserWriteSideEff
 function approvalBinding(
 	record: TelclaudeMcpSideEffectRecord,
 ): TelclaudeMcpSideEffectApprovalBinding {
+	if (record.kind === "scheduled-outbound") {
+		return {
+			domainSeparator: TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN,
+			ref: record.ref,
+			kind: "scheduled-outbound",
+			source: record.source,
+			actorId: record.actorId,
+			profileId: record.profileId,
+			domain: record.domain,
+			subjectUserId: record.subjectUserId,
+			channel: record.channel,
+			destination: record.destination,
+			resolvedDestination: record.resolvedDestination,
+			requestedBody: record.requestedBody,
+			preparedMediaRefs: record.preparedMediaRefs,
+			conversationRef: record.conversationRef,
+			edgePreparedRef: record.edgePreparedRef,
+			edgePreparedHash: record.edgePreparedHash,
+			idempotencyKey: record.idempotencyKey,
+			householdReminderPolicy: record.householdReminderPolicy,
+			paramsHash: record.paramsHash,
+			bodyHash: record.bodyHash,
+			contentHash: hashScheduledOutboundApprovalContent(record),
+		};
+	}
 	if (record.kind === "browser-write") {
 		return {
 			domainSeparator: TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
@@ -1169,6 +1476,7 @@ function terminalFailureForRecord(
 function terminalFailureForSelfApproval(
 	record: TelclaudeMcpSideEffectRecord,
 ): TelclaudeMcpSideEffectTerminalFailure | null {
+	if (record.kind === "scheduled-outbound") return null;
 	if (record.actorId !== record.approverActorId) return null;
 	if (record.kind === "provider") {
 		return terminalFailure(
@@ -1391,6 +1699,60 @@ function normalizeHouseholdReplyBinding(
 	};
 }
 
+function normalizeHouseholdReminderPolicy(
+	value: TelclaudeMcpHouseholdReminderPolicyEvidence,
+	expectedAuthority: {
+		readonly actorId: string;
+		readonly subjectUserId: string;
+		readonly profileId: string;
+	},
+): TelclaudeMcpHouseholdReminderPolicyEvidence {
+	const normalized = {
+		reminderId: requiredTrimmed(value.reminderId, "householdReminderPolicy.reminderId"),
+		fireId: requiredTrimmed(value.fireId, "householdReminderPolicy.fireId"),
+		revision: normalizePositiveInteger(value.revision, "householdReminderPolicy.revision"),
+		confirmedProposalHash: normalizeSha256Hash(
+			value.confirmedProposalHash,
+			"householdReminderPolicy.confirmedProposalHash",
+		) as `sha256:${string}`,
+		scheduleHash: normalizeSha256Hash(
+			value.scheduleHash,
+			"householdReminderPolicy.scheduleHash",
+		) as `sha256:${string}`,
+		contentHash: normalizeSha256Hash(
+			value.contentHash,
+			"householdReminderPolicy.contentHash",
+		) as `sha256:${string}`,
+		bindingFingerprint: normalizeSha256Hash(
+			value.bindingFingerprint,
+			"householdReminderPolicy.bindingFingerprint",
+		) as `sha256:${string}`,
+		actorId: requiredTrimmed(value.actorId, "householdReminderPolicy.actorId"),
+		subjectUserId: requiredTrimmed(value.subjectUserId, "householdReminderPolicy.subjectUserId"),
+		profileId: requiredTrimmed(value.profileId, "householdReminderPolicy.profileId"),
+		recipientPrincipalHash: normalizeSha256Hash(
+			value.recipientPrincipalHash,
+			"householdReminderPolicy.recipientPrincipalHash",
+		) as `sha256:${string}`,
+		systemPolicyPrincipal: value.systemPolicyPrincipal,
+		systemPolicyVersion: value.systemPolicyVersion,
+	};
+	if (
+		normalized.systemPolicyPrincipal !== "telclaude:household-reminder-system" ||
+		normalized.systemPolicyVersion !== "phase0.v1"
+	) {
+		throw new Error("scheduled outbound system policy principal/version is invalid");
+	}
+	if (
+		normalized.actorId !== expectedAuthority.actorId ||
+		normalized.subjectUserId !== expectedAuthority.subjectUserId ||
+		normalized.profileId !== expectedAuthority.profileId
+	) {
+		throw new Error("scheduled outbound policy authority does not match the record");
+	}
+	return normalized;
+}
+
 function assertHouseholdReplyBindingScope(
 	domain: TelclaudeMcpSideEffectDomain,
 	subjectUserId: string | undefined,
@@ -1416,6 +1778,13 @@ function assertHouseholdReplyBindingScope(
 function normalizeRevision(value: number): number {
 	if (!Number.isInteger(value) || value < 1) {
 		throw new Error("approvalRevision must be a positive integer");
+	}
+	return value;
+}
+
+function normalizePositiveInteger(value: number, field: string): number {
+	if (!Number.isInteger(value) || value < 1) {
+		throw new Error(`${field} must be a positive integer`);
 	}
 	return value;
 }
@@ -1578,4 +1947,24 @@ type OutboundBindingFields = Pick<
 	| "approvalMetadata"
 	| "turnConversationRef"
 	| "idempotencyKey"
+>;
+
+type ScheduledOutboundBindingFields = Pick<
+	TelclaudeMcpScheduledOutboundSideEffectRecord,
+	| "source"
+	| "actorId"
+	| "profileId"
+	| "domain"
+	| "subjectUserId"
+	| "channel"
+	| "destination"
+	| "resolvedDestination"
+	| "requestedBody"
+	| "renderedBody"
+	| "preparedMediaRefs"
+	| "conversationRef"
+	| "edgePreparedRef"
+	| "edgePreparedHash"
+	| "idempotencyKey"
+	| "householdReminderPolicy"
 >;

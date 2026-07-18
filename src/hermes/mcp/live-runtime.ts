@@ -440,6 +440,7 @@ export function createFailClosedTelclaudeLiveMcpRelayClients(
 		scheduleCreate: fail,
 		scheduleList: fail,
 		scheduleCancel: fail,
+		scheduleUpdate: fail,
 		githubListRepos: fail,
 		githubListRefs: fail,
 		githubGetTree: fail,

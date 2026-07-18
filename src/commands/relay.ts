@@ -14,7 +14,10 @@ import {
 	TelclaudeMcpSideEffectJtiStore,
 } from "../hermes/mcp/approval-token.js";
 import { hermesMcpAuthorityRegistry } from "../hermes/mcp/authority-registry.js";
-import type { TelclaudeMcpSideEffectApprovalTokenResolver } from "../hermes/mcp/ledger-execute.js";
+import {
+	createTelclaudeMcpLedgerExecuteDependencies,
+	type TelclaudeMcpSideEffectApprovalTokenResolver,
+} from "../hermes/mcp/ledger-execute.js";
 import {
 	createTelclaudeLiveMcpProbeAdminStarter,
 	readTelclaudeLiveMcpAdminConfig,
@@ -39,6 +42,18 @@ import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effe
 import { createTelclaudeMcpSideEffectLedger } from "../hermes/mcp/side-effect-ledger.js";
 import { setHermesPrivateRuntimeMcpAuthorityActivation } from "../hermes/private-execute.js";
 import { createRelayConversationStore } from "../hermes/relay-conversation-store.js";
+import { resolveHouseholdReminderContext } from "../household-reminders/binding.js";
+import {
+	createHouseholdReminderFireExecutor,
+	createHouseholdReminderFirePreparation,
+	createHouseholdReminderScheduledExecution,
+	readHouseholdReminderKillSwitches,
+	resolveHouseholdReminderLiveDeliveryTarget,
+} from "../household-reminders/fire-executor.js";
+import { renderHouseholdReminderBody } from "../household-reminders/render.js";
+import { getHouseholdReminderFire } from "../household-reminders/store.js";
+import { createHouseholdReminderSystemOriginAuthorizer } from "../household-reminders/system-origin-authorizer.js";
+import { createHouseholdReminderSystemOriginPolicyRevalidator } from "../household-reminders/system-origin-policy.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
@@ -75,7 +90,10 @@ import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
-import { createOutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
+import {
+	createOutboundDeliveryDispatcher,
+	createOutboundDeliveryFailureClassifier,
+} from "../relay/outbound-delivery-dispatcher.js";
 import {
 	createProviderChallengeControlPolicyStore,
 	createProviderChallengeControlSender,
@@ -89,10 +107,13 @@ import {
 	createProviderLoginCoordinator,
 	setConfiguredProviderLoginCoordinator,
 } from "../relay/provider-login-coordinator.js";
+import { createReminderConfirmationControlPolicyStore } from "../relay/reminder-confirmation-control-policy.js";
+import { createReminderConfirmationControlSender } from "../relay/reminder-confirmation-control-sender.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
 import { setDefaultWhatsAppInboundBridgeOptions } from "../relay/whatsapp-inbound-http.js";
 import { createWhatsAppProviderChallengeInterceptor } from "../relay/whatsapp-provider-challenge-interceptor.js";
+import { createWhatsAppReminderConfirmationInterceptor } from "../relay/whatsapp-reminder-confirmation-interceptor.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -331,6 +352,11 @@ export function registerRelayCommand(program: Command): void {
 				const providerChallengeControlPolicyStore = createProviderChallengeControlPolicyStore({
 					conversationStore: liveMcpConversationStore,
 				});
+				const reminderConfirmationControlPolicyStore = createReminderConfirmationControlPolicyStore(
+					{
+						conversationStore: liveMcpConversationStore,
+					},
+				);
 				// tc_browse broker: live only when the browser overlay env is set
 				// (TELCLAUDE_BROWSER_WS_ENDPOINT/_CONNECT_PROXY_URL/_PEER_ADDRESS/
 				// _CONTEXT_TOKEN_SECRET). Otherwise omitted → tc_browse fails closed.
@@ -410,19 +436,43 @@ export function registerRelayCommand(program: Command): void {
 				schedulerHandles.push({
 					stop: () => clearInterval(liveMcpAttachmentQuarantineCleanup),
 				});
+				const householdReminderFailureClassifier = createOutboundDeliveryFailureClassifier();
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
 					registry: createDefaultEdgeOutboundExecutorRegistry(),
 					resolveConversation: async (prepared) => {
 						const systemControl =
 							await providerChallengeControlPolicyStore.resolveConversation(prepared);
 						if (systemControl) return systemControl;
+						const reminderControl =
+							await reminderConfirmationControlPolicyStore.resolveConversation(prepared);
+						if (reminderControl) return reminderControl;
 						const record = liveMcpLedger.get(prepared.sideEffectLedgerRef);
 						if (
-							record?.kind !== "outbound" ||
+							!record ||
+							(record.kind !== "outbound" && record.kind !== "scheduled-outbound") ||
 							record.edgePreparedRef !== prepared.outboundRef ||
 							record.channel !== prepared.channel
 						) {
 							return null;
+						}
+						if (record.kind === "scheduled-outbound") {
+							const conversations = liveMcpConversationStore
+								.list({
+									channel: "whatsapp",
+									domain: "household",
+									authorizationState: "authorized",
+								})
+								.filter(
+									(conversation) =>
+										conversation.conversationId === record.conversationRef &&
+										conversation.profileId === record.profileId,
+								);
+							return conversations.length === 1
+								? {
+										conversationToken: conversations[0].token,
+										threadMessageIds: conversations[0].threadMessageIds,
+									}
+								: null;
 						}
 						const conversation = liveMcpConversationStore.resolveAuthorized(record.conversationRef);
 						return conversation
@@ -452,6 +502,7 @@ export function registerRelayCommand(program: Command): void {
 						);
 					},
 					onSendFailure: (prepared, failure) => {
+						householdReminderFailureClassifier.record(prepared, failure);
 						logger.warn(
 							{
 								channel: prepared.channel,
@@ -463,12 +514,57 @@ export function registerRelayCommand(program: Command): void {
 						);
 					},
 				});
+				const householdReminderPolicyRevalidator =
+					createHouseholdReminderSystemOriginPolicyRevalidator({
+						readFire: getHouseholdReminderFire,
+						resolveContext: (authority) => resolveHouseholdReminderContext(authority, cfg),
+						readKillSwitches: (authority) => readHouseholdReminderKillSwitches(authority, cfg),
+						resolveDeliveryTarget: (context) =>
+							resolveHouseholdReminderLiveDeliveryTarget({
+								context,
+								config: cfg,
+								conversationStore: liveMcpConversationStore,
+							}),
+						renderReminderBody: (snapshot) => renderHouseholdReminderBody(snapshot.reminder),
+					});
+				const householdReminderSystemAuthorizer = liveMcpSideEffectApprovals
+					? createHouseholdReminderSystemOriginAuthorizer({
+							revalidate: householdReminderPolicyRevalidator,
+							vaultClient: liveMcpSideEffectApprovals.vaultClient,
+						})
+					: undefined;
+				const householdReminderLedgerExecution = createTelclaudeMcpLedgerExecuteDependencies({
+					ledger: liveMcpLedger,
+					outboundDeliveryDispatcher: liveMcpOutboundDeliveryDispatcher,
+					...(householdReminderSystemAuthorizer
+						? { scheduledOutboundAuthorizer: householdReminderSystemAuthorizer }
+						: {}),
+				});
+				const householdReminderFireExecutor = createHouseholdReminderFireExecutor({
+					prepare: createHouseholdReminderFirePreparation({
+						config: cfg,
+						conversationStore: liveMcpConversationStore,
+						edgeRuntime: liveMcpEdgeRuntime,
+						ledger: liveMcpLedger,
+					}),
+					execute: createHouseholdReminderScheduledExecution({
+						execute: householdReminderLedgerExecution.scheduledOutboundExecute,
+						failureClassifier: householdReminderFailureClassifier,
+					}),
+				});
 				const providerChallengeControlSender = createProviderChallengeControlSender({
 					config: cfg,
 					conversationStore: liveMcpConversationStore,
 					edgeRuntime: liveMcpEdgeRuntime,
 					dispatch: liveMcpOutboundDeliveryDispatcher,
 					policyStore: providerChallengeControlPolicyStore,
+				});
+				const reminderConfirmationControlSender = createReminderConfirmationControlSender({
+					config: cfg,
+					conversationStore: liveMcpConversationStore,
+					edgeRuntime: liveMcpEdgeRuntime,
+					dispatch: liveMcpOutboundDeliveryDispatcher,
+					policyStore: reminderConfirmationControlPolicyStore,
 				});
 				let providerChallengeSidecar: ReturnType<
 					typeof createConfiguredProviderChallengeSidecar
@@ -482,6 +578,10 @@ export function registerRelayCommand(program: Command): void {
 						);
 					},
 					sendControl: providerChallengeControlSender,
+				});
+				const reminderConfirmationInterceptor = createWhatsAppReminderConfirmationInterceptor({
+					config: cfg,
+					sendControl: reminderConfirmationControlSender,
 				});
 				setConfiguredProviderLoginCoordinator(
 					createProviderLoginCoordinator({
@@ -498,7 +598,8 @@ export function registerRelayCommand(program: Command): void {
 					config: cfg,
 					conversationStore: liveMcpConversationStore,
 					quarantineStore: liveMcpAttachmentQuarantineStore,
-					interceptBeforePersistence: providerChallengeInterceptor,
+					providerChallengeInterceptor,
+					reminderConfirmationInterceptor,
 				});
 				schedulerHandles.push({
 					stop: () => {
@@ -669,7 +770,10 @@ export function registerRelayCommand(program: Command): void {
 					const scheduler = startCronScheduler({
 						pollIntervalMs: cfg.cron.pollIntervalSeconds * 1000,
 						timeoutMs: cfg.cron.timeoutSeconds * 1000,
-						executor: (job, signal) => executeCronAction(job, cfg, signal),
+						executor: (job, signal) =>
+							executeCronAction(job, cfg, signal, {
+								executeHouseholdReminder: householdReminderFireExecutor,
+							}),
 					});
 					schedulerHandles.push(scheduler);
 
@@ -980,6 +1084,7 @@ function createLiveMcpSideEffectApprovalKit(vaultSocketPath: string | undefined)
 
 	return {
 		controller,
+		vaultClient,
 		verifyApproval: createTelclaudeMcpSideEffectApprovalVerifier({
 			vaultClient,
 			jtiStore,

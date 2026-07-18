@@ -732,6 +732,19 @@ describe("dashboard server", () => {
 		expect(JSON.stringify(body)).not.toContain("should not leak");
 	});
 
+	it("does not expose a dashboard mutation route for internal household wake-ups", async () => {
+		const cookie = await authedCookie();
+		const res = await handle.server.inject({
+			method: "POST",
+			url: "/api/operator/cron",
+			headers: { cookie },
+			payload: {
+				action: { kind: "household-reminder", reminderId: "reminder-opaque", revision: 1 },
+			},
+		});
+		expect(res.statusCode).toBe(404);
+	});
+
 	it("GET /api/operator/curator returns metadata-only suggestions", async () => {
 		const cookie = await authedCookie();
 		const res = await handle.server.inject({

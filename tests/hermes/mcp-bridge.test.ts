@@ -28,6 +28,7 @@ describe("Telclaude MCP bridge foundation", () => {
 				"tc_schedule_create",
 				"tc_schedule_list",
 				"tc_schedule_cancel",
+				"tc_schedule_update",
 				"tc_browse",
 				"tc_browse_act",
 				"tc_browse_act_prepare",
@@ -704,9 +705,7 @@ describe("Telclaude MCP bridge foundation", () => {
 			listRepos: [{ ...stamp }],
 			listRefs: [{ ...stamp, repository: "avivsinai/telclaude" }],
 			getTree: [{ ...stamp, repository: "avivsinai/telclaude", ref: "main", path: "src" }],
-			readFile: [
-				{ ...stamp, repository: "avivsinai/telclaude", ref: "main", path: "README.md" },
-			],
+			readFile: [{ ...stamp, repository: "avivsinai/telclaude", ref: "main", path: "README.md" }],
 		});
 	});
 
@@ -953,6 +952,7 @@ function baseDependencies(): TelclaudeMcpBridgeDependencies {
 		scheduleCreate: async () => ({ jobId: "cron-1" }),
 		scheduleList: async () => ({ jobs: [] }),
 		scheduleCancel: async () => ({ jobId: "cron-1", cancelled: true }),
+		scheduleUpdate: async () => ({ jobId: "cron-1", pending: true }),
 		githubListRepos: async () => ({ repositories: [] }),
 		githubListRefs: async () => ({ branches: [], tags: [] }),
 		githubGetTree: async () => ({ entries: [] }),

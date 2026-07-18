@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import {
+	digestWhatsAppBridgeSendRequest,
 	isWhatsAppGroupJid,
 	jidToWhatsAppAddressRef,
 	parseWhatsAppDestinationJid,
@@ -19,6 +21,10 @@ import {
 	type WhatsAppInboundBridgeEvent,
 	whatsappInboundBridgeBody,
 } from "./contract.js";
+import {
+	WhatsAppBridgeIdempotencyJournal,
+	type WhatsAppBridgeJournalResponse,
+} from "./idempotency-journal.js";
 
 const logger = pino({
 	level: process.env.LOG_LEVEL ?? process.env.TELCLAUDE_LOG_LEVEL ?? "info",
@@ -33,11 +39,18 @@ const INBOUND_SECRET = process.env.TELCLAUDE_WHATSAPP_INBOUND_SECRET?.trim();
 const BRIDGE_SECRET = process.env.TELCLAUDE_WHATSAPP_BRIDGE_SECRET?.trim();
 const MAX_BODY_BYTES = 30 * 1024 * 1024;
 
-type BaileysSocket = {
+export type WhatsAppBridgeBaileysSender = {
+	sendMessage(
+		jid: string,
+		content: Record<string, unknown>,
+		options: { readonly messageId: string },
+	): Promise<{ key?: { id?: string } }>;
+};
+
+type BaileysSocket = WhatsAppBridgeBaileysSender & {
 	readonly ev: {
 		on(event: string, handler: (...args: unknown[]) => void): void;
 	};
-	sendMessage(jid: string, content: Record<string, unknown>): Promise<{ key?: { id?: string } }>;
 };
 
 type BaileysApi = {
@@ -74,6 +87,7 @@ class WhatsAppBridgeRuntime {
 	private socket: BaileysSocket | null = null;
 	private starting: Promise<void> | null = null;
 	private readonly authDir: string;
+	private readonly idempotencyJournal: WhatsAppBridgeIdempotencyJournal;
 	private readonly sequenceByConversation = new Map<string, number>();
 	private status: BridgeStatus = {
 		connected: false,
@@ -84,6 +98,7 @@ class WhatsAppBridgeRuntime {
 
 	constructor(dataDir: string) {
 		this.authDir = path.join(dataDir, "auth");
+		this.idempotencyJournal = new WhatsAppBridgeIdempotencyJournal({ dataDir });
 	}
 
 	snapshot(): BridgeStatus {
@@ -98,7 +113,10 @@ class WhatsAppBridgeRuntime {
 		return this.starting;
 	}
 
-	async send(request: WhatsAppBridgeSendRequest): Promise<Record<string, unknown>> {
+	async send(
+		request: WhatsAppBridgeSendRequest,
+		requestDigest: `sha256:${string}`,
+	): Promise<Record<string, unknown>> {
 		await this.start();
 		if (!this.socket || !this.status.connected) {
 			return {
@@ -114,35 +132,16 @@ class WhatsAppBridgeRuntime {
 			return { ok: false, code: destination.code, reason: destination.reason, retryable: false };
 		}
 
-		try {
-			const sentIds: string[] = [];
-			const attachments = request.attachments ?? [];
-			if (attachments.length === 0) {
-				const sent = await this.socket.sendMessage(destination.jid, {
-					text: request.body.trim() || " ",
-				});
-				if (sent.key?.id) sentIds.push(sent.key.id);
-			} else {
-				for (const [index, attachment] of attachments.entries()) {
-					const content = contentForAttachment(attachment, index === 0 ? request.body : "");
-					const sent = await this.socket.sendMessage(destination.jid, content);
-					if (sent.key?.id) sentIds.push(sent.key.id);
-				}
-			}
-			return {
-				ok: true,
-				...(sentIds[0] ? { platformMessageId: sentIds[0] } : {}),
-				...(sentIds.at(-1) ? { observedThreadMessageId: sentIds.at(-1) } : {}),
-			};
-		} catch (err) {
-			logger.warn({ err: errorMessage(err), outboundRef: request.outboundRef }, "send failed");
-			return {
-				ok: false,
-				code: "whatsapp_bridge_send_failed",
-				reason: "WhatsApp bridge send failed.",
-				retryable: true,
-			};
-		}
+		const socket = this.socket;
+		const messageCount = Math.max(1, request.attachments?.length ?? 0);
+		return this.idempotencyJournal.execute(
+			{
+				idempotencyKey: request.idempotencyKey,
+				requestDigest,
+				messageCount,
+			},
+			(messageIds) => sendWhatsAppBridgeRequest(socket, destination.jid, request, messageIds),
+		);
 	}
 
 	private async connect(): Promise<void> {
@@ -300,6 +299,53 @@ class WhatsAppBridgeRuntime {
 	}
 }
 
+export async function sendWhatsAppBridgeRequest(
+	socket: WhatsAppBridgeBaileysSender,
+	destinationJid: string,
+	request: WhatsAppBridgeSendRequest,
+	messageIds: readonly string[],
+): Promise<WhatsAppBridgeJournalResponse> {
+	try {
+		const sentIds: string[] = [];
+		const attachments = request.attachments ?? [];
+		if (attachments.length === 0) {
+			const messageId = requireMessageId(messageIds, 0);
+			const sent = await socket.sendMessage(
+				destinationJid,
+				{ text: request.body.trim() || " " },
+				{ messageId },
+			);
+			sentIds.push(sent.key?.id ?? messageId);
+		} else {
+			for (const [index, attachment] of attachments.entries()) {
+				const content = contentForAttachment(attachment, index === 0 ? request.body : "");
+				const messageId = requireMessageId(messageIds, index);
+				const sent = await socket.sendMessage(destinationJid, content, { messageId });
+				sentIds.push(sent.key?.id ?? messageId);
+			}
+		}
+		return {
+			ok: true,
+			...(sentIds[0] ? { platformMessageId: sentIds[0] } : {}),
+			...(sentIds.at(-1) ? { observedThreadMessageId: sentIds.at(-1) } : {}),
+		};
+	} catch (err) {
+		logger.warn({ err: errorMessage(err), outboundRef: request.outboundRef }, "send failed");
+		return {
+			ok: false,
+			code: "whatsapp_bridge_send_failed",
+			reason: "WhatsApp bridge send failed.",
+			retryable: true,
+		};
+	}
+}
+
+function requireMessageId(messageIds: readonly string[], index: number): string {
+	const messageId = messageIds[index];
+	if (!messageId) throw new Error(`missing deterministic WhatsApp message id for part ${index}`);
+	return messageId;
+}
+
 async function main(): Promise<void> {
 	const runtime = new WhatsAppBridgeRuntime(DATA_DIR);
 	void runtime
@@ -377,7 +423,7 @@ async function handleRequest(
 		return;
 	}
 
-	writeJson(res, 200, await runtime.send(request.request));
+	writeJson(res, 200, await runtime.send(request.request, digestWhatsAppBridgeSendRequest(parsed)));
 }
 
 function parseSendRequest(
@@ -563,7 +609,9 @@ function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-void main().catch((err) => {
-	logger.error({ err: errorMessage(err) }, "WhatsApp bridge failed to start");
-	process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	void main().catch((err) => {
+		logger.error({ err: errorMessage(err) }, "WhatsApp bridge failed to start");
+		process.exit(1);
+	});
+}

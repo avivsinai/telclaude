@@ -212,6 +212,13 @@ export type TelclaudeMcpScheduleCancelRequest = TelclaudeMcpAuthorityStamp & {
 	jobId: string;
 };
 
+export type TelclaudeMcpScheduleUpdateRequest = TelclaudeMcpAuthorityStamp & {
+	jobId: string;
+	schedule: TelclaudeMcpScheduleInput;
+	prompt: string;
+	label?: string;
+};
+
 export type TelclaudeMcpGithubListReposRequest = TelclaudeMcpAuthorityStamp;
 
 export type TelclaudeMcpGithubListRefsRequest = TelclaudeMcpAuthorityStamp & {
@@ -252,6 +259,7 @@ export type TelclaudeMcpBridgeDependencies = {
 	scheduleCreate(request: TelclaudeMcpScheduleCreateRequest): Promise<unknown>;
 	scheduleList(request: TelclaudeMcpScheduleListRequest): Promise<unknown>;
 	scheduleCancel(request: TelclaudeMcpScheduleCancelRequest): Promise<unknown>;
+	scheduleUpdate(request: TelclaudeMcpScheduleUpdateRequest): Promise<unknown>;
 	githubListRepos(request: TelclaudeMcpGithubListReposRequest): Promise<unknown>;
 	githubListRefs(request: TelclaudeMcpGithubListRefsRequest): Promise<unknown>;
 	githubGetTree(request: TelclaudeMcpGithubGetTreeRequest): Promise<unknown>;
@@ -281,6 +289,7 @@ export type TelclaudeMcpBridge = {
 	tc_schedule_create(input: unknown): Promise<unknown>;
 	tc_schedule_list(input: unknown): Promise<unknown>;
 	tc_schedule_cancel(input: unknown): Promise<unknown>;
+	tc_schedule_update(input: unknown): Promise<unknown>;
 	tc_github_list_repos(input: unknown): Promise<unknown>;
 	tc_github_list_refs(input: unknown): Promise<unknown>;
 	tc_github_get_tree(input: unknown): Promise<unknown>;
@@ -506,6 +515,15 @@ const ScheduleListInputSchema = z
 const ScheduleCancelInputSchema = z
 	.object({
 		jobId: NonEmptyString.max(128),
+	})
+	.strip();
+
+const ScheduleUpdateInputSchema = z
+	.object({
+		jobId: NonEmptyString.max(128),
+		schedule: ScheduleInputSchema,
+		prompt: NonEmptyString.max(2_000),
+		label: NonEmptyString.max(80).optional(),
 	})
 	.strip();
 
@@ -865,6 +883,22 @@ export function createTelclaudeMcpBridge(
 			);
 			const parsed = ScheduleCancelInputSchema.parse(input);
 			return dependencies.scheduleCancel({ ...stamp, jobId: parsed.jobId });
+		},
+
+		async tc_schedule_update(input) {
+			assertNoClientTurnAuthority(input);
+			assertCapabilityScope(
+				normalizedAuthority,
+				TELCLAUDE_MCP_TOOL_CAPABILITY_SCOPES.tc_schedule_update,
+			);
+			const parsed = ScheduleUpdateInputSchema.parse(input);
+			return dependencies.scheduleUpdate({
+				...stamp,
+				jobId: parsed.jobId,
+				schedule: parsed.schedule,
+				prompt: parsed.prompt,
+				...(parsed.label ? { label: parsed.label } : {}),
+			});
 		},
 
 		async tc_github_list_repos(input) {

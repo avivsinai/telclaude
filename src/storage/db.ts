@@ -406,6 +406,8 @@ function initializeSchema(database: Database.Database): void {
 			action_prompt TEXT,
 			action_allowed_skills_json TEXT,
 			action_preprocess_json TEXT,
+			action_reminder_id TEXT,
+			action_reminder_revision INTEGER,
 			owner_id TEXT,
 			delivery_target_kind TEXT NOT NULL DEFAULT 'origin',
 			delivery_chat_id INTEGER,
@@ -430,6 +432,112 @@ function initializeSchema(database: Database.Database): void {
 			message TEXT NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_cron_runs_job_started ON cron_runs(job_id, started_at DESC);
+
+		-- Household reminder revisions. Destination addresses are never stored here;
+		-- delivery resolves the current server-owned household binding at fire time.
+		CREATE TABLE IF NOT EXISTS household_reminders (
+			id TEXT NOT NULL,
+			revision INTEGER NOT NULL CHECK(revision > 0),
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			sender_principal_hash TEXT NOT NULL,
+			recipient_principal_hash TEXT NOT NULL,
+			binding_fingerprint TEXT NOT NULL,
+			consent_hash TEXT NOT NULL,
+			text TEXT NOT NULL,
+			label TEXT,
+			locale TEXT NOT NULL CHECK(locale = 'he-IL'),
+			source_kind TEXT NOT NULL CHECK(source_kind IN ('parent','clalit-appointment')),
+			source_observation_hash TEXT,
+			time_zone TEXT NOT NULL CHECK(time_zone = 'Asia/Jerusalem'),
+			local_date_time TEXT NOT NULL,
+			resolved_at_ms INTEGER NOT NULL,
+			resolved_at TEXT NOT NULL,
+			offset_minutes INTEGER NOT NULL,
+			content_hash TEXT NOT NULL,
+			schedule_hash TEXT NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('pending_confirmation','scheduled','paused_confirmation','superseded','cancelled','revoked','completed','failed_terminal')),
+			confirmed_at_ms INTEGER,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL,
+			PRIMARY KEY (id, revision)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_reminders_authority
+			ON household_reminders(actor_id, subject_user_id, profile_id, id, revision DESC);
+		CREATE INDEX IF NOT EXISTS idx_household_reminders_due
+			ON household_reminders(status, resolved_at_ms);
+
+		CREATE TABLE IF NOT EXISTS household_reminder_proposals (
+			ref TEXT PRIMARY KEY,
+			action TEXT NOT NULL CHECK(action IN ('create','update','cancel')),
+			reminder_id TEXT NOT NULL,
+			base_revision INTEGER NOT NULL CHECK(base_revision > 0),
+			proposed_revision INTEGER NOT NULL CHECK(proposed_revision > 0),
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			sender_principal_hash TEXT NOT NULL,
+			recipient_principal_hash TEXT NOT NULL,
+			binding_fingerprint TEXT NOT NULL,
+			consent_hash TEXT NOT NULL,
+			proposal_hash TEXT NOT NULL,
+			proposed_payload_json TEXT,
+			status TEXT NOT NULL CHECK(status IN ('pending','confirmed','rejected','expired')),
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL,
+			resolved_at_ms INTEGER
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_reminder_proposals_conversation_pending
+			ON household_reminder_proposals(conversation_id) WHERE status = 'pending';
+		CREATE INDEX IF NOT EXISTS idx_household_reminder_proposals_authority
+			ON household_reminder_proposals(actor_id, subject_user_id, profile_id, created_at_ms DESC);
+
+		CREATE TABLE IF NOT EXISTS household_reminder_interception_receipts (
+			receipt_id TEXT PRIMARY KEY,
+			event_id_hash TEXT NOT NULL,
+			message_id_hash TEXT NOT NULL,
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			proposal_ref TEXT NOT NULL,
+			proposal_hash TEXT NOT NULL,
+			template_id TEXT NOT NULL CHECK(template_id IN ('confirmed','rejected','unchanged','proposal_expired','failed')),
+			status TEXT NOT NULL CHECK(status IN ('pending_ack','acked')),
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_reminder_interception_receipts_status
+			ON household_reminder_interception_receipts(status, updated_at_ms);
+
+		CREATE TABLE IF NOT EXISTS household_reminder_fires (
+			fire_id TEXT PRIMARY KEY,
+			reminder_id TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			scheduled_for_ms INTEGER NOT NULL,
+			state TEXT NOT NULL CHECK(state IN ('claimed','prepared','dispatched','delivered','retryable_failed','dead_lettered','cancelled')),
+			attempt_count INTEGER NOT NULL CHECK(attempt_count > 0),
+			lease_expires_at_ms INTEGER,
+			outbound_ref TEXT,
+			edge_prepared_hash TEXT,
+			idempotency_key TEXT,
+			whatsapp_message_id TEXT,
+			receipt_status TEXT,
+			platform_message_id_hash TEXT,
+			failure_class TEXT,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL,
+			UNIQUE(reminder_id, revision, scheduled_for_ms),
+			FOREIGN KEY(reminder_id, revision) REFERENCES household_reminders(id, revision)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_reminder_fires_state
+			ON household_reminder_fires(state, updated_at_ms);
 
 		-- Plan approvals (two-phase execution preview for FULL_ACCESS)
 		CREATE TABLE IF NOT EXISTS plan_approvals (
@@ -709,6 +817,18 @@ function initializeSchema(database: Database.Database): void {
 		"action_preprocess_json",
 		"ALTER TABLE cron_jobs ADD COLUMN action_preprocess_json TEXT",
 	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_reminder_id",
+		"ALTER TABLE cron_jobs ADD COLUMN action_reminder_id TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_reminder_revision",
+		"ALTER TABLE cron_jobs ADD COLUMN action_reminder_revision INTEGER",
+	);
 	ensureColumn(database, "cron_jobs", "owner_id", "ALTER TABLE cron_jobs ADD COLUMN owner_id TEXT");
 	ensureColumn(
 		database,
@@ -759,11 +879,52 @@ function initializeSchema(database: Database.Database): void {
 		"turn_conversation_ref",
 		"ALTER TABLE plan_approvals ADD COLUMN turn_conversation_ref TEXT",
 	);
+	ensureHouseholdReminderColumns(database);
 	ensureMemoryEntriesColumns(database);
 	migrateDefaultTelegramMemorySource(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
+}
+
+function ensureHouseholdReminderColumns(database: Database.Database): void {
+	const legacyConsentHash = `sha256:${"0".repeat(64)}`;
+	ensureColumn(
+		database,
+		"household_reminders",
+		"consent_hash",
+		`ALTER TABLE household_reminders ADD COLUMN consent_hash TEXT NOT NULL DEFAULT '${legacyConsentHash}'`,
+	);
+	ensureColumn(
+		database,
+		"household_reminder_proposals",
+		"consent_hash",
+		`ALTER TABLE household_reminder_proposals ADD COLUMN consent_hash TEXT NOT NULL DEFAULT '${legacyConsentHash}'`,
+	);
+
+	const nullableColumns = [
+		["lease_expires_at_ms", "INTEGER"],
+		["outbound_ref", "TEXT"],
+		["edge_prepared_hash", "TEXT"],
+		["idempotency_key", "TEXT"],
+		["whatsapp_message_id", "TEXT"],
+		["receipt_status", "TEXT"],
+		["platform_message_id_hash", "TEXT"],
+		["failure_class", "TEXT"],
+	] as const;
+	for (const [column, type] of nullableColumns) {
+		ensureColumn(
+			database,
+			"household_reminder_fires",
+			column,
+			`ALTER TABLE household_reminder_fires ADD COLUMN ${column} ${type}`,
+		);
+	}
+
+	database.exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_household_reminder_fires_idempotency
+			ON household_reminder_fires(idempotency_key) WHERE idempotency_key IS NOT NULL
+	`);
 }
 
 /**

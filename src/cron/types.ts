@@ -24,6 +24,11 @@ export type CronAction =
 			kind: "curator-scan";
 	  }
 	| {
+			kind: "household-reminder";
+			reminderId: string;
+			revision: number;
+	  }
+	| {
 			kind: "agent-prompt";
 			prompt: string;
 			/**
@@ -100,4 +105,5 @@ export type CronCoverage = {
 export type CronActionResult = {
 	ok: boolean;
 	message: string;
+	retryAtMs?: number;
 };

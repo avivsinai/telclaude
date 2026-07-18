@@ -72,4 +72,28 @@ describe("executeCronAction social heartbeat", () => {
 		expect(runCuratorScanMock).toHaveBeenCalledWith({ producerKind: "system" });
 		expect(executeScheduledAgentPromptActionMock).not.toHaveBeenCalled();
 	});
+
+	it("routes household reminder wake-ups only to the injected deterministic executor", async () => {
+		const executeHouseholdReminder = vi.fn(async () => ({
+			ok: false,
+			message: "retry",
+			retryAtMs: 123_000,
+		}));
+		const job = {
+			id: "household-reminder:reminder-1",
+			action: { kind: "household-reminder", reminderId: "reminder-1", revision: 2 },
+		} as CronActionJob;
+
+		await expect(
+			executeCronAction(job, {} as CronActionConfig, new AbortController().signal, {
+				executeHouseholdReminder,
+			}),
+		).resolves.toEqual({ ok: false, message: "retry", retryAtMs: 123_000 });
+		expect(executeHouseholdReminder).toHaveBeenCalledWith(
+			{ reminderId: "reminder-1", revision: 2 },
+			expect.any(AbortSignal),
+		);
+		expect(executeScheduledAgentPromptActionMock).not.toHaveBeenCalled();
+		expect(handlePrivateHeartbeatMock).not.toHaveBeenCalled();
+	});
 });

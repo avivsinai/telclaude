@@ -22,9 +22,11 @@ export {
 	getCronStatusSummary,
 	listCronJobs,
 	listCronRuns,
+	pauseHouseholdReminderCronWakeup,
 	removeCronJob,
 	resetRunningCronJobs,
 	setCronJobEnabled,
+	upsertHouseholdReminderCronWakeup,
 } from "./store.js";
 export type {
 	CronAction,

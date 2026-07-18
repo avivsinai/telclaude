@@ -82,6 +82,19 @@ describe("operator profile resolution", () => {
 
 	it("resolves household WhatsApp senders to disjoint profile and subject bindings", async () => {
 		const { resolveWhatsAppHouseholdBinding } = await import("../../src/config/profiles.js");
+		const reminderConsent = {
+			state: "granted",
+			ceremonyVersion: "phase0.v1",
+			ceremonyHash: `sha256:${"c".repeat(64)}`,
+			verifiedChannelHash: `sha256:${"d".repeat(64)}`,
+			categories: {
+				proactiveDelivery: true,
+				scheduleManagement: true,
+				retentionDisclosure: true,
+			},
+			recordedAt: "2026-07-17T09:00:00.000Z",
+			operatorId: "operator:phase0-admin",
+		};
 		const cfg = {
 			profiles: [
 				{
@@ -98,6 +111,7 @@ describe("operator profile resolution", () => {
 							replyAddress: "whatsapp:+15551234567",
 							displayName: "Parent A",
 							subjectUserId: "household:parent-a",
+							reminderConsent,
 						},
 					],
 				},
@@ -128,6 +142,7 @@ describe("operator profile resolution", () => {
 			memorySource: "household:parent-a",
 			writableNamespace: "household:parent-a",
 			domain: "household",
+			reminderConsent,
 			profile: { id: "parent-a" },
 		});
 		expect(resolveWhatsAppHouseholdBinding("whatsapp:+15557654321", cfg)).toMatchObject({

@@ -159,6 +159,9 @@ export function createSideEffectHumanApprovalController(
 
 	return {
 		async request(input) {
+			if (input.record.kind === "scheduled-outbound") {
+				return scheduledOutboundHumanApprovalFailure();
+			}
 			const authorizationNowMs = nowMs();
 			const prepared = prepareApprovalBinding(input.record, dependencies, authorizationNowMs);
 			if (!prepared.ok) return prepared;
@@ -203,6 +206,9 @@ export function createSideEffectHumanApprovalController(
 		},
 
 		async consume(input) {
+			if (input.record.kind === "scheduled-outbound") {
+				return scheduledOutboundHumanApprovalFailure();
+			}
 			const authorizationNowMs = nowMs();
 			const precheck = prepareApprovalBinding(input.record, dependencies, authorizationNowMs);
 			if (!precheck.ok) return precheck;
@@ -286,6 +292,9 @@ export function createSideEffectHumanApprovalController(
 		},
 
 		takeServerSideApproval(input) {
+			if (input.record.kind === "scheduled-outbound") {
+				return scheduledOutboundHumanApprovalFailure();
+			}
 			const stored = serverSideApprovals.get(requiredTrimmed(input.actionRef, "actionRef"));
 			if (!stored) {
 				return failure(
@@ -420,6 +429,7 @@ async function approvalTokenMintStepUpFailure(
 	nowMs: number,
 	requiresFreshStepUp: (record: TelclaudeMcpSideEffectRecord) => boolean,
 ): Promise<SideEffectHumanApprovalFailure | null> {
+	if (record.kind === "scheduled-outbound") return scheduledOutboundHumanApprovalFailure();
 	if (!requiresFreshStepUp(record)) return null;
 	try {
 		const verified = await stepUpVerification.verify({
@@ -459,6 +469,9 @@ function prepareApprovalBinding(
 			readonly body: string;
 	  }
 	| SideEffectHumanApprovalFailure {
+	if (record.kind === "scheduled-outbound") {
+		return scheduledOutboundHumanApprovalFailure();
+	}
 	if (record.status !== "prepared") {
 		return failure("effect_not_prepared", "side effect is not prepared", false);
 	}
@@ -502,6 +515,7 @@ function approvalAuthorityFailure(
 	record: TelclaudeMcpSideEffectRecord,
 	nowMs: number,
 ): SideEffectHumanApprovalFailure | null {
+	if (record.kind === "scheduled-outbound") return scheduledOutboundHumanApprovalFailure();
 	if (record.approverActorId !== input.approverActorId) {
 		return failure(
 			"approval_wrong_approver",
@@ -530,6 +544,7 @@ function approvalRowBindingFailure(
 		readonly body: string;
 	},
 ): SideEffectHumanApprovalFailure | null {
+	if (record.kind === "scheduled-outbound") return scheduledOutboundHumanApprovalFailure();
 	if (approval.requestId !== record.approvalRequestId) {
 		return failure("approval_binding_mismatch", "approval requestId mismatch", false);
 	}
@@ -558,6 +573,9 @@ function renderHumanVisibleApproval(
 		"renderProviderApproval" | "renderOutboundApproval" | "renderBrowserWriteApproval"
 	>,
 ): string {
+	if (record.kind === "scheduled-outbound") {
+		throw new Error("scheduled outbound cannot be rendered for human approval");
+	}
 	if (record.kind === "provider") {
 		return requiredTrimmed(
 			dependencies.renderProviderApproval?.(record) ?? record.wysiwysRender,
@@ -577,6 +595,9 @@ function renderHumanVisibleApproval(
 }
 
 function storedHumanVisibleRenderFor(record: TelclaudeMcpSideEffectRecord): string {
+	if (record.kind === "scheduled-outbound") {
+		throw new Error("scheduled outbound cannot be rendered for human approval");
+	}
 	if (record.kind === "provider") return record.wysiwysRender;
 	if (record.kind === "browser-write") return defaultBrowserWriteRender(record);
 	return record.renderedBody;
@@ -642,6 +663,9 @@ function formatSideEffectHumanApprovalBody(
 	humanVisibleRender: string,
 	nowMs: number,
 ): string {
+	if (record.kind === "scheduled-outbound") {
+		throw new Error("scheduled outbound cannot be formatted for human approval");
+	}
 	const common = [
 		`Action ref: ${record.ref}`,
 		`Actor: ${record.actorId}`,
@@ -806,4 +830,12 @@ function approvalConsumeFailure(error: string): SideEffectHumanApprovalFailure {
 
 function failure(code: string, reason: string, retryable: boolean): SideEffectHumanApprovalFailure {
 	return { ok: false, code, reason, retryable };
+}
+
+function scheduledOutboundHumanApprovalFailure(): SideEffectHumanApprovalFailure {
+	return failure(
+		"scheduled_outbound_human_approval_denied",
+		"scheduled outbound uses only the server-owned reminder policy authorizer",
+		false,
+	);
 }

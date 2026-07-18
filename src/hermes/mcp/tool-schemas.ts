@@ -310,6 +310,7 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 		description:
 			"Create a relay-owned scheduled reminder/task for the operator (requires the schedule.write capability scope). " +
 			"The reminder is delivered to the operator's own home target — you cannot target another chat or owner; delivery and ownership are resolved server-side from your authority. " +
+			"For a household authority, only a one-shot `at` reminder is allowed: provide `at` as Jerusalem wall time `YYYY-MM-DDTHH:mm`; the relay creates a pending proposal and NOTHING is scheduled until the parent replies 1 to the fixed confirmation prompt (2 cancels). `every` and `cron` are declined with a one-shot alternative. " +
 			"`at` is an absolute ISO-8601 instant (interpreted as UTC if no offset is given) and must be in the future; `every` is a positive interval in milliseconds; `cron` is a 5-field expression (minute hour day month weekday).",
 		inputSchema: objectSchema(
 			{
@@ -360,7 +361,7 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 		name: "tc_schedule_list",
 		description:
 			"List the scheduled reminders/tasks owned by the current authority (requires the schedule.read capability scope). " +
-			"Only your own jobs are returned — you cannot see another owner's schedules.",
+			"Only your own jobs are returned — you cannot see another owner's schedules. Household authorities see only their own reminder revisions and pending/confirmed state.",
 		inputSchema: objectSchema(
 			{
 				limit: {
@@ -378,7 +379,7 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 		name: "tc_schedule_cancel",
 		description:
 			"Cancel a scheduled reminder/task by job id (requires the schedule.write capability scope). " +
-			"You can only cancel a job you own; cancelling another owner's job is denied.",
+			"You can only cancel a job you own; cancelling another owner's job is denied. For a household authority this creates a pending cancellation proposal; the reminder is paused but not cancelled until the parent replies 1 to the fixed 1/2 confirmation prompt.",
 		inputSchema: objectSchema(
 			{
 				jobId: {
@@ -388,6 +389,41 @@ export const TELCLAUDE_MCP_TOOL_DEFINITIONS: readonly TelclaudeMcpToolDefinition
 				},
 			},
 			["jobId"],
+			false,
+		),
+	},
+	{
+		name: "tc_schedule_update",
+		description:
+			"Propose an update to a household one-shot reminder (requires the schedule.write capability scope). " +
+			"Provide the owned reminder id as `jobId`, a Jerusalem wall time `YYYY-MM-DDTHH:mm` in a one-shot `at` schedule, and the complete replacement prompt. The relay pauses the current revision and creates a pending proposal; NOTHING changes permanently until the parent replies 1 to the fixed confirmation prompt (2 keeps the current reminder). Private schedules are not changed by this household-only tool.",
+		inputSchema: objectSchema(
+			{
+				jobId: {
+					type: "string",
+					minLength: 1,
+					maxLength: 128,
+				},
+				schedule: objectSchema(
+					{
+						kind: { const: "at" },
+						at: { type: "string", minLength: 1, maxLength: 64 },
+					},
+					["kind", "at"],
+					false,
+				),
+				prompt: {
+					type: "string",
+					minLength: 1,
+					maxLength: 2_000,
+				},
+				label: {
+					type: "string",
+					minLength: 1,
+					maxLength: 80,
+				},
+			},
+			["jobId", "schedule", "prompt"],
 			false,
 		),
 	},

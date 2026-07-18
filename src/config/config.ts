@@ -249,6 +249,41 @@ const HouseholdProviderConsentSchema = z
 		}
 	});
 
+const HouseholdReminderConsentSchema = z
+	.object({
+		state: z.enum(["granted", "revoked"]),
+		ceremonyVersion: z.literal("phase0.v1"),
+		ceremonyHash: Sha256RefSchema,
+		verifiedChannelHash: Sha256RefSchema,
+		categories: z
+			.object({
+				proactiveDelivery: z.literal(true),
+				scheduleManagement: z.literal(true),
+				retentionDisclosure: z.literal(true),
+			})
+			.strict(),
+		recordedAt: z.iso.datetime(),
+		operatorId: z.string().regex(/^operator:[a-z0-9-]{1,64}$/),
+		revokedAt: z.iso.datetime().optional(),
+	})
+	.strict()
+	.superRefine((receipt, ctx) => {
+		if (receipt.state === "revoked" && !receipt.revokedAt) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["revokedAt"],
+				message: "revoked household reminder consent requires revokedAt",
+			});
+		}
+		if (receipt.state === "granted" && receipt.revokedAt) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["revokedAt"],
+				message: "granted household reminder consent cannot include revokedAt",
+			});
+		}
+	});
+
 const WhatsAppHouseholdBindingSchema = z
 	.object({
 		bindingId: z.string().refine(isValidHouseholdBindingId, "invalid opaque household binding id"),
@@ -257,6 +292,8 @@ const WhatsAppHouseholdBindingSchema = z
 		displayName: z.string().trim().min(1).max(80),
 		subjectUserId: z.string().trim().min(1).max(80),
 		providerConsent: HouseholdProviderConsentSchema.optional(),
+		reminderConsent: HouseholdReminderConsentSchema.optional(),
+		remindersEnabled: z.boolean().optional(),
 	})
 	.superRefine((binding, ctx) => {
 		if (binding.replyAddress !== binding.address) {
@@ -282,6 +319,16 @@ const WhatsAppHouseholdBindingSchema = z
 				code: z.ZodIssueCode.custom,
 				path: ["providerConsent", "verifiedChannelHash"],
 				message: "household provider consent must bind the normalized WhatsApp address hash",
+			});
+		}
+		if (
+			binding.reminderConsent &&
+			binding.reminderConsent.verifiedChannelHash !== sha256Ref(binding.address)
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["reminderConsent", "verifiedChannelHash"],
+				message: "household reminder consent must bind the normalized WhatsApp channel hash",
 			});
 		}
 	});
@@ -805,6 +852,7 @@ const TelclaudeConfigSchema = z.object({
 				}
 			}
 		}),
+	householdReminders: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
 	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),

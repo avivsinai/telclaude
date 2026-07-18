@@ -5,6 +5,7 @@ import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalVerifier,
 	telclaudeMcpSideEffectRecordIntegrityFailures,
@@ -173,6 +174,100 @@ describe("Telclaude MCP side-effect ledger", () => {
 			"outbound paramsHash does not match current outbound params/render",
 			"outbound bodyHash does not match current outbound render",
 		]);
+	});
+
+	it("prepares a server-only scheduled outbound with immutable reminder policy evidence", () => {
+		const ledger = createTestLedger();
+		const prepared = ledger.prepare(scheduledOutboundInput());
+		const binding = getTelclaudeMcpSideEffectApprovalBinding(prepared);
+
+		expect(prepared).toMatchObject({
+			kind: "scheduled-outbound",
+			source: "household-reminder-system.v1",
+			domain: "household",
+			channel: "whatsapp",
+			preparedMediaRefs: [],
+			householdReminderPolicy: scheduledOutboundInput().householdReminderPolicy,
+		});
+		expect(prepared).not.toHaveProperty("approverActorId");
+		expect(prepared).not.toHaveProperty("turnConversationRef");
+		expect(binding).toMatchObject({
+			domainSeparator: "telclaude.hermes.mcp.side-effect.scheduled-outbound.approval.v1",
+			kind: "scheduled-outbound",
+			householdReminderPolicy: scheduledOutboundInput().householdReminderPolicy,
+			preparedMediaRefs: [],
+		});
+		expect(binding.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+		const changedPolicy = ledger.prepare(
+			scheduledOutboundInput({
+				householdReminderPolicy: {
+					...scheduledOutboundInput().householdReminderPolicy,
+					revision: 2,
+				},
+			}),
+		);
+		expect(changedPolicy.paramsHash).not.toBe(prepared.paramsHash);
+		expect(changedPolicy.bodyHash).not.toBe(prepared.bodyHash);
+		expect(
+			telclaudeMcpSideEffectRecordIntegrityFailures({
+				...prepared,
+				requestedBody: "תוכן שונה",
+			}),
+		).toEqual([
+			"scheduled outbound paramsHash does not match current policy/prepared outbound",
+			"scheduled outbound bodyHash does not match current policy/prepared outbound",
+		]);
+	});
+
+	it("uses a distinct deterministic scheduled ref namespace without consuming standard refs", () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "test" }),
+			nowMs: () => 1_000,
+			makeRef: () => "effect-standard-ref",
+		});
+		const scheduled = ledger.prepare(
+			scheduledOutboundInput({ ref: "scheduled-effect:reminder-fire-opaque" }),
+		);
+		expect(scheduled.ref).toBe("scheduled-effect:reminder-fire-opaque");
+		expect(() =>
+			ledger.prepare(scheduledOutboundInput({ ref: "effect-standard-ref" as never })),
+		).toThrow(/scheduled-effect namespace/);
+
+		const standard = ledger.prepare(outboundInput());
+		expect(standard.ref).toBe("effect-standard-ref");
+	});
+
+	it("rejects standard or human authority fields and non-household media-bearing scheduled sends", () => {
+		const ledger = createTestLedger();
+		expect(() =>
+			ledger.prepare(scheduledOutboundInput({ domain: "private" as "household" })),
+		).toThrow(/household/i);
+		expect(() =>
+			ledger.prepare(
+				scheduledOutboundInput({
+					preparedMediaRefs: [
+						{
+							quarantineId: "attachment:forbidden",
+							contentHash:
+								"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						},
+					],
+				}),
+			),
+		).toThrow(/media/i);
+		expect(() =>
+			ledger.prepare({
+				...scheduledOutboundInput(),
+				approverActorId: "telegram:operator",
+			} as TelclaudeMcpScheduledOutboundSideEffectPrepareInput),
+		).toThrow(/approverActorId/);
+		expect(() =>
+			ledger.prepare({
+				...scheduledOutboundInput(),
+				turnConversationRef: "turn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			} as TelclaudeMcpScheduledOutboundSideEffectPrepareInput),
+		).toThrow(/turnConversationRef/);
 	});
 
 	it("authorizes by stored ref only and passes precise stored binding to the verifier", async () => {
@@ -581,6 +676,60 @@ function outboundInput(
 		approvalRevision: 1,
 		approvalMetadata: { reviewer: "operator" },
 		idempotencyKey: "idem-outbound-1",
+		...overrides,
+	};
+}
+
+function scheduledOutboundInput(
+	overrides: Partial<TelclaudeMcpScheduledOutboundSideEffectPrepareInput> = {},
+): TelclaudeMcpScheduledOutboundSideEffectPrepareInput {
+	const channel = "whatsapp" as const;
+	const requestedBody = "תזכורת: להביא מסמכים";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+972501234567",
+		conversationId: "whatsapp:household:parent-a",
+	};
+	return {
+		kind: "scheduled-outbound",
+		source: "household-reminder-system.v1",
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		subjectUserId: "household:parent-a",
+		channel,
+		destination: "+972501234567",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
+		preparedMediaRefs: [],
+		conversationRef: "whatsapp:household:parent-a",
+		edgePreparedRef: "edge-reminder-fire-1",
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: [],
+		}),
+		idempotencyKey: "reminder-fire-idem-1",
+		householdReminderPolicy: {
+			reminderId: "reminder-1",
+			fireId: "reminder-fire-1",
+			revision: 1,
+			confirmedProposalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			scheduleHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			contentHash: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			bindingFingerprint: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			recipientPrincipalHash:
+				"sha256:5555555555555555555555555555555555555555555555555555555555555555",
+			systemPolicyPrincipal: "telclaude:household-reminder-system",
+			systemPolicyVersion: "phase0.v1",
+		},
+		ttlMs: 60_000,
 		...overrides,
 	};
 }

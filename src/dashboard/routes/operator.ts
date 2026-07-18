@@ -295,6 +295,11 @@ function summarizeAction(action: CronAction): {
 			return { actionKind: action.kind, actionSummary: "curator scan" };
 		case "agent-prompt":
 			return { actionKind: action.kind, actionSummary: "agent prompt (redacted)" };
+		case "household-reminder":
+			return {
+				actionKind: action.kind,
+				actionSummary: `household reminder (${action.reminderId}, revision=${action.revision})`,
+			};
 	}
 }
 

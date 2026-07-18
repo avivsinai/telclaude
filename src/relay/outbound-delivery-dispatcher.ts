@@ -71,14 +71,27 @@ export type InvalidPreparedOutboundFailureContext = {
 	readonly validationIssueCount: number;
 };
 
-export type OutboundSendFailureContext = PreparedOutbound | InvalidPreparedOutboundFailureContext;
+export type PreparedOutboundFailureContext = {
+	readonly kind: "prepared_outbound";
+	readonly channel: PreparedOutbound["channel"];
+	readonly outboundRef: string;
+	readonly idempotencyKey: string;
+	readonly sideEffectLedgerRef: string;
+	readonly maxAttempts: number;
+};
+
+export type OutboundSendFailureContext =
+	| PreparedOutboundFailureContext
+	| InvalidPreparedOutboundFailureContext;
 
 /**
  * Optional sink for a connector send FAILURE. The contract {@link DeliveryReceipt}
  * carries only a coarse deliveryStatus (no failure code / retryable flag), so CL-0
  * is deliberately receipt-only: the dispatcher maps any failure to a "failed"
  * receipt and surfaces the connector's classification (code, retryable) through
- * this hook. Retry orchestration consuming code/retryable lives OUTSIDE this seam.
+ * this hook. The hook is classification-only: it receives a frozen, content-minimal
+ * context, and its mutation or failure cannot veto or alter delivery. Retry
+ * orchestration consuming code/retryable lives OUTSIDE this seam.
  * Invalid prepared-outbound payloads are reported through a sanitized context,
  * never the raw rejected object.
  */
@@ -88,6 +101,47 @@ export type OutboundSendFailureHook = (
 ) => void;
 
 export type OutboundDeliveryDispatcher = (prepared: PreparedOutbound) => Promise<DeliveryReceipt>;
+
+export type OutboundDeliveryFailureClassification = {
+	readonly failureClass: string;
+	readonly retryable: boolean;
+};
+
+export type OutboundDeliveryFailureClassifier = {
+	record(
+		context: OutboundSendFailureContext,
+		failure: Extract<ChannelSendOutcome, { ok: false }>,
+	): void;
+	take(scheduledOutboundRef: string): OutboundDeliveryFailureClassification | null;
+};
+
+/**
+ * Classification-only handoff from CL-0 to the reminder retry loop. It records
+ * only scheduled ledger refs and connector code/retryability; it has no policy or
+ * authorization capability and cannot affect the dispatcher's receipt.
+ */
+export function createOutboundDeliveryFailureClassifier(): OutboundDeliveryFailureClassifier {
+	const classifications = new Map<string, OutboundDeliveryFailureClassification>();
+	return {
+		record(context, failure) {
+			if (
+				context.kind !== "prepared_outbound" ||
+				!context.sideEffectLedgerRef.startsWith("scheduled-effect:")
+			) {
+				return;
+			}
+			classifications.set(
+				context.sideEffectLedgerRef,
+				Object.freeze({ failureClass: failure.code, retryable: failure.retryable }),
+			);
+		},
+		take(scheduledOutboundRef) {
+			const classification = classifications.get(scheduledOutboundRef) ?? null;
+			classifications.delete(scheduledOutboundRef);
+			return classification;
+		},
+	};
+}
 
 export interface CreateOutboundDeliveryDispatcherOptions {
 	readonly registry: EdgeOutboundExecutorRegistry;
@@ -154,7 +208,7 @@ export function createOutboundDeliveryDispatcher(
 				prepared,
 				preparedCheck.error.issues.length,
 			);
-			options.onSendFailure?.(invalidContext, {
+			notifySendFailure(options.onSendFailure, invalidContext, {
 				ok: false,
 				code: "outbound_prepared_invalid",
 				reason: "prepared outbound failed contract validation",
@@ -210,7 +264,7 @@ export function createOutboundDeliveryDispatcher(
 		if (!outcome.ok) {
 			// Surface the connector's failure classification (code/retryable) out-of-band;
 			// the receipt itself is coarse "failed" (the contract carries no failure code).
-			options.onSendFailure?.(checkedPrepared, outcome);
+			notifySendFailure(options.onSendFailure, preparedFailureContext(checkedPrepared), outcome);
 			return receipt(checkedPrepared, "failed", { failed: true });
 		}
 
@@ -226,6 +280,30 @@ export function createOutboundDeliveryDispatcher(
 			}
 		}
 		return receipt(checkedPrepared, "sent", { platformMessageId: outcome.platformMessageId });
+	};
+}
+
+function notifySendFailure(
+	hook: OutboundSendFailureHook | undefined,
+	context: OutboundSendFailureContext,
+	failure: Extract<ChannelSendOutcome, { ok: false }>,
+): void {
+	if (!hook) return;
+	try {
+		hook(Object.freeze({ ...context }), Object.freeze({ ...failure }));
+	} catch {
+		// Classification sinks are observability only. Transport outcome is authoritative.
+	}
+}
+
+function preparedFailureContext(prepared: PreparedOutbound): PreparedOutboundFailureContext {
+	return {
+		kind: "prepared_outbound",
+		channel: prepared.channel,
+		outboundRef: prepared.outboundRef,
+		idempotencyKey: prepared.idempotencyKey,
+		sideEffectLedgerRef: prepared.sideEffectLedgerRef,
+		maxAttempts: prepared.retryPolicy.maxAttempts,
 	};
 }
 

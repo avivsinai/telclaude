@@ -21,6 +21,7 @@ import {
 	type TelclaudeMcpBrowserWriteSideEffectPrepareInput,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpScheduledOutboundSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
 import {
@@ -88,6 +89,22 @@ describe("Hermes MCP side-effect human approvals", () => {
 		expect(approval?.body).toContain(`Body hash: ${record.bodyHash}`);
 		expect(approval?.body).toContain(`Binding digest: ${request.bindingDigest}`);
 		expect(approval?.body).toContain(`"ref":"${record.ref}"`);
+	});
+
+	it("excludes scheduled outbound records from human approval and reply auto-grant", async () => {
+		const record = prepareScheduledOutboundRecord();
+		const controller = createController();
+
+		await expect(controller.request({ record, chatId: 111 })).resolves.toEqual({
+			ok: false,
+			code: "scheduled_outbound_human_approval_denied",
+			reason: "scheduled outbound uses only the server-owned reminder policy authorizer",
+			retryable: false,
+		});
+		expect(() => requestTelclaudeLiveMcpSideEffectApproval(controller, record)).toThrow(
+			"scheduled outbound cannot enter the live human approval lane",
+		);
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
 	});
 
 	it("publishes household provider approvals immediately after the durable row exists", async () => {
@@ -1008,6 +1025,19 @@ function prepareOutboundRecord(
 	return record;
 }
 
+function prepareScheduledOutboundRecord(): Extract<
+	TelclaudeMcpSideEffectRecord,
+	{ kind: "scheduled-outbound" }
+> {
+	const ledger = createTelclaudeMcpSideEffectLedger({
+		nowMs: () => 100_000,
+		makeRef: () => `effect-human-scheduled-${++fixtureRefCounter}`,
+		defaultTtlMs: 60_000,
+		verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+	});
+	return ledger.prepare(scheduledOutboundPrepareInput());
+}
+
 const BROWSER_WRITE_COMMITMENT_SECRET = "browser-write-human-approval-secret-32b";
 
 class FakeBrowserPage implements BrowserActEvidencePage {
@@ -1183,6 +1213,58 @@ function outboundPrepareInput(
 		turnConversationRef: `turn_${"1".repeat(32)}`,
 		idempotencyKey: "idem-outbound-1",
 		...overrides,
+	};
+}
+
+function scheduledOutboundPrepareInput(): TelclaudeMcpScheduledOutboundSideEffectPrepareInput {
+	const requestedBody = "תזכורת: להביא מסמכים";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+972501234567",
+		conversationId: "whatsapp:household:parent-a",
+	};
+	return {
+		kind: "scheduled-outbound",
+		source: "household-reminder-system.v1",
+		actorId: "household:whatsapp:parent-a",
+		profileId: "parent-a",
+		domain: "household",
+		subjectUserId: "household:parent-a",
+		channel: "whatsapp",
+		destination: "+972501234567",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
+		preparedMediaRefs: [],
+		conversationRef: "whatsapp:household:parent-a",
+		edgePreparedRef: "edge-reminder-fire-1",
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel: "whatsapp",
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: [],
+		}),
+		idempotencyKey: "reminder-fire-idem-1",
+		householdReminderPolicy: {
+			reminderId: "reminder-1",
+			fireId: "reminder-fire-1",
+			revision: 1,
+			confirmedProposalHash:
+				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			scheduleHash:
+				"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			contentHash:
+				"sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			bindingFingerprint:
+				"sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			actorId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			profileId: "parent-a",
+			recipientPrincipalHash:
+				"sha256:5555555555555555555555555555555555555555555555555555555555555555",
+			systemPolicyPrincipal: "telclaude:household-reminder-system",
+			systemPolicyVersion: "phase0.v1",
+		},
 	};
 }
 

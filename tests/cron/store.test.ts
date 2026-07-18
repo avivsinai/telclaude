@@ -123,6 +123,70 @@ describe("cron store", () => {
 		expect(getCronJob("cron-curator")?.action).toEqual({ kind: "curator-scan" });
 	});
 
+	it("persists a content-free household reminder wake-up and reschedules only typed retries", async () => {
+		const { addCronJob, claimDueCronJobs, completeClaimedCronJob, getCronJob, setCronJobEnabled } =
+			await import("../../src/cron/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		const now = Date.parse("2026-02-21T10:00:00.000Z");
+		const dueAt = now + 60_000;
+		const retryAt = dueAt + 30_000;
+
+		const created = addCronJob(
+			{
+				id: "household-reminder:reminder-1",
+				name: "household reminder wake-up",
+				schedule: { kind: "at", at: new Date(dueAt).toISOString() },
+				action: { kind: "household-reminder", reminderId: "reminder-1", revision: 2 },
+			},
+			now,
+		);
+		expect(created.action).toEqual({
+			kind: "household-reminder",
+			reminderId: "reminder-1",
+			revision: 2,
+		});
+		expect(created.deliveryTarget).toEqual({ kind: "origin" });
+		expect(
+			getDb()
+				.prepare(
+					`SELECT action_prompt, action_service_id, owner_id, delivery_chat_id,
+					        action_reminder_id, action_reminder_revision
+					 FROM cron_jobs WHERE id = ?`,
+				)
+				.get(created.id),
+		).toEqual({
+			action_prompt: null,
+			action_service_id: null,
+			owner_id: null,
+			delivery_chat_id: null,
+			action_reminder_id: "reminder-1",
+			action_reminder_revision: 2,
+		});
+
+		const first = claimDueCronJobs(dueAt, 1)[0];
+		completeClaimedCronJob({
+			job: first,
+			startedAtMs: dueAt,
+			finishedAtMs: dueAt + 1,
+			status: "error",
+			message: "transient",
+			retryAtMs: retryAt,
+		});
+		expect(getCronJob(created.id)).toMatchObject({ enabled: true, nextRunAtMs: retryAt });
+
+		const second = claimDueCronJobs(retryAt, 1)[0];
+		setCronJobEnabled(created.id, false, retryAt);
+		completeClaimedCronJob({
+			job: second,
+			startedAtMs: retryAt,
+			finishedAtMs: retryAt + 1,
+			status: "error",
+			message: "transient after cancellation",
+			retryAtMs: retryAt + 30_000,
+		});
+		expect(getCronJob(created.id)).toMatchObject({ enabled: false, nextRunAtMs: null });
+	});
+
 	it("claims and completes due jobs", async () => {
 		const { addCronJob, claimDueCronJobs, completeClaimedCronJob, getCronJob } = await import(
 			"../../src/cron/store.js"
@@ -155,6 +219,48 @@ describe("cron store", () => {
 		expect(updated?.running).toBe(false);
 		expect(updated?.lastStatus).toBe("success");
 		expect(updated?.nextRunAtMs).toBe(now + 121_000);
+	});
+
+	it("does not let an old in-flight reminder disable its replacement revision", async () => {
+		const {
+			claimDueCronJobs,
+			completeClaimedCronJob,
+			getCronJob,
+			upsertHouseholdReminderCronWakeup,
+		} = await import("../../src/cron/store.js");
+		const now = Date.parse("2026-02-21T10:00:00.000Z");
+		const firstDueAt = now + 60_000;
+		const replacementDueAt = now + 3_600_000;
+		upsertHouseholdReminderCronWakeup({
+			reminderId: "reminder-1",
+			revision: 1,
+			resolvedAtMs: firstDueAt,
+			nowMs: now,
+		});
+		const first = claimDueCronJobs(firstDueAt, 1)[0];
+		upsertHouseholdReminderCronWakeup({
+			reminderId: "reminder-1",
+			revision: 2,
+			resolvedAtMs: replacementDueAt,
+			nowMs: firstDueAt + 1,
+		});
+
+		completeClaimedCronJob({
+			job: first,
+			startedAtMs: firstDueAt,
+			finishedAtMs: firstDueAt + 2,
+			status: "error",
+			message: "old revision lost authorization",
+		});
+
+		expect(getCronJob(first.id)).toMatchObject({
+			enabled: true,
+			running: false,
+			nextRunAtMs: replacementDueAt,
+			action: { kind: "household-reminder", reminderId: "reminder-1", revision: 2 },
+			lastRunAtMs: null,
+			lastStatus: null,
+		});
 	});
 
 	it("computes cron coverage for social and private jobs", async () => {

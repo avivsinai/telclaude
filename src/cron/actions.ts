@@ -9,10 +9,18 @@ import type { CronActionResult, CronJob } from "./types.js";
 
 const logger = getChildLogger({ module: "cron-actions" });
 
+export type CronActionDependencies = {
+	readonly executeHouseholdReminder?: (
+		input: { readonly reminderId: string; readonly revision: number },
+		signal: AbortSignal,
+	) => Promise<CronActionResult>;
+};
+
 export async function executeCronAction(
 	job: CronJob,
 	cfg: TelclaudeConfig,
 	_signal?: AbortSignal,
+	dependencies: CronActionDependencies = {},
 ): Promise<CronActionResult> {
 	switch (job.action.kind) {
 		case "private-heartbeat": {
@@ -101,6 +109,16 @@ export async function executeCronAction(
 		}
 		case "agent-prompt":
 			return executeScheduledAgentPromptAction(job, cfg, _signal ?? new AbortController().signal);
+		case "household-reminder":
+			return dependencies.executeHouseholdReminder
+				? dependencies.executeHouseholdReminder(
+						{ reminderId: job.action.reminderId, revision: job.action.revision },
+						_signal ?? new AbortController().signal,
+					)
+				: {
+						ok: false,
+						message: "household reminder executor is unavailable",
+					};
 		case "curator-scan": {
 			const result = runCuratorScan({ producerKind: "system" });
 			return {

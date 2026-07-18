@@ -59,6 +59,9 @@ export function requestTelclaudeLiveMcpSideEffectApproval(
 	record: TelclaudeMcpSideEffectRecord,
 	publish?: TelclaudeLiveMcpSideEffectApprovalPublisher,
 ): Promise<void> {
+	if (record.kind === "scheduled-outbound") {
+		throw new Error("scheduled outbound cannot enter the live human approval lane");
+	}
 	const chatId = chatIdFromTelegramActor(record.approverActorId);
 	if (chatId === null) {
 		throw new Error("live MCP side-effect approverActorId must be formatted as telegram:<chat-id>");

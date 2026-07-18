@@ -29,6 +29,8 @@ import {
 	type WhatsAppInboundDispatchInput,
 	type WhatsAppInboundDispatchResult,
 } from "./whatsapp-inbound-dispatcher.js";
+import type { WhatsAppProviderChallengeInterceptor } from "./whatsapp-provider-challenge-interceptor.js";
+import type { WhatsAppReminderConfirmationInterceptor } from "./whatsapp-reminder-confirmation-interceptor.js";
 
 export const WHATSAPP_INBOUND_BRIDGE_PATH = "/v1/whatsapp/inbound";
 export const WHATSAPP_INBOUND_SIGNATURE_HEADER = "x-telclaude-whatsapp-inbound-signature";
@@ -65,9 +67,28 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
 	readonly interceptBeforePersistence?: CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"];
+	readonly providerChallengeInterceptor?: WhatsAppProviderChallengeInterceptor;
+	readonly reminderConfirmationInterceptor?: WhatsAppReminderConfirmationInterceptor;
 };
 
 let defaultWhatsAppInboundBridgeOptions: WhatsAppInboundBridgeHttpOptions | undefined;
+
+export function composeWhatsAppInboundInterceptors(input: {
+	readonly providerChallenge?: WhatsAppProviderChallengeInterceptor;
+	readonly reminderConfirmation?: WhatsAppReminderConfirmationInterceptor;
+}): CreateWhatsAppInboundCl1PipelineOptions["interceptBeforePersistence"] | undefined {
+	const interceptors = [input.providerChallenge, input.reminderConfirmation].filter(
+		(interceptor): interceptor is NonNullable<typeof interceptor> => interceptor !== undefined,
+	);
+	if (interceptors.length === 0) return undefined;
+	return async (context) => {
+		for (const interceptor of interceptors) {
+			const result = await interceptor(context);
+			if (result.handled) return result;
+		}
+		return { handled: false };
+	};
+}
 
 export function setDefaultWhatsAppInboundBridgeOptions(
 	options: WhatsAppInboundBridgeHttpOptions | null,
@@ -281,6 +302,12 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 	const resolveIdentity = operatorResolver
 		? combineWhatsAppIdentityResolvers(operatorResolver, householdResolver)
 		: householdResolver;
+	const composedInterceptor =
+		options?.interceptBeforePersistence ??
+		composeWhatsAppInboundInterceptors({
+			providerChallenge: options?.providerChallengeInterceptor,
+			reminderConfirmation: options?.reminderConfirmationInterceptor,
+		});
 	return {
 		ok: true,
 		signatureSecret: signatureSecret.value,
@@ -293,9 +320,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		conversationStore: options?.conversationStore ?? createRelayConversationStore(),
 		quarantineStore: options?.quarantineStore ?? createAttachmentQuarantineStore(),
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,
-		...(options?.interceptBeforePersistence
-			? { interceptBeforePersistence: options.interceptBeforePersistence }
-			: {}),
+		...(composedInterceptor ? { interceptBeforePersistence: composedInterceptor } : {}),
 		...(options?.nowMs ? { nowMs: options.nowMs } : {}),
 		...(options?.cwd ? { cwd: options.cwd } : {}),
 		...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),

@@ -395,6 +395,7 @@ mcp_servers:
         - tc_schedule_create
         - tc_schedule_list
         - tc_schedule_cancel
+        - tc_schedule_update
         - tc_browse
         - tc_browse_act
         - tc_browse_act_prepare

@@ -8,12 +8,14 @@ import {
 	TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
 import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpBrowserWriteApprovalBinding,
 	type TelclaudeMcpOutboundApprovalBinding,
 	type TelclaudeMcpProviderApprovalBinding,
+	type TelclaudeMcpScheduledOutboundApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalVerifier,
 } from "./side-effect-ledger.js";
@@ -26,6 +28,7 @@ const JTI_DATABASE_NAME = "hermes_mcp_side_effect_approval_jti.sqlite";
 
 const NonEmptyString = z.string().trim().min(1);
 const HashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const Sha256RefSchema = HashSchema.transform((value) => value as `sha256:${string}`);
 const PrincipalHashSchema = HashSchema.transform((value) => value as `sha256:${string}`);
 const HmacRevisionSchema = z.string().regex(/^hmac-sha256:[a-f0-9]{64}$/);
 const EdgePreparedHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -55,6 +58,23 @@ const HouseholdReplyBindingSchema = z
 		senderPrincipalHash: PrincipalHashSchema,
 		recipientPrincipalHash: PrincipalHashSchema,
 		identityAssurance: z.literal("strong_link"),
+	})
+	.strict();
+const HouseholdReminderPolicySchema = z
+	.object({
+		reminderId: NonEmptyString,
+		fireId: NonEmptyString,
+		revision: z.number().int().min(1),
+		confirmedProposalHash: Sha256RefSchema,
+		scheduleHash: Sha256RefSchema,
+		contentHash: Sha256RefSchema,
+		bindingFingerprint: Sha256RefSchema,
+		actorId: NonEmptyString,
+		subjectUserId: NonEmptyString,
+		profileId: NonEmptyString,
+		recipientPrincipalHash: PrincipalHashSchema,
+		systemPolicyPrincipal: z.literal("telclaude:household-reminder-system"),
+		systemPolicyVersion: z.literal("phase0.v1"),
 	})
 	.strict();
 
@@ -112,6 +132,32 @@ const OutboundBindingSchema = z
 	})
 	.strict();
 
+const ScheduledOutboundBindingSchema = z
+	.object({
+		domainSeparator: z.literal(TELCLAUDE_MCP_SCHEDULED_OUTBOUND_APPROVAL_DOMAIN),
+		ref: NonEmptyString,
+		kind: z.literal("scheduled-outbound"),
+		source: z.literal("household-reminder-system.v1"),
+		actorId: NonEmptyString,
+		profileId: NonEmptyString,
+		domain: z.literal("household"),
+		subjectUserId: NonEmptyString,
+		channel: z.literal("whatsapp"),
+		destination: NonEmptyString,
+		resolvedDestination: ResolvedDestinationSchema,
+		requestedBody: z.string(),
+		preparedMediaRefs: z.array(PreparedMediaRefSchema).max(0).readonly(),
+		conversationRef: NonEmptyString,
+		edgePreparedRef: NonEmptyString,
+		edgePreparedHash: EdgePreparedHashSchema,
+		idempotencyKey: NonEmptyString,
+		householdReminderPolicy: HouseholdReminderPolicySchema,
+		paramsHash: HashSchema,
+		bodyHash: HashSchema,
+		contentHash: HashSchema,
+	})
+	.strict();
+
 const BrowserWriteBindingSchema = z
 	.object({
 		domainSeparator: z.literal(TELCLAUDE_MCP_BROWSER_WRITE_APPROVAL_DOMAIN),
@@ -144,6 +190,7 @@ const BrowserWriteBindingSchema = z
 const BindingSchema = z.discriminatedUnion("kind", [
 	ProviderBindingSchema,
 	OutboundBindingSchema,
+	ScheduledOutboundBindingSchema,
 	BrowserWriteBindingSchema,
 ]);
 
@@ -355,6 +402,7 @@ function parseBinding(
 ):
 	| TelclaudeMcpProviderApprovalBinding
 	| TelclaudeMcpOutboundApprovalBinding
+	| TelclaudeMcpScheduledOutboundApprovalBinding
 	| TelclaudeMcpBrowserWriteApprovalBinding {
 	const result = BindingSchema.safeParse(binding);
 	if (!result.success) {
