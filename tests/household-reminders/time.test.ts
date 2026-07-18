@@ -66,7 +66,8 @@ describe("household reminder Jerusalem one-shot resolution", () => {
 	});
 
 	it("offers a one-shot alternative when recurring schedules are declined", () => {
-		expect(HOUSEHOLD_REMINDER_RECURRING_DECLINE_HE).toContain("חד-פעמית");
-		expect(HOUSEHOLD_REMINDER_RECURRING_DECLINE_HE).toContain("למחר ב-9:00");
+		expect(HOUSEHOLD_REMINDER_RECURRING_DECLINE_HE).toBe(
+			"כרגע אפשר לקבוע רק תזכורת חד-פעמית. אני יכול לקבוע תזכורת חד-פעמית — למשל למחר ב-9:00.",
+		);
 	});
 });
