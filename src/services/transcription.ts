@@ -4,6 +4,7 @@
  */
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 
 import { loadConfig, type TelclaudeConfig, type TranscriptionConfig } from "../config/config.js";
@@ -21,6 +22,14 @@ export type TranscriptionResult = {
 	text: string;
 	language?: string;
 	durationSeconds?: number;
+	confidenceSource: "openai_whisper_verbose_segments_v1" | "unavailable";
+	segments?: readonly TranscriptionEvidenceSegment[];
+};
+
+export type TranscriptionEvidenceSegment = {
+	readonly durationSeconds: number;
+	readonly avgLogprob: number;
+	readonly noSpeechProbability: number;
 };
 
 /**
@@ -143,6 +152,7 @@ export async function transcribeAudio(
 			text: result.text,
 			language: result.language,
 			durationSeconds: result.durationSeconds,
+			confidenceSource: "unavailable",
 		};
 	}
 
@@ -150,14 +160,17 @@ export async function transcribeAudio(
 	const { useRelay: _, userId: _u, ...localOptions } = options ?? {};
 	const transcriptionConfig = resolveTranscriptionConfig(config, localOptions);
 
-	logger.debug({ filePath, provider: transcriptionConfig.provider }, "starting transcription");
-
 	// Verify file exists
 	try {
 		await fs.promises.access(filePath, fs.constants.R_OK);
 	} catch {
-		throw new Error(`Audio file not found or not readable: ${filePath}`);
+		throw new Error("Audio file not found or not readable");
 	}
+	const fileEvidence = await pathSafeFileEvidence(filePath);
+	logger.debug(
+		{ provider: transcriptionConfig.provider, ...fileEvidence },
+		"starting transcription",
+	);
 
 	switch (transcriptionConfig.provider) {
 		case "openai":
@@ -185,6 +198,7 @@ async function transcribeWithOpenAI(
 
 	const client = await getOpenAIClient();
 	const fileStream = fs.createReadStream(filePath);
+	await waitForReadableStream(fileStream);
 
 	const startTime = Date.now();
 
@@ -196,12 +210,12 @@ async function transcribeWithOpenAI(
 			response_format: "verbose_json",
 		});
 
+		const segments = parseOpenAIVerboseSegments(response);
 		const durationMs = Date.now() - startTime;
 		logger.info(
 			{
-				filePath,
-				model: config.model,
-				durationMs,
+				provider: "openai",
+				latencyBucket: durationBucket(durationMs / 1_000),
 				textLength: response.text.length,
 				language: response.language,
 			},
@@ -212,9 +226,14 @@ async function transcribeWithOpenAI(
 			text: response.text,
 			language: response.language,
 			durationSeconds: response.duration,
+			confidenceSource: "openai_whisper_verbose_segments_v1",
+			segments,
 		};
 	} catch (error) {
-		logger.error({ filePath, error }, "OpenAI transcription failed");
+		logger.error(
+			{ provider: "openai", reasonCode: transcriptionErrorCode(error) },
+			"OpenAI transcription failed",
+		);
 		throw error;
 	} finally {
 		fileStream.destroy();
@@ -248,22 +267,18 @@ async function transcribeWithCommand(
 		});
 
 		let stdout = "";
-		let stderr = "";
-
 		proc.stdout.on("data", (data) => {
 			stdout += data.toString();
 		});
 
-		proc.stderr.on("data", (data) => {
-			stderr += data.toString();
-		});
+		proc.stderr.on("data", () => {});
 
-		proc.on("error", (error) => {
+		proc.on("error", () => {
 			if (settled) return;
 			settled = true;
 			if (timeoutId) clearTimeout(timeoutId);
-			logger.error({ command, error }, "transcription command failed to start");
-			reject(new Error(`Transcription command failed: ${error.message}`));
+			logger.error({ provider: "command", reasonCode: "spawn_failed" }, "transcription failed");
+			reject(new Error("Transcription command failed to start"));
 		});
 
 		proc.on("close", (code) => {
@@ -273,11 +288,17 @@ async function transcribeWithCommand(
 
 			if (code === 0) {
 				const text = stdout.trim();
-				logger.info({ command: cmd, textLength: text.length }, "command transcription complete");
-				resolve({ text });
+				logger.info(
+					{ provider: "command", textLength: text.length },
+					"command transcription complete",
+				);
+				resolve({ text, confidenceSource: "unavailable" });
 			} else {
-				logger.error({ command, code, stderr }, "transcription command exited with error");
-				reject(new Error(`Transcription command failed with code ${code}: ${stderr}`));
+				logger.error(
+					{ provider: "command", reasonCode: "nonzero_exit", exitCode: code },
+					"transcription command exited with error",
+				);
+				reject(new Error(`Transcription command failed with code ${code}`));
 			}
 		});
 
@@ -289,6 +310,85 @@ async function transcribeWithCommand(
 			reject(new Error(`Transcription command timed out after ${config.timeoutSeconds}s`));
 		}, timeoutMs);
 	});
+}
+
+function parseOpenAIVerboseSegments(response: unknown): readonly TranscriptionEvidenceSegment[] {
+	const raw = (response as { segments?: unknown }).segments;
+	if (!Array.isArray(raw) || raw.length === 0) {
+		throw new Error("OpenAI verbose transcription response omitted valid segment evidence");
+	}
+	const parsed: TranscriptionEvidenceSegment[] = [];
+	for (const segment of raw) {
+		if (!segment || typeof segment !== "object") {
+			throw new Error("OpenAI verbose transcription response omitted valid segment evidence");
+		}
+		const value = segment as Record<string, unknown>;
+		const start = value.start;
+		const end = value.end;
+		if (
+			typeof start !== "number" ||
+			typeof end !== "number" ||
+			!Number.isFinite(start) ||
+			!Number.isFinite(end) ||
+			end < start
+		) {
+			throw new Error("OpenAI verbose transcription response omitted valid segment evidence");
+		}
+		if (end === start) continue;
+		const avgLogprob = value.avg_logprob;
+		const noSpeechProbability = value.no_speech_prob;
+		if (
+			typeof avgLogprob !== "number" ||
+			typeof noSpeechProbability !== "number" ||
+			!Number.isFinite(avgLogprob) ||
+			!Number.isFinite(noSpeechProbability) ||
+			noSpeechProbability < 0 ||
+			noSpeechProbability > 1
+		) {
+			throw new Error("OpenAI verbose transcription response omitted valid segment evidence");
+		}
+		parsed.push({
+			durationSeconds: end - start,
+			avgLogprob,
+			noSpeechProbability,
+		});
+	}
+	if (parsed.length === 0) {
+		throw new Error("OpenAI verbose transcription response omitted valid segment evidence");
+	}
+	return parsed;
+}
+
+async function waitForReadableStream(stream: fs.ReadStream): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		stream.once("open", () => resolve());
+		stream.once("error", reject);
+	});
+}
+
+async function pathSafeFileEvidence(filePath: string): Promise<{
+	readonly contentDigestPrefix: string;
+	readonly byteBucket: string;
+}> {
+	const bytes = await fs.promises.readFile(filePath);
+	return {
+		contentDigestPrefix: crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 12),
+		byteBucket:
+			bytes.byteLength < 1024 ? "lt_1k" : bytes.byteLength < 1024 * 1024 ? "1k_1m" : "gte_1m",
+	};
+}
+
+function durationBucket(seconds: number): string {
+	if (seconds < 1) return "lt_1s";
+	if (seconds < 10) return "1s_10s";
+	if (seconds < 60) return "10s_60s";
+	return "gte_60s";
+}
+
+function transcriptionErrorCode(error: unknown): string {
+	return error instanceof Error && error.message.includes("segment evidence")
+		? "verbose_evidence_invalid"
+		: "provider_error";
 }
 
 /**

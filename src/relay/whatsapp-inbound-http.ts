@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { type EffectiveOperatorProfile, getOperatorProfile } from "../config/profiles.js";
+import { type InboundEvent, InboundEventSchema } from "../hermes/edge-adapter-contract.js";
 import {
 	createRelayConversationStore,
 	type RelayConversationStore,
@@ -10,6 +11,7 @@ import {
 	type AttachmentQuarantineStore,
 	createAttachmentQuarantineStore,
 } from "./attachment-quarantine-store.js";
+import type { InboundMediaProcessingInput } from "./inbound-media-processor.js";
 import {
 	combineWhatsAppIdentityResolvers,
 	createWhatsAppHouseholdIdentityResolver,
@@ -63,6 +65,7 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly conversationStore?: RelayConversationStore;
 	readonly quarantineStore?: AttachmentQuarantineStore;
 	readonly dispatch?: WhatsAppInboundDispatch;
+	readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
 	readonly nowMs?: () => number;
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
@@ -186,8 +189,27 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		);
 	}
 
+	let dispatchEvent = cl1.event;
+	if (resolved.processInboundMedia) {
+		try {
+			dispatchEvent = InboundEventSchema.parse(
+				await resolved.processInboundMedia({
+					event: cl1.event,
+					identity: cl1.identity,
+					conversation: cl1.conversation,
+				}),
+			);
+		} catch {
+			return failure(
+				500,
+				"whatsapp_inbound_media_processing_failed",
+				"WhatsApp inbound media processing failed",
+				true,
+			);
+		}
+	}
 	const dispatch = await resolved.dispatch({
-		event: cl1.event,
+		event: dispatchEvent,
 		conversation: cl1.conversation,
 		turn: cl1.turn,
 		config: resolved.config,
@@ -205,8 +227,8 @@ export async function handleWhatsAppInboundBridgePost(input: {
 			duplicate: false,
 			dispatched: dispatch.ok,
 			dispatch: publicDispatchResult(dispatch),
-			sourceAudit: cl1.event.sourceAudit,
-			ordering: cl1.event.ordering,
+			sourceAudit: dispatchEvent.sourceAudit,
+			ordering: dispatchEvent.ordering,
 		},
 	};
 }
@@ -223,6 +245,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 			readonly conversationStore: RelayConversationStore;
 			readonly quarantineStore: AttachmentQuarantineStore;
 			readonly dispatch: WhatsAppInboundDispatch;
+			readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
 			readonly nowMs?: () => number;
 			readonly cwd?: string;
 			readonly timeoutMs?: number;
@@ -320,6 +343,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		conversationStore: options?.conversationStore ?? createRelayConversationStore(),
 		quarantineStore: options?.quarantineStore ?? createAttachmentQuarantineStore(),
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,
+		...(options?.processInboundMedia ? { processInboundMedia: options.processInboundMedia } : {}),
 		...(composedInterceptor ? { interceptBeforePersistence: composedInterceptor } : {}),
 		...(options?.nowMs ? { nowMs: options.nowMs } : {}),
 		...(options?.cwd ? { cwd: options.cwd } : {}),

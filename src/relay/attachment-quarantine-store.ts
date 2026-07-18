@@ -61,6 +61,11 @@ export interface AttachmentProcessingLease extends QuarantinedBytes {
 	readonly leaseId: string;
 }
 
+export interface AttachmentProcessorTempDirectory {
+	readonly directoryPath: string;
+	cleanup(): void;
+}
+
 export interface AttachmentDeletionReceipt {
 	readonly receiptId: `sha256:${string}`;
 	readonly quarantineIdHash: `sha256:${string}`;
@@ -98,6 +103,9 @@ export interface AttachmentQuarantineStore {
 		owner: QuarantineOwnerBinding,
 		capability: AttachmentProcessorCapability,
 	): AttachmentProcessingLease | null;
+	createProcessorTempDirectory(
+		capability: AttachmentProcessorCapability,
+	): AttachmentProcessorTempDirectory | null;
 	completeProcessing(
 		lease: Pick<AttachmentProcessingLease, "leaseId" | "quarantineId">,
 		owner: QuarantineOwnerBinding,
@@ -187,6 +195,7 @@ export function createAttachmentQuarantineStore(
 	const database = durable ? getDb() : null;
 	const entries = database ? loadEntries(database) : new Map<string, QuarantineEntry>();
 	const receipts = durable ? null : new Map<string, AttachmentDeletionReceipt>();
+	const activeProcessorTempDirectories = new Set<string>();
 	if (durable) ensurePrivateDirectory(quarantineDir);
 
 	function store(input: QuarantineStoreInput): AttachmentRef {
@@ -375,6 +384,29 @@ export function createAttachmentQuarantineStore(
 		return inspectionFor(entry);
 	}
 
+	function createProcessorTempDirectory(
+		capability: AttachmentProcessorCapability,
+	): AttachmentProcessorTempDirectory | null {
+		if (!processorCapability || capability !== processorCapability) return null;
+		ensurePrivateDirectory(quarantineDir);
+		const directoryPath = path.resolve(fs.mkdtempSync(path.join(quarantineDir, ".pending-media-")));
+		activeProcessorTempDirectories.add(directoryPath);
+		let active = true;
+		return {
+			directoryPath,
+			cleanup() {
+				if (!active) return;
+				active = false;
+				activeProcessorTempDirectories.delete(directoryPath);
+				try {
+					fs.rmSync(directoryPath, { recursive: true, force: true });
+				} catch {
+					// The sweeper retries this now-orphaned workspace without exposing its path.
+				}
+			},
+		};
+	}
+
 	function deleteForOwner(
 		quarantineId: string,
 		owner: QuarantineOwnerBinding,
@@ -556,8 +588,19 @@ export function createAttachmentQuarantineStore(
 		for (const name of fs.readdirSync(quarantineDir)) {
 			const candidate = path.resolve(quarantineDir, name);
 			const isQuarantineObject = name.endsWith(".bin") || name.startsWith(".pending-");
-			if (!isQuarantineObject || referenced.has(candidate)) continue;
-			fs.unlinkSync(candidate);
+			if (
+				!isQuarantineObject ||
+				referenced.has(candidate) ||
+				activeProcessorTempDirectories.has(candidate)
+			) {
+				continue;
+			}
+			const stat = fs.lstatSync(candidate);
+			if (stat.isDirectory() && name.startsWith(".pending-media-")) {
+				fs.rmSync(candidate, { recursive: true, force: true });
+			} else {
+				fs.unlinkSync(candidate);
+			}
 			removed += 1;
 		}
 		return removed;
@@ -569,6 +612,7 @@ export function createAttachmentQuarantineStore(
 		inspect,
 		recordScanResult,
 		leaseForProcessing,
+		createProcessorTempDirectory,
 		completeProcessing,
 		deleteForOwner,
 		getDeletionReceipt,

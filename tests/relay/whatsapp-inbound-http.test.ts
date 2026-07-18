@@ -553,6 +553,107 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			payload: { ok: false, code: "whatsapp_inbound_identity_overlap" },
 		});
 	});
+
+	it("dispatches a Hebrew voice derivation as untrusted content without raw identifiers", async () => {
+		const { createAttachmentProcessorCapability, createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createInboundVoiceMediaProcessor } = await import(
+			"../../src/relay/inbound-media-processor.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { dispatchWhatsAppInboundToHermes } = await import(
+			"../../src/relay/whatsapp-inbound-dispatcher.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const processorCapability = createAttachmentProcessorCapability();
+		const quarantineStore = createAttachmentQuarantineStore({
+			now: () => NOW,
+			processorCapability,
+			quarantineDir: path.join(tempDir, "attachment-quarantine"),
+		});
+		const processor = createInboundVoiceMediaProcessor({
+			quarantineStore,
+			processorCapability,
+			runFfmpeg: async (_inputPath, outputPath) => fs.writeFileSync(outputPath, "wav16k"),
+			transcribe: async () => ({
+				text: "היה לי תור היום והרופאה הייתה נחמדה",
+				language: "he",
+				durationSeconds: 3,
+				confidenceSource: "openai_whisper_verbose_segments_v1",
+				segments: [{ durationSeconds: 3, avgLogprob: Math.log(0.92), noSpeechProbability: 0.01 }],
+			}),
+		});
+		let seenPrompt = "";
+		const householdPhone = "whatsapp:+15557654321";
+		const event = whatsappEvent({
+			eventId: "wa-event-hebrew-voice",
+			messageId: "wa-message-hebrew-voice",
+			senderAddressRef: householdPhone,
+			conversationKey: "whatsapp:15557654321@s.whatsapp.net",
+			text: undefined,
+			attachments: [
+				{
+					mediaType: "audio/ogg",
+					bytesBase64: Buffer.concat([
+						Buffer.from("OggS"),
+						Buffer.alloc(24),
+						Buffer.from("OpusHead"),
+					]).toString("base64"),
+				},
+			],
+		});
+
+		const result = await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				config: householdDispatcherConfig,
+				conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+				quarantineStore,
+				nowMs: () => NOW,
+				processInboundMedia: async (input) => {
+					for (const ref of input.event.normalized.mediaRefs) {
+						const owner = processor.ownerFor(input);
+						quarantineStore.recordScanResult(ref.quarantineId, owner, "clean");
+					}
+					return processor.processInbound(input);
+				},
+				dispatch: (input) =>
+					dispatchWhatsAppInboundToHermes({
+						...input,
+						executeHermes: async function* (prompt): AsyncIterable<StreamChunk> {
+							seenPrompt = prompt;
+							yield {
+								type: "done",
+								result: {
+									response: "הבנתי",
+									success: true,
+									costUsd: 0,
+									numTurns: 1,
+									durationMs: 1,
+								},
+							};
+						},
+					}),
+			},
+		});
+
+		expect(result).toMatchObject({ status: 202, payload: { dispatched: true } });
+		expect(seenPrompt).toContain("[FORWARDED CONTENT (WHATSAPP-VOICE-TRANSCRIPT) - UNTRUSTED]");
+		expect(seenPrompt).toContain("היה לי תור היום והרופאה הייתה נחמדה");
+		expect(seenPrompt).not.toContain("<attachments>");
+		expect(seenPrompt).not.toContain("tc-quarantine:");
+		expect(seenPrompt).not.toContain(tempDir);
+	});
 });
 
 describe("WhatsApp inbound Hermes dispatcher", () => {
