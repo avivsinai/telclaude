@@ -309,6 +309,122 @@ describe("household reminder store", () => {
 		).toThrow(/do not match/i);
 	});
 
+	it("keeps the reminder-only result and one-pending error byte-equivalent through the shared lease", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const leaseStore = await import("../../src/relay/interactive-choice-lease.js");
+		const created = store.prepareHouseholdReminderCreate({
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "להביא מסמכים",
+			schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+			source: { kind: "parent" },
+			nowMs: NOW_MS,
+		});
+
+		expect(created).toEqual({
+			reminder: {
+				id: expect.stringMatching(/^reminder-/),
+				revision: 1,
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				bindingFingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				consentHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				text: "להביא מסמכים",
+				locale: "he-IL",
+				source: { kind: "parent" },
+				schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+				contentHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				scheduleHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				status: "pending_confirmation",
+				createdAtMs: NOW_MS,
+				updatedAtMs: NOW_MS,
+			},
+			proposal: {
+				ref: expect.stringMatching(/^reminder-proposal-/),
+				action: "create",
+				reminderId: created.reminder.id,
+				baseRevision: 1,
+				proposedRevision: 1,
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				bindingFingerprint: created.reminder.bindingFingerprint,
+				consentHash: created.reminder.consentHash,
+				proposalHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				status: "pending",
+				createdAtMs: NOW_MS,
+				expiresAtMs: NOW_MS + 10 * 60_000,
+			},
+		});
+		expect(leaseStore.getInteractiveChoiceLease(BINDING_A.conversationId, NOW_MS)).toMatchObject({
+			kind: "reminder",
+			ownerRef: created.proposal.ref,
+			actorId: AUTHORITY_A.actorId,
+			subjectUserId: AUTHORITY_A.subjectUserId,
+			profileId: AUTHORITY_A.profileId,
+			bindingId: BINDING_A.bindingId,
+		});
+		expect(() =>
+			store.prepareHouseholdReminderCreate({
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: CONSENT_A,
+				text: "תזכורת שנייה",
+				schedule: schedule("2026-08-02T09:00", "2026-08-02T06:00:00.000Z", 180),
+				source: { kind: "parent" },
+				nowMs: NOW_MS + 1,
+			}),
+		).toThrow("household reminder confirmation is already pending");
+		expect(
+			store.confirmHouseholdReminderProposal({
+				proposalRef: created.proposal.ref,
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: CONSENT_A,
+				nowMs: NOW_MS + 2,
+			}),
+		).toMatchObject({ ok: true, reminder: { status: "scheduled" } });
+		expect(leaseStore.getInteractiveChoiceLease(BINDING_A.conversationId, NOW_MS + 2)).toBeNull();
+	});
+
+	it("rolls reminder creation back when a media confirmation owns the shared lease", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const leaseStore = await import("../../src/relay/interactive-choice-lease.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		const mediaLease = leaseStore.claimInteractiveChoiceLease({
+			actorId: AUTHORITY_A.actorId,
+			subjectUserId: AUTHORITY_A.subjectUserId,
+			profileId: AUTHORITY_A.profileId,
+			bindingId: BINDING_A.bindingId,
+			conversationId: BINDING_A.conversationId,
+			kind: "media_confirmation",
+			ownerRef: "media-confirmation-1",
+			createdAtMs: NOW_MS,
+			expiresAtMs: NOW_MS + 10 * 60_000,
+		});
+
+		expect(() =>
+			store.prepareHouseholdReminderCreate({
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: CONSENT_A,
+				text: "לא אמור להישמר",
+				schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+				source: { kind: "parent" },
+				nowMs: NOW_MS + 1,
+			}),
+		).toThrowError(expect.objectContaining({ code: "interactive_choice_busy" }));
+		expect(getDb().prepare("SELECT COUNT(*) AS count FROM household_reminders").get()).toEqual({
+			count: 0,
+		});
+		expect(
+			getDb().prepare("SELECT COUNT(*) AS count FROM household_reminder_proposals").get(),
+		).toEqual({ count: 0 });
+		expect(leaseStore.getInteractiveChoiceLease(BINDING_A.conversationId, NOW_MS + 1)).toEqual(
+			mediaLease,
+		);
+	});
+
 	it("pauses updates/cancellations and restores or supersedes atomically", async () => {
 		const store = await import("../../src/household-reminders/store.js");
 		const initial = confirmedReminder(store);

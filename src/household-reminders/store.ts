@@ -4,6 +4,11 @@ import {
 	upsertHouseholdReminderCronWakeup,
 } from "../cron/store.js";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import {
+	claimInteractiveChoiceLease,
+	InteractiveChoiceBusyError,
+	releaseInteractiveChoiceLease,
+} from "../relay/interactive-choice-lease.js";
 import { getDb } from "../storage/db.js";
 import type { HouseholdReminderConfirmationTemplateId } from "./copy.js";
 import { validateJerusalemOneShotSchedule } from "./time.js";
@@ -414,7 +419,7 @@ export function confirmHouseholdReminderProposal(input: {
 			}
 			reminder = requireReminder(row.reminder_id, row.base_revision);
 		}
-		resolveProposal(row.ref, "confirmed", nowMs);
+		resolveProposal(row, "confirmed", nowMs);
 		if (reminder.status === "scheduled") {
 			upsertHouseholdReminderCronWakeup({
 				reminderId: reminder.id,
@@ -463,7 +468,7 @@ export function rejectHouseholdReminderProposal(input: {
 		) {
 			return { ok: false as const, code: "invalid_state" as const };
 		}
-		resolveProposal(row.ref, "rejected", nowMs);
+		resolveProposal(row, "rejected", nowMs);
 		const reminder = requireReminder(row.reminder_id, row.base_revision);
 		if (reminder.status === "scheduled") {
 			upsertHouseholdReminderCronWakeup({
@@ -1002,6 +1007,24 @@ function insertProposal(
 	proposal: HouseholdReminderProposal,
 	payload: ReminderPayload | null,
 ): void {
+	try {
+		claimInteractiveChoiceLease({
+			actorId: proposal.authority.actorId,
+			subjectUserId: proposal.authority.subjectUserId,
+			profileId: proposal.authority.profileId,
+			bindingId: proposal.binding.bindingId,
+			conversationId: proposal.binding.conversationId,
+			kind: "reminder",
+			ownerRef: proposal.ref,
+			createdAtMs: proposal.createdAtMs,
+			expiresAtMs: proposal.expiresAtMs,
+		});
+	} catch (error) {
+		if (error instanceof InteractiveChoiceBusyError && error.incumbentKind === "reminder") {
+			throw new Error("household reminder confirmation is already pending");
+		}
+		throw error;
+	}
 	const pending = getDb()
 		.prepare(
 			"SELECT 1 FROM household_reminder_proposals WHERE conversation_id = ? AND status = 'pending'",
@@ -1425,23 +1448,37 @@ function setReminderStatus(
 }
 
 function resolveProposal(
-	ref: string,
+	row: ProposalRow,
 	status: "confirmed" | "rejected" | "expired",
 	nowMs: number,
 ): void {
-	getDb()
+	const resolved = getDb()
 		.prepare(
 			`UPDATE household_reminder_proposals
 			 SET status = ?, resolved_at_ms = ? WHERE ref = ? AND status = 'pending'`,
 		)
-		.run(status, nowMs, ref);
+		.run(status, nowMs, row.ref);
+	if (resolved.changes !== 1) throw new Error("household reminder proposal resolution failed");
+	if (
+		!releaseInteractiveChoiceLease({
+			actorId: row.actor_id,
+			subjectUserId: row.subject_user_id,
+			profileId: row.profile_id,
+			bindingId: row.binding_id,
+			conversationId: row.conversation_id,
+			kind: "reminder",
+			ownerRef: row.ref,
+		})
+	) {
+		throw new Error("household reminder interactive choice lease release failed");
+	}
 }
 
 function expireProposal(row: ProposalRow, nowMs: number): boolean {
 	const expected = row.action === "create" ? "pending_confirmation" : "paused_confirmation";
 	const next = row.action === "create" ? "cancelled" : "scheduled";
 	if (!setReminderStatus(row.reminder_id, row.base_revision, expected, next, nowMs)) return false;
-	resolveProposal(row.ref, "expired", nowMs);
+	resolveProposal(row, "expired", nowMs);
 	const reminder = requireReminder(row.reminder_id, row.base_revision);
 	if (reminder.status === "scheduled") {
 		upsertHouseholdReminderCronWakeup({

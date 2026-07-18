@@ -538,6 +538,30 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_household_reminder_proposals_authority
 			ON household_reminder_proposals(actor_id, subject_user_id, profile_id, created_at_ms DESC);
 
+		-- A reminder proposal and a media action confirmation both consume the
+		-- same small choice vocabulary. One durable conversation-keyed lease keeps
+		-- them mutually exclusive even when their creation attempts race.
+		CREATE TABLE IF NOT EXISTS household_interactive_choice_leases (
+			conversation_id TEXT PRIMARY KEY,
+			actor_id TEXT NOT NULL,
+			subject_user_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			binding_id TEXT NOT NULL,
+			owner_kind TEXT NOT NULL CHECK(owner_kind IN ('reminder','media_confirmation')),
+			owner_ref TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms)
+		);
+		CREATE INDEX IF NOT EXISTS idx_household_interactive_choice_lease_expiry
+			ON household_interactive_choice_leases(expires_at_ms);
+		INSERT OR IGNORE INTO household_interactive_choice_leases (
+			actor_id, subject_user_id, profile_id, binding_id, conversation_id,
+			owner_kind, owner_ref, created_at_ms, expires_at_ms
+		)
+		SELECT actor_id, subject_user_id, profile_id, binding_id, conversation_id,
+			'reminder', ref, created_at_ms, expires_at_ms
+		FROM household_reminder_proposals WHERE status = 'pending';
+
 		CREATE TABLE IF NOT EXISTS household_reminder_interception_receipts (
 			receipt_id TEXT PRIMARY KEY,
 			event_id_hash TEXT NOT NULL,
