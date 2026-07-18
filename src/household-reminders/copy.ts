@@ -1,3 +1,4 @@
+import { redactHouseholdSinkText } from "../security/household-redactor.js";
 import type { HouseholdReminder, HouseholdReminderProposalAction } from "./types.js";
 
 export const HOUSEHOLD_REMINDER_CONFIRMATION_COPY = Object.freeze({
@@ -56,9 +57,10 @@ export function householdReminderProposalPrompt(
 	const variants = HOUSEHOLD_REMINDER_PROPOSAL_ACTION_COPY[addresseeGender];
 	if (!variants) throw new Error("household reminder addressee gender is unavailable");
 	const actionLine = variants[action];
+	const reminderText = redactHouseholdSinkText(reminder.text);
 	const details =
 		action === "cancel"
-			? `תזכורת: ${reminder.text}`
-			: `תזכורת: ${reminder.text}\nמועד: ${reminder.schedule.localDateTime} (שעון ישראל)`;
+			? `תזכורת: ${reminderText}`
+			: `תזכורת: ${reminderText}\nמועד: ${reminder.schedule.localDateTime} (שעון ישראל)`;
 	return `${actionLine}\n${details}\n1. אישור\n2. ביטול`;
 }

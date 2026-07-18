@@ -1,4 +1,5 @@
 import { getChildLogger } from "../logging.js";
+import { redactHouseholdSinkText } from "../security/household-redactor.js";
 import { redactSecrets } from "../security/output-filter.js";
 import type { AdminAlert } from "../telegram/admin-alert.js";
 import { classifyHouseholdEmergencyV1 } from "./household-emergency-classifier.js";
@@ -105,7 +106,7 @@ export function createHouseholdEmergencyNotifier(options: {
 }
 
 function triggerPreview(value: string): string {
-	const normalized = redactSecrets(value).replace(/\s+/gu, " ").trim();
+	const normalized = redactHouseholdSinkText(value).replace(/\s+/gu, " ").trim();
 	const characters = Array.from(normalized);
 	return characters.length <= TRIGGER_PREVIEW_CHARS
 		? normalized
