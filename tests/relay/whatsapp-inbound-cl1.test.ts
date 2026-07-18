@@ -573,6 +573,9 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 	});
 
 	it("runs a matched emergency before the absorbing chain, ensures first conversation, and continues", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const { createAttachmentQuarantineStore } = await import(
 			"../../src/relay/attachment-quarantine-store.js"
 		);
@@ -614,10 +617,30 @@ describe("WhatsApp inbound CL-1 pipeline", () => {
 		expect(emergency).toHaveBeenCalledTimes(1);
 		expect(intercept).not.toHaveBeenCalled();
 		expect(delivered).toHaveBeenCalledTimes(1);
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "inbound_received", count: 1 },
+		]);
+
+		getDb().exec("DROP TABLE household_metrics");
+		const nextEvent = whatsappEvent({
+			eventId: "wa-event-2",
+			messageId: "wa-msg-2",
+			cursorSequence: 2,
+			text: "כאב בחזה",
+			conversationKey: "15551234567@s.whatsapp.net",
+		});
+		await expect(
+			pipeline.ingest({
+				event: nextEvent,
+				signature: signWhatsAppInboundBridgeEvent(nextEvent, SECRET),
+			}),
+		).resolves.toMatchObject({ ok: true, duplicate: false, intercepted: false });
+		expect(emergency).toHaveBeenCalledTimes(2);
+		expect(delivered).toHaveBeenCalledTimes(2);
 
 		await pipeline.ingest({ event, signature: signWhatsAppInboundBridgeEvent(event, SECRET) });
-		expect(emergency).toHaveBeenCalledTimes(1);
-		expect(delivered).toHaveBeenCalledTimes(1);
+		expect(emergency).toHaveBeenCalledTimes(2);
+		expect(delivered).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not commit dedup state until attachments validate, so a corrected retry reaches Gabriel", async () => {

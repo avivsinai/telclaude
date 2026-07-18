@@ -86,4 +86,15 @@ describe("household metrics store", () => {
 		expect(metrics.householdMetricBindingKeyFromSubject("mom")).toBeNull();
 		expect(metrics.householdMetricBindingKeyFromSubject("household:+972501234567")).toBeNull();
 	});
+
+	it("buckets approval latency at the fixed inclusive boundaries", async () => {
+		const { approvalLatencyMetricKind } = await import("../../src/household-metrics/store.js");
+
+		expect(approvalLatencyMetricKind(30_000)).toBe("approval_latency_le_30s");
+		expect(approvalLatencyMetricKind(30_001)).toBe("approval_latency_le_60s");
+		expect(approvalLatencyMetricKind(60_000)).toBe("approval_latency_le_60s");
+		expect(approvalLatencyMetricKind(60_001)).toBe("approval_latency_le_300s");
+		expect(approvalLatencyMetricKind(300_000)).toBe("approval_latency_le_300s");
+		expect(approvalLatencyMetricKind(300_001)).toBe("approval_latency_gt_300s");
+	});
 });

@@ -55,23 +55,33 @@ describe("household reminder fire executor", () => {
 
 	it("renders fixed Hebrew copy and completes one durable fire at the frozen instant", async () => {
 		const store = await import("../../src/household-reminders/store.js");
+		const metrics = await import("../../src/household-metrics/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
 		const { createHouseholdReminderFireExecutor } = await import(
 			"../../src/household-reminders/fire-executor.js"
 		);
 		const reminder = confirmedReminder(store);
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const time = await import("../../src/household-reminders/time.js");
 		const currentTzdataValidation = vi
 			.spyOn(time, "validateJerusalemOneShotSchedule")
 			.mockImplementation(() => {
 				throw new Error("simulated current-tzdata drift");
 			});
-		const prepare = vi.fn(async ({ fire, body }) => ({
-			outboundRef: `scheduled-effect:${fire.fireId}` as const,
-			edgePreparedHash: HASH("c"),
-			idempotencyKey: HASH("d"),
-			whatsappMessageId: "TCREMINDER0123456789abcdef0123456789abcdef",
-			body,
-		}));
+		let preparedCount = 0;
+		const prepare = vi.fn(async ({ fire, body }) => {
+			preparedCount += 1;
+			return {
+				outboundRef: `scheduled-effect:${fire.fireId}` as const,
+				edgePreparedHash: HASH(preparedCount === 1 ? "c" : "e"),
+				idempotencyKey: HASH(preparedCount === 1 ? "d" : "f"),
+				whatsappMessageId:
+					preparedCount === 1
+						? "TCREMINDER0123456789abcdef0123456789abcdef"
+						: "TCREMINDERabcdef0123456789abcdef0123456789",
+				body,
+			};
+		});
 		const execute = vi.fn(async ({ beforeDispatch }) => {
 			expect(beforeDispatch()).toBe(true);
 			return {
@@ -119,14 +129,35 @@ describe("household reminder fire executor", () => {
 		);
 		expect(execute).toHaveBeenCalledTimes(1);
 		expect(currentTzdataValidation).not.toHaveBeenCalled();
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "delivery_succeeded", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "fire_started", count: 1 },
+		]);
+
+		currentTzdataValidation.mockRestore();
+		getDb().exec("DROP TABLE household_metrics");
+		const secondReminder = confirmedReminder(store, {
+			localDateTime: "2026-08-02T09:00",
+			resolvedAtMs: Date.parse("2026-08-02T06:00:00.000Z"),
+			resolvedAt: "2026-08-02T06:00:00.000Z",
+			offsetMinutes: 180,
+		});
+		await expect(
+			executor(
+				{ reminderId: secondReminder.id, revision: secondReminder.revision },
+				new AbortController().signal,
+			),
+		).resolves.toEqual({ ok: true, message: "household reminder delivered" });
 	});
 
 	it("reuses exact prepared identifiers across a bounded transient retry", async () => {
 		const store = await import("../../src/household-reminders/store.js");
+		const metrics = await import("../../src/household-metrics/store.js");
 		const { createHouseholdReminderFireExecutor } = await import(
 			"../../src/household-reminders/fire-executor.js"
 		);
 		const reminder = confirmedReminder(store);
+		metrics.configureHouseholdMetrics({ enabled: true });
 		let nowMs = NOW_MS + 10_000;
 		const preparedInputs: unknown[] = [];
 		const prepare = vi.fn(async ({ fire }) => {
@@ -176,6 +207,11 @@ describe("household reminder fire executor", () => {
 		expect(preparedInputs).toHaveLength(2);
 		expect(preparedInputs[1]).toEqual(preparedInputs[0]);
 		expect(prepare.mock.calls[1]?.[0].fire).toMatchObject({ attemptCount: 2 });
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "delivery_failed", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "delivery_succeeded", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "fire_started", count: 2 },
+		]);
 	});
 
 	it("dead-letters an expired final lease instead of rescheduling forever", async () => {

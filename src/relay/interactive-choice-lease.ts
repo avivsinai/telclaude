@@ -1,3 +1,4 @@
+import { recordHouseholdMetric } from "../household-metrics/store.js";
 import { getDb } from "../storage/db.js";
 
 export type InteractiveChoiceKind = "reminder" | "media_confirmation";
@@ -38,11 +39,15 @@ export class InteractiveChoiceBusyError extends Error {
 export function claimInteractiveChoiceLease(input: InteractiveChoiceLease): InteractiveChoiceLease {
 	const lease = normalizeLease(input);
 	return getDb().transaction(() => {
-		getDb()
+		const incumbent = readLease(lease.conversationId);
+		const deleted = getDb()
 			.prepare(
 				"DELETE FROM household_interactive_choice_leases WHERE conversation_id = ? AND expires_at_ms <= ?",
 			)
 			.run(lease.conversationId, lease.createdAtMs);
+		if (deleted.changes === 1 && incumbent?.kind === "media_confirmation") {
+			recordHouseholdMetric("confirmation_expired", incumbent.bindingId, incumbent.expiresAtMs);
+		}
 		getDb()
 			.prepare(
 				`INSERT INTO household_interactive_choice_leases (

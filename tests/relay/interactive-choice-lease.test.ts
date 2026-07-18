@@ -124,4 +124,29 @@ describe("interactive-choice lease", () => {
 		).toBe(true);
 		expect(leaseStore.getInteractiveChoiceLease(OWNER.conversationId, NOW_MS + 2)).toBeNull();
 	});
+
+	it("keeps lease reclaim independent from a failing expiry metric write", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		const leaseStore = await import("../../src/relay/interactive-choice-lease.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
+		leaseStore.claimInteractiveChoiceLease({
+			...OWNER,
+			kind: "media_confirmation",
+			ownerRef: "media-confirmation-expiring",
+			createdAtMs: NOW_MS,
+			expiresAtMs: NOW_MS + 1,
+		});
+		getDb().exec("DROP TABLE household_metrics");
+
+		expect(
+			leaseStore.claimInteractiveChoiceLease({
+				...OWNER,
+				kind: "reminder",
+				ownerRef: "reminder-replacement",
+				createdAtMs: NOW_MS + 2,
+				expiresAtMs: NOW_MS + 10 * 60_000,
+			}),
+		).toMatchObject({ kind: "reminder", ownerRef: "reminder-replacement" });
+	});
 });

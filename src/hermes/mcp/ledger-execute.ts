@@ -1,3 +1,7 @@
+import {
+	householdMetricBindingKeyFromSubject,
+	recordHouseholdMetric,
+} from "../../household-metrics/store.js";
 import type { HouseholdReminderSystemOriginAuthorizer } from "../../household-reminders/system-origin-authorizer.js";
 import type { BrowserActEvidence } from "../../relay/browser-act-evidence.js";
 import {
@@ -228,15 +232,19 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			// cannot both reach the provider sidecar. The loser fails terminally in-flight.
 			const claim = options.ledger.claimExecuting(request.actionRef, approvalId);
 			if (!claim.ok) return claim;
+			const providerRecord = claim.record as TelclaudeMcpProviderSideEffectRecord;
 			if (!options.providerProxy) {
 				const executed = await options.ledger.markExecuted(request.actionRef, approvalId);
-				if (executed.ok) resolved.finalize?.();
+				if (executed.ok) {
+					resolved.finalize?.();
+					recordProviderExecutionMetric(providerRecord);
+				}
 				return executed;
 			}
 			resolved.finalize?.();
 			const executed = await executeProviderSidecar(
 				options.providerProxy,
-				claim.record as TelclaudeMcpProviderSideEffectRecord,
+				providerRecord,
 				options.providerApprovalTokenIssuer,
 			);
 			if (!executed.ok) {
@@ -245,7 +253,11 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				// report the released (prepared) record on the failure.
 				return releaseAndReport(options.ledger, request.actionRef, executed);
 			}
-			return options.ledger.markExecuted(request.actionRef, approvalId);
+			const markedExecuted = await options.ledger.markExecuted(request.actionRef, approvalId);
+			if (markedExecuted.ok) {
+				recordProviderExecutionMetric(providerRecord);
+			}
+			return markedExecuted;
 		},
 		async outboundExecute(request) {
 			const nowMs = options.nowMs?.() ?? Date.now();
@@ -520,6 +532,12 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 		// fields are accepted structurally and ignored by browserWriteExecute.
 		browseActExecute: (request) => deps.browserWriteExecute(request),
 	};
+}
+
+function recordProviderExecutionMetric(record: TelclaudeMcpProviderSideEffectRecord): void {
+	if (record.domain !== "household" || record.action !== "prescription_renewal") return;
+	const bindingKey = householdMetricBindingKeyFromSubject(record.subjectUserId ?? "");
+	if (bindingKey) recordHouseholdMetric("prescription_renewal_executed", bindingKey);
 }
 
 function browserWriteLedgerEffectRecord(

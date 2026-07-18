@@ -19,6 +19,7 @@ import {
 	relayConversationToConversationRef,
 	targetableRelayConversationMembers,
 } from "../hermes/relay-conversation-store.js";
+import { recordHouseholdMetric } from "../household-metrics/store.js";
 import type { OutboundDeliveryFailureClassifier } from "../relay/outbound-delivery-dispatcher.js";
 import { type HouseholdReminderContext, resolveHouseholdReminderContext } from "./binding.js";
 import { householdReminderWhatsAppMessageId, renderHouseholdReminderBody } from "./render.js";
@@ -309,6 +310,7 @@ export function createHouseholdReminderFireExecutor(
 		if (reminder?.status !== "scheduled") {
 			return { ok: true, message: "household reminder is no longer scheduled" };
 		}
+		const bindingKey = reminder.binding.bindingId;
 		const now = nowMs();
 		const claimed = claimHouseholdReminderFire({
 			reminderId: reminder.id,
@@ -323,11 +325,18 @@ export function createHouseholdReminderFireExecutor(
 				return { ok: true, message: `household reminder fire is ${claimed.fire.state}` };
 			}
 			if (claimed.fire.attemptCount >= maxAttempts && (claimed.fire.leaseExpiresAtMs ?? 0) < now) {
-				return terminalFailure(claimed.fire, "reminder_attempts_exhausted", now, maxAttempts);
+				return terminalFailure(
+					claimed.fire,
+					"reminder_attempts_exhausted",
+					now,
+					maxAttempts,
+					bindingKey,
+				);
 			}
 			const retryAtMs = Math.max(now + 1, (claimed.fire.leaseExpiresAtMs ?? now) + 1);
 			return { ok: false, message: "household reminder fire lease is held", retryAtMs };
 		}
+		recordHouseholdMetric("fire_started", bindingKey, now);
 
 		let prepared: HouseholdReminderPreparedFire;
 		try {
@@ -337,7 +346,7 @@ export function createHouseholdReminderFireExecutor(
 				body: renderHouseholdReminderBody(reminder),
 			});
 		} catch {
-			return terminalFailure(claimed.fire, "reminder_prepare_failed", now, maxAttempts);
+			return terminalFailure(claimed.fire, "reminder_prepare_failed", now, maxAttempts, bindingKey);
 		}
 		const stored = markHouseholdReminderFirePrepared({
 			fireId: claimed.fire.fireId,
@@ -346,7 +355,13 @@ export function createHouseholdReminderFireExecutor(
 			nowMs: nowMs(),
 		});
 		if (!stored)
-			return terminalFailure(claimed.fire, "reminder_prepare_drift", nowMs(), maxAttempts);
+			return terminalFailure(
+				claimed.fire,
+				"reminder_prepare_drift",
+				nowMs(),
+				maxAttempts,
+				bindingKey,
+			);
 
 		let execution: HouseholdReminderFireExecution;
 		try {
@@ -360,17 +375,19 @@ export function createHouseholdReminderFireExecutor(
 					}) !== null,
 			});
 		} catch {
-			return terminalFailure(stored, "reminder_execute_failed", nowMs(), maxAttempts);
+			return terminalFailure(stored, "reminder_execute_failed", nowMs(), maxAttempts, bindingKey);
 		}
 		if (!execution.ok) {
+			const failureNowMs = nowMs();
 			const failed = failHouseholdReminderFire({
 				fireId: stored.fireId,
 				attemptCount: stored.attemptCount,
 				failureClass: execution.failureClass,
 				retryable: execution.retryable,
 				maxAttempts,
-				nowMs: nowMs(),
+				nowMs: failureNowMs,
 			});
+			recordHouseholdMetric("delivery_failed", bindingKey, failureNowMs);
 			if (failed?.state === "retryable_failed") {
 				return {
 					ok: false,
@@ -380,6 +397,7 @@ export function createHouseholdReminderFireExecutor(
 			}
 			return { ok: false, message: execution.failureClass };
 		}
+		const completionNowMs = nowMs();
 		const completed = completeHouseholdReminderFire({
 			fireId: stored.fireId,
 			attemptCount: stored.attemptCount,
@@ -387,10 +405,14 @@ export function createHouseholdReminderFireExecutor(
 			...(execution.platformMessageId
 				? { platformMessageIdHash: digest(execution.platformMessageId) }
 				: {}),
-			nowMs: nowMs(),
+			nowMs: completionNowMs,
 		});
-		if (completed) return { ok: true, message: "household reminder delivered" };
+		if (completed) {
+			recordHouseholdMetric("delivery_succeeded", bindingKey, completionNowMs);
+			return { ok: true, message: "household reminder delivered" };
+		}
 		const retryNowMs = nowMs();
+		recordHouseholdMetric("delivery_failed", bindingKey, retryNowMs);
 		return {
 			ok: false,
 			message: "household reminder receipt persistence failed",
@@ -404,6 +426,7 @@ function terminalFailure(
 	failureClass: string,
 	nowMs: number,
 	maxAttempts: number,
+	bindingKey: string,
 ): CronActionResult {
 	failHouseholdReminderFire({
 		fireId: fire.fireId,
@@ -413,6 +436,7 @@ function terminalFailure(
 		maxAttempts,
 		nowMs,
 	});
+	recordHouseholdMetric("delivery_failed", bindingKey, nowMs);
 	return { ok: false, message: failureClass };
 }
 

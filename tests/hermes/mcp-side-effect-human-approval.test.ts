@@ -25,6 +25,10 @@ import {
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
 import {
+	collectHouseholdMetricRollups,
+	configureHouseholdMetrics,
+} from "../../src/household-metrics/store.js";
+import {
 	type BrowserActEvidencePage,
 	type BrowserActJsonValue,
 	type BrowserActScreenshotSink,
@@ -51,6 +55,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	});
 
 	afterEach(() => {
+		configureHouseholdMetrics({ enabled: false });
 		setTelclaudeLiveMcpSideEffectApprovalBinding(null);
 		jtiStore.close();
 		closeDb();
@@ -299,6 +304,54 @@ describe("Hermes MCP side-effect human approvals", () => {
 			ok: false,
 			code: "approval_token_unavailable",
 		});
+	});
+
+	it("counts household approval latency without making approval depend on metrics", async () => {
+		configureHouseholdMetrics({ enabled: true });
+		const householdRecord = () =>
+			prepareProviderRecord({
+				actorId: "household:whatsapp:parent-a",
+				approverActorId: "telegram:111",
+				profileId: "parent-a",
+				domain: "household",
+				providerId: "clalit",
+				service: "clalit",
+				action: "prescription_renewal",
+				subjectUserId: "household:parent-a",
+				providerAccountRef: "clalit:primary",
+				wysiwysRender: "clalit.clalit.prescription_renewal",
+			});
+		const controller = createController();
+		const first = householdRecord();
+		const firstRequest = await controller.request({ record: first, chatId: 111 });
+		if (!firstRequest.ok) throw new Error(firstRequest.reason);
+
+		await expect(
+			controller.consume({
+				record: first,
+				chatId: 111,
+				approverActorId: first.approverActorId,
+				approvalNonce: firstRequest.nonce,
+				stepUp: freshStepUp(first.approverActorId),
+			}),
+		).resolves.toMatchObject({ ok: true, serverSideApprovalStored: true });
+		expect(collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "approval_latency_le_30s", count: 1 },
+		]);
+
+		getDb().exec("DROP TABLE household_metrics");
+		const second = householdRecord();
+		const secondRequest = await controller.request({ record: second, chatId: 111 });
+		if (!secondRequest.ok) throw new Error(secondRequest.reason);
+		await expect(
+			controller.consume({
+				record: second,
+				chatId: 111,
+				approverActorId: second.approverActorId,
+				approvalNonce: secondRequest.nonce,
+				stepUp: freshStepUp(second.approverActorId),
+			}),
+		).resolves.toMatchObject({ ok: true, serverSideApprovalStored: true });
 	});
 
 	it("requires fresh approver-bound step-up metadata before minting provider approval tokens", async () => {

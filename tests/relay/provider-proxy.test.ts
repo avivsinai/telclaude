@@ -100,6 +100,28 @@ describe("provider proxy approval interception", () => {
 		expect(createProviderApprovalMock).not.toHaveBeenCalled();
 	});
 
+	it("normalizes the Clalit HTTP 401 auth-required body into an error code", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ status: "auth_required", error: "Enrollment required" }), {
+						status: 401,
+						headers: { "content-type": "application/json" },
+					}),
+			),
+		);
+
+		await expect(
+			proxyProviderRequest({
+				providerId: "google",
+				path: "/v1/fetch",
+				body: JSON.stringify({ service: "clalit", action: "appointments", params: {} }),
+				userId: "household:whatsapp:parent-a",
+			}),
+		).resolves.toMatchObject({ status: "error", errorCode: "auth_required" });
+	});
+
 	it("does not expose provider challenge interaction URLs or visual payloads to callers", async () => {
 		const opaqueFrame = Buffer.from("login-page-capture".repeat(64)).toString("base64");
 		vi.stubGlobal(

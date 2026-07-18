@@ -35,9 +35,14 @@ import type {
 	RelayConversation,
 	RelayConversationInboundTurn,
 } from "../../src/hermes/relay-conversation-store.js";
+import {
+	collectHouseholdMetricRollups,
+	configureHouseholdMetrics,
+} from "../../src/household-metrics/store.js";
 import type { OutboundDeliveryDispatcher } from "../../src/relay/outbound-delivery-dispatcher.js";
 import type { ResolvedWhatsAppHouseholdReplyBinding } from "../../src/relay/whatsapp-household-bindings.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
+import { closeDb, getDb, resetDatabase } from "../../src/storage/db.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
 	it("authorizes provider and outbound executes through server-side approval resolution", async () => {
@@ -1286,6 +1291,69 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				approvalMode: "preapproved-ledger",
 			}),
 		]);
+	});
+
+	it("counts completed household renewals without making execution depend on metrics", async () => {
+		const originalDataDir = process.env.TELCLAUDE_DATA_DIR;
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-ledger-metrics-"));
+		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		resetDatabase();
+		configureHouseholdMetrics({ enabled: true });
+		try {
+			const harness = createLedgerHarness();
+			const prepareRenewal = (prescriptionId: string) =>
+				harness.ledger.prepare(
+					providerPrepareInput({
+						actorId: "household:whatsapp:parent-b",
+						approverActorId: "telegram:parent-a",
+						profileId: "parent-b",
+						domain: "household",
+						providerId: "clalit",
+						service: "clalit",
+						action: "prescription_renewal",
+						params: { prescriptionId },
+						subjectUserId: "household:parent-b",
+						providerAccountRef: "clalit:primary",
+					}),
+				);
+			const bridge = createBridge(
+				harness,
+				{},
+				{
+					actorId: "household:whatsapp:parent-b",
+					profileId: "parent-b",
+					domain: "household",
+					memorySource: "household:parent-b",
+					writableNamespace: "household:parent-b",
+					providerScopes: ["clalit"],
+				},
+			);
+			const first = prepareRenewal("synthetic-rx-1");
+			harness.accept("provider-token-1", first);
+
+			await expect(
+				bridge.tc_provider_execute_write({ actionRef: first.ref }),
+			).resolves.toMatchObject({
+				ok: true,
+				record: { status: "executed" },
+			});
+			expect(collectHouseholdMetricRollups()).toEqual([
+				{ bindingKey: "parent-b", metricKind: "prescription_renewal_executed", count: 1 },
+			]);
+
+			getDb().exec("DROP TABLE household_metrics");
+			const second = prepareRenewal("synthetic-rx-2");
+			harness.accept("provider-token-2", second);
+			await expect(
+				bridge.tc_provider_execute_write({ actionRef: second.ref }),
+			).resolves.toMatchObject({ ok: true, record: { status: "executed" } });
+		} finally {
+			configureHouseholdMetrics({ enabled: false });
+			closeDb();
+			fs.rmSync(tempDir, { recursive: true, force: true });
+			if (originalDataDir === undefined) delete process.env.TELCLAUDE_DATA_DIR;
+			else process.env.TELCLAUDE_DATA_DIR = originalDataDir;
+		}
 	});
 
 	it("fails closed before provider sidecar execution when no sidecar token issuer is configured", async () => {

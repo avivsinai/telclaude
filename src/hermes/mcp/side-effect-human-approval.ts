@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
 import {
+	approvalLatencyMetricKind,
+	householdMetricBindingKeyFromSubject,
+	recordHouseholdMetric,
+} from "../../household-metrics/store.js";
+import {
 	type CreateApprovalResult,
 	consumeApprovalMatching as consumeSecurityApprovalMatching,
 	createApproval as createSecurityApproval,
@@ -281,6 +286,19 @@ export function createSideEffectHumanApprovalController(
 				bindingDigest: precheck.bindingDigest,
 				expiresAtMs: authorizationNowMs + remainingTtlMs,
 			});
+			const subjectUserId =
+				"subjectUserId" in input.record ? (input.record.subjectUserId ?? "") : "";
+			const bindingKey =
+				input.record.domain === "household"
+					? householdMetricBindingKeyFromSubject(subjectUserId)
+					: null;
+			if (bindingKey) {
+				recordHouseholdMetric(
+					approvalLatencyMetricKind(authorizationNowMs - consumed.data.createdAt),
+					bindingKey,
+					authorizationNowMs,
+				);
+			}
 			return {
 				ok: true,
 				actionRef: input.record.ref,

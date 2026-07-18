@@ -74,6 +74,9 @@ describe("household reminder store", () => {
 	});
 
 	it("creates a pending proposal and schedules only after same-binding confirmation", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const store = await import("../../src/household-reminders/store.js");
 		const created = store.prepareHouseholdReminderCreate({
 			authority: AUTHORITY_A,
@@ -125,6 +128,9 @@ describe("household reminder store", () => {
 			ok: true,
 			reminder: { revision: 1, status: "scheduled", confirmedAtMs: NOW_MS + 1_000 },
 		});
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "proposal_confirmed", count: 1 },
+		]);
 		expect(
 			store.confirmHouseholdReminderProposal({
 				proposalRef: created.proposal.ref,
@@ -134,6 +140,26 @@ describe("household reminder store", () => {
 				nowMs: NOW_MS + 1_001,
 			}),
 		).toEqual({ ok: false, code: "proposal_not_found" });
+
+		getDb().exec("DROP TABLE household_metrics");
+		const second = store.prepareHouseholdReminderCreate({
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "לקחת תרופה",
+			schedule: schedule("2026-08-02T09:00", "2026-08-02T06:00:00.000Z", 180),
+			source: { kind: "parent" },
+			nowMs: NOW_MS + 2_000,
+		});
+		expect(
+			store.confirmHouseholdReminderProposal({
+				proposalRef: second.proposal.ref,
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: CONSENT_A,
+				nowMs: NOW_MS + 3_000,
+			}),
+		).toMatchObject({ ok: true, reminder: { status: "scheduled" } });
 	});
 
 	it("auto-creates an appointment-derived reminder and cancels it without a proposal", async () => {
@@ -330,6 +356,8 @@ describe("household reminder store", () => {
 	});
 
 	it("rejects confirmation after binding drift or expiry", async () => {
+		const metrics = await import("../../src/household-metrics/store.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const store = await import("../../src/household-reminders/store.js");
 		const drifted = { ...BINDING_A, conversationId: "whatsapp:household:changed" };
 		const created = store.prepareHouseholdReminderCreate({
@@ -364,6 +392,9 @@ describe("household reminder store", () => {
 		expect(store.getHouseholdReminderForAuthority(created.reminder.id, AUTHORITY_A)?.status).toBe(
 			"cancelled",
 		);
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "proposal_expired", count: 1 },
+		]);
 	});
 
 	it("allows only one pending confirmation per conversation and rejects forged schedule tuples", async () => {
@@ -521,6 +552,8 @@ describe("household reminder store", () => {
 	it("pauses updates/cancellations and restores or supersedes atomically", async () => {
 		const store = await import("../../src/household-reminders/store.js");
 		const initial = confirmedReminder(store);
+		const metrics = await import("../../src/household-metrics/store.js");
+		metrics.configureHouseholdMetrics({ enabled: true });
 		const update = store.prepareHouseholdReminderUpdate({
 			reminderId: initial.id,
 			authority: AUTHORITY_A,
@@ -542,6 +575,9 @@ describe("household reminder store", () => {
 				nowMs: NOW_MS + 2_100,
 			}),
 		).toMatchObject({ ok: true, reminder: { revision: 1, status: "scheduled" } });
+		expect(metrics.collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "proposal_rejected", count: 1 },
+		]);
 
 		const secondUpdate = store.prepareHouseholdReminderUpdate({
 			reminderId: initial.id,

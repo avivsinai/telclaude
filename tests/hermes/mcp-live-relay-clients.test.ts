@@ -21,6 +21,10 @@ import {
 import { startTelclaudeLiveMcpRuntime } from "../../src/hermes/mcp/live-runtime.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
 import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
+import {
+	collectHouseholdMetricRollups,
+	configureHouseholdMetrics,
+} from "../../src/household-metrics/store.js";
 import { createAttachmentQuarantineStore } from "../../src/relay/attachment-quarantine-store.js";
 import { createMediaActionConfirmationStore } from "../../src/relay/media-action-confirmation-store.js";
 import type { AttachmentRef } from "../../src/storage/attachment-refs.js";
@@ -38,6 +42,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 	});
 
 	afterEach(() => {
+		configureHouseholdMetrics({ enabled: false });
 		vi.restoreAllMocks();
 		resetDatabase();
 		fs.rmSync(tempDir, { recursive: true, force: true });
@@ -228,6 +233,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 	});
 
 	it("enforces the Phase 0 Clalit action allowlist for household reads and writes", async () => {
+		configureHouseholdMetrics({ enabled: true });
 		const ledger = testLedger();
 		const providerCalls: unknown[] = [];
 		const clients = createTelclaudeLiveMcpRelayClients({
@@ -297,6 +303,63 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		).rejects.toThrow("household Phase 0 provider action denied");
 		expect(providerCalls).toHaveLength(1);
 		expect(ledger.list()).toHaveLength(1);
+		expect(collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "prescription_renewal_prepared", count: 1 },
+			{ bindingKey: "parent-a", metricKind: "read_succeeded", count: 1 },
+		]);
+
+		getDb().exec("DROP TABLE household_metrics");
+		await expect(
+			clients.providerRead(
+				providerRead({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointments",
+				}),
+			),
+		).resolves.toEqual({ appointments: [] });
+		await expect(
+			clients.providerPrepareWrite(
+				providerPrepare({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "prescription_renewal",
+					params: { prescriptionId: "synthetic-rx-2" },
+				}),
+			),
+		).resolves.toMatchObject({ actionRef: expect.any(String) });
+	});
+
+	it("counts household auth-required reads without changing the provider failure", async () => {
+		configureHouseholdMetrics({ enabled: true });
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			providerProxy: async () => ({
+				status: "error",
+				errorCode: "auth_required",
+				error: "Enrollment required",
+			}),
+		});
+		const request = providerRead({
+			...householdStamp(),
+			providerId: "clalit",
+			service: "clalit",
+			action: "appointments",
+		});
+
+		await expect(clients.providerRead(request)).rejects.toThrow(
+			"provider read failed: auth_required",
+		);
+		expect(collectHouseholdMetricRollups()).toEqual([
+			{ bindingKey: "parent-a", metricKind: "auth_required", count: 1 },
+		]);
+
+		getDb().exec("DROP TABLE household_metrics");
+		await expect(clients.providerRead(request)).rejects.toThrow(
+			"provider read failed: auth_required",
+		);
 	});
 
 	it.each([
