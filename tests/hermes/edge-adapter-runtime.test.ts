@@ -183,6 +183,19 @@ describe("Telclaude edge adapter runtime", () => {
 		await expectDeniedAsync(
 			() =>
 				runtime.executeOutbound({
+					preparedOutbound: {
+						...prepared,
+						mediaRefs: prepared.mediaRefs.map((ref) => ({
+							...ref,
+							redactedFilename: "mutated-name.pdf",
+						})),
+					},
+				}),
+			"outbound.recipient-body-bound",
+		);
+		await expectDeniedAsync(
+			() =>
+				runtime.executeOutbound({
 					preparedOutbound: { ...prepared, finalRenderedBody: "mutated" },
 				}),
 			"outbound.recipient-body-bound",

@@ -14,11 +14,15 @@ import type {
 	TelclaudeMcpProviderPrepareWriteRequest,
 	TelclaudeMcpProviderReadRequest,
 } from "../../src/hermes/mcp/bridge.js";
-import { createTelclaudeLiveMcpRelayClients } from "../../src/hermes/mcp/live-relay-clients.js";
+import {
+	createStoredAttachmentOutboundMediaResolver,
+	createTelclaudeLiveMcpRelayClients,
+} from "../../src/hermes/mcp/live-relay-clients.js";
 import { startTelclaudeLiveMcpRuntime } from "../../src/hermes/mcp/live-runtime.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
 import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
 import { createMediaActionConfirmationStore } from "../../src/relay/media-action-confirmation-store.js";
+import { createAttachmentQuarantineStore } from "../../src/relay/attachment-quarantine-store.js";
 import type { AttachmentRef } from "../../src/storage/attachment-refs.js";
 import { getDb, resetDatabase } from "../../src/storage/db.js";
 
@@ -630,6 +634,59 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			),
 		).rejects.toThrow("outbound conversation unavailable or unauthorized");
 		expect(ledger.list()).toEqual([]);
+	});
+
+	it("preserves validated outbound MIME, safe filename, and byte size in the prepared ledger", async () => {
+		const sourcePath = path.join(tempDir, "provider-internal-object");
+		fs.writeFileSync(sourcePath, "%PDF-1.4\nprovider document");
+		const ledger = testLedger();
+		const edgeRuntime = new TelclaudeEdgeRuntime();
+		const resolver = createStoredAttachmentOutboundMediaResolver({
+			edgeRuntime,
+			quarantineStore: createAttachmentQuarantineStore(),
+			validateAttachment: () => ({
+				valid: true,
+				attachment: {
+					ref: "provider-ref",
+					actorUserId: "operator",
+					providerId: "bank",
+					filepath: sourcePath,
+					filename: "Provider Statement (final).pdf",
+					mimeType: "application/pdf",
+					size: fs.statSync(sourcePath).size,
+					createdAt: 1000,
+					expiresAt: 2000,
+				},
+			}),
+		});
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			edgeRuntime,
+			resolveOutboundMediaRefs: resolver,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const { token } = mintWhatsappConversation("metadata-round-trip");
+		const turnConversationRef = mintWhatsappTurn(token, "metadata-round-trip");
+
+		const prepared = (await clients.outboundPrepare(
+			outboundPrepare({
+				conversationToken: token,
+				turnConversationRef,
+				mediaRefs: ["provider-ref"],
+			}),
+		)) as { outboundRef: string };
+
+		expect(ledger.get(prepared.outboundRef)).toMatchObject({
+			preparedMediaRefs: [
+				{
+					mediaType: "application/pdf",
+					redactedFilename: "Provider_Statement_final_.pdf",
+					sizeBytes: fs.statSync(sourcePath).size,
+				},
+			],
+		});
+		expect(JSON.stringify(ledger.get(prepared.outboundRef))).not.toContain(sourcePath);
 	});
 
 	it("requires a live relay turn authority for outbound preparation", async () => {

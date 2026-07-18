@@ -102,7 +102,8 @@ type PreparedBinding = {
 	readonly preparedHash: string;
 };
 
-export type EdgePreparedPayloadMediaRef = Pick<AttachmentRef, "quarantineId" | "contentHash">;
+export type EdgePreparedPayloadMediaRef = Pick<AttachmentRef, "quarantineId" | "contentHash"> &
+	Partial<Pick<AttachmentRef, "mediaType" | "redactedFilename" | "sizeBytes">>;
 
 type QuarantinedAttachment = {
 	readonly ref: AttachmentRef;
@@ -943,6 +944,9 @@ export function edgePreparedPayloadHash(input: {
 		mediaRefs: input.mediaRefs.map((ref) => ({
 			quarantineId: ref.quarantineId,
 			contentHash: ref.contentHash,
+			...(ref.mediaType === undefined ? {} : { mediaType: ref.mediaType }),
+			...(ref.redactedFilename === undefined ? {} : { redactedFilename: ref.redactedFilename }),
+			...(ref.sizeBytes === undefined ? {} : { sizeBytes: ref.sizeBytes }),
 		})),
 	});
 }

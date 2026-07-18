@@ -14,6 +14,7 @@ import {
 	PreparedOutboundSchema,
 	StatusViewSchema,
 } from "../../src/hermes/edge-adapter-contract.js";
+import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 
 const timestamp = "2026-05-31T09:00:00.000Z";
 const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -276,6 +277,32 @@ describe("Hermes edge adapter contract", () => {
 				downloadUrl: "https://example.com/attachment.bin",
 			}).success,
 		).toBe(false);
+	});
+
+	it("accepts only a redacted filename and preserves the legacy prepared hash shape", () => {
+		expect(
+			AttachmentRefSchema.safeParse({
+				...validAttachmentRef(),
+				redactedFilename: "provider-statement.pdf",
+			}).success,
+		).toBe(true);
+		expect(
+			edgePreparedPayloadHash({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "+15551234567",
+					conversationId: "whatsapp:+15551234567",
+				},
+				body: "legacy",
+				mediaRefs: [
+					{
+						quarantineId: "attachment:legacy",
+						contentHash: `sha256:${"a".repeat(64)}`,
+					},
+				],
+			}),
+		).toBe("cdcdcc68745371113007924bf23ee3f152735f410d0baab1b40d59f198141e5b");
 	});
 
 	it("requires actor and conversation refs to carry scopes and revocation state", () => {

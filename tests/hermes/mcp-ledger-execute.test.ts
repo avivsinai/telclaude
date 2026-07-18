@@ -673,6 +673,15 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		};
 		const outbound = harness.ledger.prepare(
 			outboundPrepareInput({
+				preparedMediaRefs: [
+					{
+						quarantineId: "attachment:menu",
+						contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						mediaType: "application/pdf",
+						sizeBytes: 1234,
+						redactedFilename: "provider-statement.pdf",
+					},
+				],
 				destination: "model-facing label that must not be used for delivery",
 				resolvedDestination,
 				edgePreparedHash: edgePreparedPayloadHash({
@@ -684,6 +693,9 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 							quarantineId: "attachment:menu",
 							contentHash:
 								"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+							mediaType: "application/pdf",
+							sizeBytes: 1234,
+							redactedFilename: "provider-statement.pdf",
 						},
 					],
 				}),
@@ -734,7 +746,51 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			resolvedDestination,
 			finalRenderedBody: outbound.renderedBody,
 			idempotencyKey: outbound.idempotencyKey,
+			mediaRefs: [
+				expect.objectContaining({
+					mediaType: "application/pdf",
+					sizeBytes: 1234,
+					redactedFilename: "provider-statement.pdf",
+				}),
+			],
 		});
+	});
+
+	it("executes a legacy prepared outbound with the pre-D5 attachment fallback", async () => {
+		const harness = createLedgerHarness();
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("legacy-outbound-token", outbound);
+		const dispatched: PreparedOutbound[] = [];
+		const bridge = createBridge(harness, {
+			outboundDeliveryDispatcher: async (prepared) => {
+				dispatched.push(prepared);
+				return {
+					schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+					outboundRef: prepared.outboundRef,
+					deliveryStatus: "sent" as const,
+					timestamps: { observedAt: "2026-06-04T00:00:00.000Z" },
+					retry: {
+						attempt: 1,
+						maxAttempts: prepared.retryPolicy.maxAttempts,
+						idempotencyKey: prepared.idempotencyKey,
+					},
+				};
+			},
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					conversationId: outbound.resolvedDestination.conversationId,
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toMatchObject({
+			ok: true,
+		});
+		expect(dispatched[0]?.mediaRefs[0]).toMatchObject({
+			mediaType: "application/octet-stream",
+			sizeBytes: 0,
+		});
+		expect(dispatched[0]?.mediaRefs[0]).not.toHaveProperty("redactedFilename");
 	});
 
 	it("executes scheduled outbound only through the internal system authorizer with immediate revalidation", async () => {

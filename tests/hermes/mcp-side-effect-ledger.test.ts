@@ -565,6 +565,46 @@ describe("Telclaude MCP side-effect ledger", () => {
 		}
 	});
 
+	it("persists complete outbound media metadata while accepting legacy refs", () => {
+		const ledger = createTestLedger();
+		const metadata = {
+			quarantineId: "attachment:statement",
+			contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			mediaType: "application/pdf",
+			redactedFilename: "provider-statement.pdf",
+			sizeBytes: 1234,
+		};
+		const prepared = ledger.prepare(outboundInput({ preparedMediaRefs: [metadata] }));
+
+		expect(prepared).toMatchObject({ preparedMediaRefs: [metadata] });
+		expect(Object.isFrozen(prepared.preparedMediaRefs)).toBe(true);
+		expect(
+			ledger.prepare(
+				outboundInput({
+					preparedMediaRefs: [
+						{
+							quarantineId: "attachment:legacy",
+							contentHash:
+								"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						},
+					],
+				}),
+			).preparedMediaRefs,
+		).toEqual([
+			{
+				quarantineId: "attachment:legacy",
+				contentHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			},
+		]);
+		expect(() =>
+			ledger.prepare(
+				outboundInput({
+					preparedMediaRefs: [{ ...metadata, redactedFilename: "/private/raw.pdf" }],
+				}),
+			),
+		).toThrow(/redactedFilename/);
+	});
+
 	it("keeps the state machine terminal after execute and prevents revoke-after-execute", async () => {
 		const ledger = createTestLedger();
 		const prepared = ledger.prepare(providerInput());

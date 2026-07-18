@@ -35,6 +35,7 @@ import {
 import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import { assertHouseholdPhase0ProviderActionAllowed } from "../../providers/household-clalit-policy.js";
+import { sanitizeFilename } from "../../relay/attachment-helpers.js";
 import type { AttachmentQuarantineStore } from "../../relay/attachment-quarantine-store.js";
 import type {
 	BrowserActExecutorSurface,
@@ -440,6 +441,7 @@ export function createStoredAttachmentOutboundMediaResolver(options: {
 			});
 			const edgeRef = EdgeAttachmentRefSchema.parse({
 				...quarantined,
+				redactedFilename: sanitizeFilename(validated.attachment.filename),
 				lifecycle: {
 					...quarantined.lifecycle,
 					authorizedFor: [
@@ -677,6 +679,13 @@ export function createTelclaudeLiveMcpRelayClients(
 				preparedMediaRefs: prepared.mediaRefs.map((mediaRef) => ({
 					quarantineId: mediaRef.quarantineId,
 					contentHash: mediaRef.contentHash,
+					...(mediaRef.redactedFilename
+						? {
+								mediaType: mediaRef.mediaType,
+								redactedFilename: mediaRef.redactedFilename,
+								sizeBytes: mediaRef.sizeBytes,
+							}
+						: {}),
 				})),
 				conversationRef: conversation.token,
 				authorizationState: conversation.authorizationState,

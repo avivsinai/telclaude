@@ -1179,9 +1179,10 @@ function attachmentRefForDelivery(
 	return {
 		schemaVersion: EdgeAdapterSchemaVersions.attachmentRef,
 		quarantineId: mediaRef.quarantineId,
-		mediaType: "application/octet-stream",
+		mediaType: mediaRef.mediaType ?? "application/octet-stream",
+		...(mediaRef.redactedFilename ? { redactedFilename: mediaRef.redactedFilename } : {}),
 		scanState: "clean",
-		sizeBytes: 0,
+		sizeBytes: mediaRef.sizeBytes ?? 0,
 		contentHash: mediaRef.contentHash,
 		trustLabel: "trusted",
 		expiresAt: new Date(record.expiresAtMs).toISOString(),
