@@ -3,7 +3,7 @@ import type { HouseholdReminderOneShotSchedule } from "./types.js";
 export const HOUSEHOLD_REMINDER_TIME_ZONE = "Asia/Jerusalem" as const;
 export const HOUSEHOLD_REMINDER_MAX_HORIZON_MS = 365 * 24 * 60 * 60 * 1_000;
 export const HOUSEHOLD_REMINDER_RECURRING_DECLINE_HE =
-	"כרגע אפשר לקבוע רק תזכורת חד-פעמית. אני יכולה לקבוע תזכורת חד-פעמית — למשל למחר ב-9:00.";
+	"כרגע אפשר לקבוע רק תזכורת חד-פעמית. אני יכול לקבוע תזכורת חד-פעמית — למשל למחר ב-9:00.";
 
 const LOCAL_MINUTE_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 const MINUTE_MS = 60_000;

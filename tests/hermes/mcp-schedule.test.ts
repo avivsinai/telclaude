@@ -419,7 +419,7 @@ describe("Telclaude live MCP schedule tools", () => {
 				schedule: { kind: "every", everyMs: 86_400_000 },
 				prompt: "לקחת תרופה",
 			}),
-		).rejects.toThrow("אני יכולה לקבוע תזכורת חד-פעמית");
+		).rejects.toThrow("אני יכול לקבוע תזכורת חד-פעמית");
 
 		setHomeTarget("local-operator", { chatId: 4242 });
 		const privateResult = (await clients.scheduleCreate({
