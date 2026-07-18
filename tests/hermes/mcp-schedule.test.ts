@@ -20,9 +20,12 @@ import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-ef
 import { resolveHouseholdReminderContext } from "../../src/household-reminders/binding.js";
 import {
 	confirmHouseholdReminderProposal,
+	createAppointmentDerivedHouseholdReminder,
+	getHouseholdReminderForAuthority,
 	getPendingHouseholdReminderProposal,
 	rejectHouseholdReminderProposal,
 } from "../../src/household-reminders/store.js";
+import { resolveJerusalemOneShot } from "../../src/household-reminders/time.js";
 import { resetDatabase } from "../../src/storage/db.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
@@ -347,6 +350,62 @@ describe("Telclaude live MCP schedule tools", () => {
 		expect(cancelled.status).toBe("paused_confirmation");
 		expect(cancelled.confirmationPrompt).toContain("לאשר את ביטול התזכורת");
 		expectDisabledWakeUp();
+	});
+
+	it("directly cancels an appointment-derived reminder for the exact household authority", async () => {
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			householdReminderConfig: householdConfig,
+		});
+		const stamp = householdStamp();
+		const context = resolveHouseholdReminderContext(stamp, householdConfig);
+		if (!context) throw new Error("test household reminder context missing");
+		const observationChars = ["8", "9", "a"] as const;
+		let observationIndex = 0;
+		const createDerived = () => {
+			const observationChar = observationChars[observationIndex++];
+			if (!observationChar) throw new Error("test appointment observation exhausted");
+			return createAppointmentDerivedHouseholdReminder({
+				...context,
+				text: "תור אצל רופאת המשפחה",
+				schedule: resolveJerusalemOneShot(futureJerusalemMinute(1_440)),
+				observationHash: `sha256:${observationChar.repeat(64)}` as const,
+				addresseeGender: context.addresseeGender,
+			}).reminder;
+		};
+		const derived = createDerived();
+
+		await expect(clients.scheduleCancel({ ...stamp, jobId: derived.id })).resolves.toMatchObject({
+			reminderId: derived.id,
+			status: "cancelled",
+			confirmationRequired: false,
+			message: "התזכורת בוטלה.",
+		});
+		expect(getPendingHouseholdReminderProposal(context.authority, context.binding)).toBeNull();
+
+		const protectedDerived = createDerived();
+		await expect(
+			clients.scheduleCancel({
+				...stamp,
+				actorId: "household:whatsapp:parent-b",
+				jobId: protectedDerived.id,
+			}),
+		).rejects.toThrow(/binding or consent is unavailable|context unavailable/i);
+		expect(getHouseholdReminderForAuthority(protectedDerived.id, context.authority)?.status).toBe(
+			"scheduled",
+		);
+
+		const subjectProtectedDerived = createDerived();
+		await expect(
+			clients.scheduleCancel({
+				...stamp,
+				subjectUserId: "household:parent-b",
+				jobId: subjectProtectedDerived.id,
+			}),
+		).rejects.toThrow(/subject must equal memory source/i);
+		expect(
+			getHouseholdReminderForAuthority(subjectProtectedDerived.id, context.authority)?.status,
+		).toBe("scheduled");
 	});
 
 	it("declines recurring household input and keeps private schedule behavior unchanged", async () => {

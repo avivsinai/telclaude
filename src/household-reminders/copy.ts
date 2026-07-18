@@ -7,7 +7,6 @@ export const HOUSEHOLD_REMINDER_CONFIRMATION_COPY = Object.freeze({
 		unchanged: "לא שיניתי כלום; התזכורת נשארת כמו שהיא.",
 		proposal_expired: "הבקשה פגה ולא בוצעה. אפשר לנסות שוב.",
 		failed: "לא ביצעתי את הבקשה. אפשר לנסות שוב.",
-		choice_required: "כדי להמשיך, שלחי בדיוק 1 או 2.\n1. אישור\n2. ביטול",
 	}),
 	m: Object.freeze({
 		confirmed: "התזכורת נקבעה.",
@@ -15,7 +14,6 @@ export const HOUSEHOLD_REMINDER_CONFIRMATION_COPY = Object.freeze({
 		unchanged: "לא שיניתי כלום; התזכורת נשארת כמו שהיא.",
 		proposal_expired: "הבקשה פגה ולא בוצעה. אפשר לנסות שוב.",
 		failed: "לא ביצעתי את הבקשה. אפשר לנסות שוב.",
-		choice_required: "כדי להמשיך, שלח בדיוק 1 או 2.\n1. אישור\n2. ביטול",
 	}),
 });
 
@@ -29,6 +27,12 @@ export function householdReminderConfirmationCopy(
 	const variants = HOUSEHOLD_REMINDER_CONFIRMATION_COPY[addresseeGender];
 	if (!variants) throw new Error("household reminder addressee gender is unavailable");
 	return variants[templateId];
+}
+
+export function householdAppointmentDerivedReminderNotice(addresseeGender: "f" | "m"): string {
+	return addresseeGender === "f"
+		? "אזכיר לך יום לפני התור. לביטול כתבי לי."
+		: "אזכיר לך יום לפני התור. לביטול כתוב לי.";
 }
 
 const HOUSEHOLD_REMINDER_PROPOSAL_ACTION_COPY = Object.freeze({

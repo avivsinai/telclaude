@@ -7,8 +7,8 @@ import type {
 } from "../hermes/mcp/side-effect-ledger.js";
 import type { HouseholdReminderContext } from "./binding.js";
 import {
-	getConfirmedHouseholdReminderPolicySnapshot,
-	type HouseholdReminderConfirmedPolicySnapshot,
+	getHouseholdReminderPolicySnapshot,
+	type HouseholdReminderPolicySnapshot,
 	householdReminderBindingFingerprint,
 	householdReminderConsentHash,
 } from "./store.js";
@@ -32,7 +32,7 @@ export type HouseholdReminderSystemOriginDeliveryTarget = {
 };
 
 export type HouseholdReminderSystemOriginPolicyDependencies = {
-	readonly readConfirmedPolicySnapshot?: typeof getConfirmedHouseholdReminderPolicySnapshot;
+	readonly readPolicySnapshot?: typeof getHouseholdReminderPolicySnapshot;
 	readonly readFire: (fireId: string) => HouseholdReminderFire | null;
 	readonly resolveContext: (
 		authority: HouseholdReminderAuthority,
@@ -45,7 +45,7 @@ export type HouseholdReminderSystemOriginPolicyDependencies = {
 	readonly resolveDeliveryTarget: (
 		context: HouseholdReminderContext,
 	) => HouseholdReminderSystemOriginDeliveryTarget | null;
-	readonly renderReminderBody: (snapshot: HouseholdReminderConfirmedPolicySnapshot) => string;
+	readonly renderReminderBody: (snapshot: HouseholdReminderPolicySnapshot) => string;
 };
 
 export type HouseholdReminderSystemOriginPolicyRevalidator = (
@@ -74,8 +74,7 @@ export function householdReminderScheduledOutboundIdempotencyKey(input: {
 export function createHouseholdReminderSystemOriginPolicyRevalidator(
 	dependencies: HouseholdReminderSystemOriginPolicyDependencies,
 ): HouseholdReminderSystemOriginPolicyRevalidator {
-	const readSnapshot =
-		dependencies.readConfirmedPolicySnapshot ?? getConfirmedHouseholdReminderPolicySnapshot;
+	const readSnapshot = dependencies.readPolicySnapshot ?? getHouseholdReminderPolicySnapshot;
 	return async (record) => {
 		const authority = authorityFromRecord(record);
 		const switches = dependencies.readKillSwitches(authority);
@@ -94,12 +93,31 @@ export function createHouseholdReminderSystemOriginPolicyRevalidator(
 				"confirmed household reminder revision is unavailable",
 			);
 		}
+		const evidence = record.householdReminderPolicy;
+		if (snapshot.authorization.kind !== evidence.authorizationKind) {
+			return failure(
+				"reminder_authorization_drift",
+				"household reminder authorization kind changed",
+			);
+		}
 		if (
-			snapshot.confirmation.proposalHash !== record.householdReminderPolicy.confirmedProposalHash
+			snapshot.authorization.kind === "parent-confirmed" &&
+			evidence.authorizationKind === "parent-confirmed" &&
+			snapshot.authorization.proposalHash !== evidence.confirmedProposalHash
 		) {
 			return failure(
 				"reminder_confirmation_drift",
 				"household reminder confirmation evidence changed",
+			);
+		}
+		if (
+			snapshot.authorization.kind === "appointment-derived" &&
+			evidence.authorizationKind === "appointment-derived" &&
+			snapshot.authorization.observationHash !== evidence.sourceObservationHash
+		) {
+			return failure(
+				"reminder_source_observation_drift",
+				"appointment-derived reminder observation evidence changed",
 			);
 		}
 		const reminder = snapshot.reminder;

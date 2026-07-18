@@ -136,6 +136,99 @@ describe("household reminder store", () => {
 		).toEqual({ ok: false, code: "proposal_not_found" });
 	});
 
+	it("auto-creates an appointment-derived reminder and cancels it without a proposal", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		const { listCronJobs } = await import("../../src/cron/store.js");
+		const observationHash = `sha256:${"9".repeat(64)}` as const;
+		const input = {
+			authority: AUTHORITY_A,
+			binding: BINDING_A,
+			consent: CONSENT_A,
+			text: "תור אצל רופאת המשפחה",
+			schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+			observationHash,
+			addresseeGender: "f",
+			nowMs: NOW_MS,
+		} as const;
+		const {
+			reminder: created,
+			notice,
+			created: wasCreated,
+		} = store.createAppointmentDerivedHouseholdReminder(input);
+
+		expect(wasCreated).toBe(true);
+		expect(notice).toBe("אזכיר לך יום לפני התור. לביטול כתבי לי.");
+		expect(created).toMatchObject({
+			revision: 1,
+			status: "scheduled",
+			source: { kind: "clalit-appointment", observationHash },
+		});
+		expect(store.getPendingHouseholdReminderProposal(AUTHORITY_A, BINDING_A)).toBeNull();
+		expect(
+			store.getHouseholdReminderPolicySnapshot(created.id, created.revision, AUTHORITY_A),
+		).toEqual({
+			reminder: created,
+			authorization: { kind: "appointment-derived", observationHash },
+		});
+		expect(
+			store.getHouseholdReminderPolicySnapshot(created.id, created.revision, AUTHORITY_B),
+		).toBeNull();
+		expect(listCronJobs({ includeDisabled: true })).toEqual([
+			expect.objectContaining({
+				id: `household-reminder:${created.id}`,
+				enabled: true,
+				action: { kind: "household-reminder", reminderId: created.id, revision: 1 },
+			}),
+		]);
+		expect(store.createAppointmentDerivedHouseholdReminder(input)).toEqual({
+			reminder: created,
+			created: false,
+		});
+		expect(store.listHouseholdReminders(AUTHORITY_A)).toEqual([created]);
+		expect(listCronJobs({ includeDisabled: true })).toHaveLength(1);
+
+		expect(() =>
+			store.cancelAppointmentDerivedHouseholdReminder({
+				reminderId: created.id,
+				authority: AUTHORITY_B,
+				binding: BINDING_B,
+				consent: CONSENT_B,
+				nowMs: NOW_MS + 500,
+			}),
+		).toThrow(/not found/i);
+		expect(
+			store.cancelAppointmentDerivedHouseholdReminder({
+				reminderId: created.id,
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: CONSENT_A,
+				nowMs: NOW_MS + 1_000,
+			}),
+		).toMatchObject({ status: "cancelled" });
+		expect(store.getPendingHouseholdReminderProposal(AUTHORITY_A, BINDING_A)).toBeNull();
+		expect(listCronJobs({ includeDisabled: true })[0]).toMatchObject({
+			enabled: false,
+			nextRunAtMs: null,
+		});
+	});
+
+	it("does not auto-create an appointment reminder without bound proactive consent", async () => {
+		const store = await import("../../src/household-reminders/store.js");
+		expect(() =>
+			store.createAppointmentDerivedHouseholdReminder({
+				authority: AUTHORITY_A,
+				binding: BINDING_A,
+				consent: undefined as never,
+				text: "תור אצל רופאת המשפחה",
+				schedule: schedule("2026-08-01T09:00", "2026-08-01T06:00:00.000Z", 180),
+				observationHash: `sha256:${"9".repeat(64)}`,
+				addresseeGender: "f",
+				nowMs: NOW_MS,
+			}),
+		).toThrow(/consent/i);
+		expect(store.listHouseholdReminders(AUTHORITY_A)).toEqual([]);
+	});
+
 	it("requires reminder consent to match the bound WhatsApp channel", async () => {
 		const store = await import("../../src/household-reminders/store.js");
 		expect(() =>

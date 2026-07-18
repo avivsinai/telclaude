@@ -220,6 +220,40 @@ describe("Telclaude MCP side-effect ledger", () => {
 		]);
 	});
 
+	it("requires kind-matched derived observation evidence", () => {
+		const ledger = createTestLedger();
+		const parentPolicy = scheduledOutboundInput().householdReminderPolicy;
+		if (parentPolicy.authorizationKind !== "parent-confirmed") {
+			throw new Error("test parent policy missing");
+		}
+		const {
+			confirmedProposalHash: _confirmedProposalHash,
+			authorizationKind: _kind,
+			...common
+		} = parentPolicy;
+		const derivedPolicy = {
+			...common,
+			authorizationKind: "appointment-derived" as const,
+			sourceObservationHash:
+				"sha256:6666666666666666666666666666666666666666666666666666666666666666" as const,
+		};
+		const derived = ledger.prepare(
+			scheduledOutboundInput({ householdReminderPolicy: derivedPolicy }),
+		);
+		expect(derived.householdReminderPolicy).toEqual(derivedPolicy);
+
+		expect(() =>
+			ledger.prepare(
+				scheduledOutboundInput({
+					householdReminderPolicy: {
+						...common,
+						authorizationKind: "appointment-derived",
+					} as never,
+				}),
+			),
+		).toThrow(/sourceObservationHash/);
+	});
+
 	it("uses a distinct deterministic scheduled ref namespace without consuming standard refs", () => {
 		const ledger = createTelclaudeMcpSideEffectLedger({
 			verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "test" }),
@@ -756,6 +790,7 @@ function scheduledOutboundInput(
 			reminderId: "reminder-1",
 			fireId: "reminder-fire-1",
 			revision: 1,
+			authorizationKind: "parent-confirmed",
 			confirmedProposalHash:
 				"sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			scheduleHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",

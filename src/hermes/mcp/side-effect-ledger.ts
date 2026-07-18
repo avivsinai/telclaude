@@ -68,11 +68,10 @@ export type TelclaudeMcpHouseholdReplyBinding = {
 	readonly identityAssurance: "strong_link";
 };
 
-export type TelclaudeMcpHouseholdReminderPolicyEvidence = {
+type TelclaudeMcpHouseholdReminderPolicyEvidenceBase = {
 	readonly reminderId: string;
 	readonly fireId: string;
 	readonly revision: number;
-	readonly confirmedProposalHash: `sha256:${string}`;
 	readonly scheduleHash: `sha256:${string}`;
 	readonly contentHash: `sha256:${string}`;
 	readonly bindingFingerprint: `sha256:${string}`;
@@ -83,6 +82,16 @@ export type TelclaudeMcpHouseholdReminderPolicyEvidence = {
 	readonly systemPolicyPrincipal: "telclaude:household-reminder-system";
 	readonly systemPolicyVersion: "phase0.v1";
 };
+
+export type TelclaudeMcpHouseholdReminderPolicyEvidence =
+	| (TelclaudeMcpHouseholdReminderPolicyEvidenceBase & {
+			readonly authorizationKind: "parent-confirmed";
+			readonly confirmedProposalHash: `sha256:${string}`;
+	  })
+	| (TelclaudeMcpHouseholdReminderPolicyEvidenceBase & {
+			readonly authorizationKind: "appointment-derived";
+			readonly sourceObservationHash: `sha256:${string}`;
+	  });
 
 export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly ref: string;
@@ -1744,14 +1753,10 @@ function normalizeHouseholdReminderPolicy(
 		readonly profileId: string;
 	},
 ): TelclaudeMcpHouseholdReminderPolicyEvidence {
-	const normalized = {
+	const base = {
 		reminderId: requiredTrimmed(value.reminderId, "householdReminderPolicy.reminderId"),
 		fireId: requiredTrimmed(value.fireId, "householdReminderPolicy.fireId"),
 		revision: normalizePositiveInteger(value.revision, "householdReminderPolicy.revision"),
-		confirmedProposalHash: normalizeSha256Hash(
-			value.confirmedProposalHash,
-			"householdReminderPolicy.confirmedProposalHash",
-		) as `sha256:${string}`,
 		scheduleHash: normalizeSha256Hash(
 			value.scheduleHash,
 			"householdReminderPolicy.scheduleHash",
@@ -1775,19 +1780,45 @@ function normalizeHouseholdReminderPolicy(
 		systemPolicyVersion: value.systemPolicyVersion,
 	};
 	if (
-		normalized.systemPolicyPrincipal !== "telclaude:household-reminder-system" ||
-		normalized.systemPolicyVersion !== "phase0.v1"
+		base.systemPolicyPrincipal !== "telclaude:household-reminder-system" ||
+		base.systemPolicyVersion !== "phase0.v1"
 	) {
 		throw new Error("scheduled outbound system policy principal/version is invalid");
 	}
 	if (
-		normalized.actorId !== expectedAuthority.actorId ||
-		normalized.subjectUserId !== expectedAuthority.subjectUserId ||
-		normalized.profileId !== expectedAuthority.profileId
+		base.actorId !== expectedAuthority.actorId ||
+		base.subjectUserId !== expectedAuthority.subjectUserId ||
+		base.profileId !== expectedAuthority.profileId
 	) {
 		throw new Error("scheduled outbound policy authority does not match the record");
 	}
-	return normalized;
+	if (value.authorizationKind === "parent-confirmed") {
+		if (!value.confirmedProposalHash) {
+			throw new Error("householdReminderPolicy.confirmedProposalHash is required");
+		}
+		return {
+			...base,
+			authorizationKind: "parent-confirmed",
+			confirmedProposalHash: normalizeSha256Hash(
+				value.confirmedProposalHash,
+				"householdReminderPolicy.confirmedProposalHash",
+			) as `sha256:${string}`,
+		};
+	}
+	if (value.authorizationKind === "appointment-derived") {
+		if (!value.sourceObservationHash) {
+			throw new Error("householdReminderPolicy.sourceObservationHash is required");
+		}
+		return {
+			...base,
+			authorizationKind: "appointment-derived",
+			sourceObservationHash: normalizeSha256Hash(
+				value.sourceObservationHash,
+				"householdReminderPolicy.sourceObservationHash",
+			) as `sha256:${string}`,
+		};
+	}
+	throw new Error("scheduled outbound reminder authorization kind is invalid");
 }
 
 function assertHouseholdReplyBindingScope(

@@ -18,19 +18,6 @@ import type {
 	WhatsAppInboundBridgeEvent,
 } from "./whatsapp-inbound-cl1.js";
 
-const REMINDER_CHOICE_ATTEMPTS = new Set([
-	"1",
-	"2",
-	"כן",
-	"לא",
-	"אישור",
-	"ביטול",
-	"confirm",
-	"cancel",
-	"yes",
-	"no",
-]);
-
 export type WhatsAppReminderConfirmationInterceptResult =
 	| { readonly handled: false }
 	| {
@@ -78,11 +65,7 @@ export function createWhatsAppReminderConfirmationInterceptor(options: {
 		if (!proposal) return { handled: false };
 
 		const choice = event.attachments.length === 0 ? parseWhatsAppReminderChoice(event.text) : null;
-		if (!choice) {
-			return event.attachments.length > 0 || isReminderChoiceAttempt(event.text)
-				? sendTemplate(options.sendControl, identity, "choice_required")
-				: { handled: false };
-		}
+		if (!choice) return { handled: false };
 		const receipt = resolveHouseholdReminderProposalWithInterceptionReceipt({
 			eventId: event.eventId,
 			messageId: event.messageId,
@@ -98,14 +81,9 @@ export function createWhatsAppReminderConfirmationInterceptor(options: {
 }
 
 export function parseWhatsAppReminderChoice(text: string | undefined): "confirm" | "reject" | null {
-	if (text === "1") return "confirm";
-	if (text === "2") return "reject";
+	if (text === "1" || text === "כן" || text === "אישור") return "confirm";
+	if (text === "2" || text === "לא" || text === "ביטול") return "reject";
 	return null;
-}
-
-function isReminderChoiceAttempt(text: string | undefined): boolean {
-	if (text === undefined || text.length > 32) return false;
-	return REMINDER_CHOICE_ATTEMPTS.has(text.normalize("NFKC").trim().toLowerCase());
 }
 
 function isCurrentConversation(

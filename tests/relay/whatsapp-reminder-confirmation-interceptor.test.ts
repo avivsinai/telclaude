@@ -50,26 +50,17 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 		else process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
 	});
 
-	it("accepts only exact 1/2 input and spends the proposal once", async () => {
+	it.each([
+		"1",
+		"כן",
+		"אישור",
+	])("accepts exact canonical confirm form %s and spends the proposal once", async (text) => {
 		const fixture = reminderFixture();
 		const reminder = fixture.arm();
 
 		expect(
 			await fixture.intercept({
-				event: inbound({ text: "כן" }),
-				identity: fixture.identity,
-				conversation: fixture.conversation,
-			}),
-		).toEqual({ handled: true, templateId: "choice_required" });
-		expect(fixture.sendControl).toHaveBeenLastCalledWith(
-			expect.objectContaining({ body: householdReminderConfirmationCopy("choice_required", "f") }),
-		);
-		expect(householdReminderConfirmationCopy("choice_required", "f")).toContain("1. אישור");
-		expect(householdReminderConfirmationCopy("choice_required", "f")).toContain("2. ביטול");
-
-		expect(
-			await fixture.intercept({
-				event: inbound({ text: "1" }),
+				event: inbound({ text }),
 				identity: fixture.identity,
 				conversation: fixture.conversation,
 			}),
@@ -194,21 +185,12 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 		).toMatchObject({ status: "acked" });
 	});
 
-	it("rejects with 2 and never accepts whitespace or non-ASCII lookalikes", async () => {
+	it.each(["2", "לא", "ביטול"])("accepts exact canonical reject form %s", async (text) => {
 		const fixture = reminderFixture();
 		const reminder = fixture.arm();
-		for (const text of [" 1", "1 ", "１", "אישור"]) {
-			expect(
-				await fixture.intercept({
-					event: inbound({ text }),
-					identity: fixture.identity,
-					conversation: fixture.conversation,
-				}),
-			).toEqual({ handled: true, templateId: "choice_required" });
-		}
 		expect(
 			await fixture.intercept({
-				event: inbound({ text: "2" }),
+				event: inbound({ text }),
 				identity: fixture.identity,
 				conversation: fixture.conversation,
 			}),
@@ -216,6 +198,28 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 		expect(getHouseholdReminderForAuthority(reminder.id, fixture.context.authority)?.status).toBe(
 			"cancelled",
 		);
+	});
+
+	it.each([
+		{ text: " 1" },
+		{ text: "1 " },
+		{ text: "כן!" },
+		{ text: "1", attachments: [{ mediaType: "text/plain", bytesBase64: "YQ==" }] },
+	])("lets a near-miss or attached choice continue without robot correction", async (input) => {
+		const fixture = reminderFixture();
+		fixture.arm();
+
+		expect(
+			await fixture.intercept({
+				event: inbound(input),
+				identity: fixture.identity,
+				conversation: fixture.conversation,
+			}),
+		).toEqual({ handled: false });
+		expect(fixture.sendControl).not.toHaveBeenCalled();
+		expect(
+			getPendingHouseholdReminderProposal(fixture.context.authority, fixture.context.binding),
+		).not.toBeNull();
 	});
 
 	it("lets unrelated input continue to Hermes without spending the pending proposal", async () => {
@@ -391,11 +395,15 @@ describe("WhatsApp reminder confirmation interceptor", () => {
 describe("parseWhatsAppReminderChoice", () => {
 	it.each([
 		["1", "confirm"],
+		["כן", "confirm"],
+		["אישור", "confirm"],
 		["2", "reject"],
+		["לא", "reject"],
+		["ביטול", "reject"],
 		[" 1", null],
 		["１", null],
 		[undefined, null],
-	] as const)("parses exact ASCII choices only: %s", (text, expected) => {
+	] as const)("parses exact canonical choices only: %s", (text, expected) => {
 		expect(parseWhatsAppReminderChoice(text)).toBe(expected);
 	});
 });

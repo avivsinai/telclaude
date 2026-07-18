@@ -215,7 +215,7 @@ describe("household reminder fire executor", () => {
 		);
 	});
 
-	it("prepares a server-owned scheduled ledger record from current binding authority only", async () => {
+	it("prepares parent-confirmed and appointment-derived records from bound authority", async () => {
 		const store = await import("../../src/household-reminders/store.js");
 		const { resolveHouseholdReminderContext } = await import(
 			"../../src/household-reminders/binding.js"
@@ -291,6 +291,21 @@ describe("household reminder fire executor", () => {
 			}),
 			ledger,
 		});
+		const observationHash = HASH("9");
+		const { reminder: derived } = store.createAppointmentDerivedHouseholdReminder({
+			...context,
+			text: "תור אצל רופאת המשפחה",
+			schedule: {
+				timeZone: "Asia/Jerusalem",
+				localDateTime: "2026-08-02T09:00",
+				resolvedAtMs: Date.parse("2026-08-02T06:00:00.000Z"),
+				resolvedAt: "2026-08-02T06:00:00.000Z",
+				offsetMinutes: 180,
+			},
+			observationHash,
+			addresseeGender: context.addresseeGender,
+			nowMs: NOW_MS,
+		});
 		const time = await import("../../src/household-reminders/time.js");
 		const currentTzdataValidation = vi
 			.spyOn(time, "validateJerusalemOneShotSchedule")
@@ -319,6 +334,7 @@ describe("household reminder fire executor", () => {
 			preparedMediaRefs: [],
 			householdReminderPolicy: {
 				fireId: claimed.fire.fireId,
+				authorizationKind: "parent-confirmed",
 				recipientPrincipalHash: context.binding.recipientPrincipalHash,
 			},
 		});
@@ -329,6 +345,24 @@ describe("household reminder fire executor", () => {
 				body: "תזכורת: להביא מסמכים",
 			}),
 		).toEqual(prepared);
+
+		const derivedClaim = store.claimHouseholdReminderFire({
+			reminderId: derived.id,
+			revision: derived.revision,
+			scheduledForMs: derived.schedule.resolvedAtMs,
+			nowMs: NOW_MS + 10_000,
+		});
+		const derivedPrepared = await prepare({
+			reminder: derived,
+			fire: derivedClaim.fire,
+			body: "תזכורת: תור אצל רופאת המשפחה",
+		});
+		expect(ledger.get(derivedPrepared.outboundRef)).toMatchObject({
+			householdReminderPolicy: {
+				authorizationKind: "appointment-derived",
+				sourceObservationHash: observationHash,
+			},
+		});
 		expect(currentTzdataValidation).not.toHaveBeenCalled();
 	});
 
