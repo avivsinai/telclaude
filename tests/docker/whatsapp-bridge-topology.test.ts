@@ -69,6 +69,17 @@ describe("WhatsApp bridge Docker topology", () => {
 	it.each([
 		"docker/docker-compose.yml",
 		"docker/docker-compose.deploy.yml",
+	])("keeps the W4-B journal on the existing durable WhatsApp volume in %s", (relativePath) => {
+		const bridge = serviceBlock(readDockerFile(relativePath), "whatsapp-bridge");
+		expect(bridge).toContain("WHATSAPP_BRIDGE_DATA_DIR=/data");
+		expect(bridge).toContain("whatsapp-bridge-data:/data");
+		expect(bridge).not.toContain("WHATSAPP_BRIDGE_DATA_DIR=/tmp");
+		expect(bridge).not.toContain("whatsapp-bridge-data:/tmp");
+	});
+
+	it.each([
+		"docker/docker-compose.yml",
+		"docker/docker-compose.deploy.yml",
 	])("keeps %s on a dedicated relay-to-bridge network", (relativePath) => {
 		const compose = readDockerFile(relativePath);
 		const relay = serviceBlock(compose, "telclaude");

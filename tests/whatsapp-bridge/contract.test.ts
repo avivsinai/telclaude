@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
+import { householdReminderWhatsAppMessageId } from "../../src/household-reminders/render.js";
 import { createAttachmentQuarantineStore } from "../../src/relay/attachment-quarantine-store.js";
 import {
 	createWhatsAppBridgeAuthToken,
@@ -17,6 +18,7 @@ import {
 } from "../../src/relay/whatsapp-inbound-http.js";
 import { closeDb, resetDatabase } from "../../src/storage/db.js";
 import {
+	deterministicWhatsAppBridgeMessageId,
 	digestWhatsAppBridgeSendRequest,
 	parseWhatsAppDestinationJid,
 	signWhatsAppInboundBridgeEvent,
@@ -132,6 +134,15 @@ describe("WhatsApp bridge contract", () => {
 				destination: { kind: "address", addressRef: "not-a-phone" },
 			}),
 		).toMatchObject({ ok: false, code: "whatsapp_destination_invalid" });
+	});
+
+	it("derives stable Baileys-safe message ids per idempotent send part", () => {
+		const first = deterministicWhatsAppBridgeMessageId("idem:test", 0);
+		expect(first).toMatch(/^TCREMINDER[a-f0-9]{32}$/);
+		expect(first).toBe(householdReminderWhatsAppMessageId("idem:test"));
+		expect(deterministicWhatsAppBridgeMessageId("idem:test", 0)).toBe(first);
+		expect(deterministicWhatsAppBridgeMessageId("idem:test", 1)).not.toBe(first);
+		expect(() => deterministicWhatsAppBridgeMessageId("idem:test", -1)).toThrow(/part index/);
 	});
 
 	it("signs inbound events compatibly with the relay CL-1 endpoint", async () => {
