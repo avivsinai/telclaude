@@ -123,6 +123,24 @@ export function formatProviderHealthSummary(results: HealthCheckResult[]): strin
 		.join("; ");
 }
 
+export interface ProviderStartupHealthPolicy {
+	exitCode: number;
+	shouldExit: boolean;
+	summary: string;
+}
+
+export function resolveProviderStartupHealthPolicy(
+	results: HealthCheckResult[],
+	requireHealthyProviders = process.env.TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS === "1",
+): ProviderStartupHealthPolicy {
+	const exitCode = computeProviderHealthExitCode(results);
+	return {
+		exitCode,
+		shouldExit: exitCode > 0 && requireHealthyProviders,
+		summary: formatProviderHealthSummary(results),
+	};
+}
+
 export function logProviderHealthResults(results: HealthCheckResult[]): void {
 	for (const result of results) {
 		if (!result.reachable) {

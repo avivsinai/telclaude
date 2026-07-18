@@ -1,12 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	buildRelayTelegramMonitorOptions,
+	handleProviderStartupHealth,
 	shouldValidateTelegramEnv,
 	validateProbeNoTelegramRelayMode,
 } from "../../src/commands/relay.js";
 
 describe("relay command", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it("keeps probe-no-telegram behind explicit dry-run Hermes live-probe gates", () => {
 		expect(
 			validateProbeNoTelegramRelayMode({
@@ -79,5 +84,49 @@ describe("relay command", () => {
 		});
 		expect(options.onReady).toBe(onReady);
 		expect(options.mcpConversationStore).toBe(mcpConversationStore);
+	});
+
+	it("warns and continues when a provider is unhealthy by default", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+		handleProviderStartupHealth([
+			{
+				providerId: "israel-services",
+				baseUrl: "http://israel-services:3003",
+				reachable: true,
+				response: { status: "unhealthy" },
+			},
+		]);
+
+		expect(warn).toHaveBeenCalledWith("Provider health check failed: israel-services: unhealthy");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS=1"),
+		);
+		expect(error).not.toHaveBeenCalled();
+		expect(exit).not.toHaveBeenCalled();
+	});
+
+	it("keeps fatal startup health checks behind the strict opt-in", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+		handleProviderStartupHealth(
+			[
+				{
+					providerId: "israel-services",
+					baseUrl: "http://israel-services:3003",
+					reachable: true,
+					response: { status: "unhealthy" },
+				},
+			],
+			true,
+		);
+
+		expect(error).toHaveBeenCalledWith("Provider health check failed: israel-services: unhealthy");
+		expect(exit).toHaveBeenCalledWith(2);
+		expect(warn).not.toHaveBeenCalled();
 	});
 });

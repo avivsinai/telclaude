@@ -64,9 +64,9 @@ import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
 import {
 	checkProviderHealth,
-	computeProviderHealthExitCode,
-	formatProviderHealthSummary,
+	type HealthCheckResult,
 	logProviderHealthResults,
+	resolveProviderStartupHealthPolicy,
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
@@ -206,6 +206,26 @@ export function validateProbeNoTelegramRelayMode(input: {
 		return "--probe-no-telegram requires TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1";
 	}
 	return null;
+}
+
+export function handleProviderStartupHealth(
+	results: HealthCheckResult[],
+	requireHealthyProviders?: boolean,
+): void {
+	const policy = resolveProviderStartupHealthPolicy(results, requireHealthyProviders);
+	if (policy.exitCode === 0) return;
+
+	const summary = `Provider health check failed: ${policy.summary}`;
+	if (policy.shouldExit) {
+		console.error(summary);
+		process.exit(policy.exitCode);
+		return;
+	}
+
+	console.warn(summary);
+	console.warn(
+		"Provider health degraded; continuing startup. Set TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS=1 to require healthy providers.",
+	);
 }
 
 export function registerRelayCommand(program: Command): void {
@@ -1041,20 +1061,9 @@ export function registerRelayCommand(program: Command): void {
 					);
 
 					logProviderHealthResults(results);
-					const exitCode = computeProviderHealthExitCode(results);
-					const allowDegraded = process.env.TELCLAUDE_ALLOW_DEGRADED_PROVIDERS === "1";
-					// Exit code 1 = degraded (warn), exit code 2 = error (unreachable/unhealthy)
-					if (exitCode > 0 && !allowDegraded) {
-						console.error(`Provider health check failed: ${formatProviderHealthSummary(results)}`);
-						process.exit(exitCode);
-					}
-					if (exitCode > 0 && allowDegraded) {
-						console.warn(
-							`Provider health degraded but continuing due to TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=1`,
-						);
-					}
+					handleProviderStartupHealth(results);
 
-					// Fetch schemas AFTER health check passes (provider is ready)
+					// Refresh what is available; failed providers keep the last good cached schema.
 					await refreshExternalProviderSkill(providers);
 				}
 
