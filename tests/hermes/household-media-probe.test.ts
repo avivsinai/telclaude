@@ -1,11 +1,13 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	collectFeatureProbeEvidence,
 	hermesAdapterSignatureFilesForSurface,
 } from "../../src/hermes/foundation.js";
+import { signHouseholdMediaAttestation } from "../../src/hermes/household-media-attestation.js";
 import {
 	HOUSEHOLD_MEDIA_PROBE_REQUIRED_CHECKS,
 	householdMediaProbeEvidenceFailure,
@@ -37,8 +39,45 @@ describe("household media Hermes probe", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", ORIGINAL_PRIVATE_KEY);
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", ORIGINAL_PUBLIC_KEY);
+	});
+
+	it("does not scan verified runner-attestation crypto as evidence content", async () => {
+		const { runnerAttestation: _attestation, ...body } = await runHouseholdMediaProbe({
+			allowRun: true,
+			observedAt: "2026-07-18T12:00:00.000Z",
+		});
+		vi.spyOn(crypto, "sign").mockReturnValue(Buffer.from("actorIdA", "base64"));
+		vi.spyOn(crypto, "verify").mockReturnValue(true);
+		const evidence = {
+			...body,
+			runnerAttestation: signHouseholdMediaAttestation(body),
+		};
+
+		expect(evidence.runnerAttestation.signature.signature).toBe("actorIdA");
+		expect(householdMediaProbeEvidenceFailure(evidence, { allowStaleAttestations: true })).toBe(
+			null,
+		);
+	});
+
+	it("still rejects forbidden custody metadata in the signed evidence body", async () => {
+		const { runnerAttestation: _attestation, ...body } = await runHouseholdMediaProbe({
+			allowRun: true,
+			observedAt: "2026-07-18T12:00:00.000Z",
+		});
+		const unsafeBody = { ...body, summary: "providerId leaked into evidence" };
+		const evidence = {
+			...unsafeBody,
+			runnerAttestation: signHouseholdMediaAttestation(unsafeBody),
+		};
+
+		const failure = householdMediaProbeEvidenceFailure(evidence, {
+			allowStaleAttestations: true,
+		});
+		expect(failure).toContain("artifact contains non-sanitized media content or custody metadata");
+		expect(failure).not.toContain("runnerAttestation");
 	});
 
 	it("pins the ten-property catalog independently of the evaluator", () => {

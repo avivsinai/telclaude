@@ -22,6 +22,19 @@ import {
 } from "../relay/openai-codex-relay-proof.js";
 import type { StreamChunk } from "../runtime/stream.js";
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
+import {
+	isRelayActionRef,
+	isRelayApprovalRequestId,
+	isRelayAttachmentRef,
+	isRelayCronJobId,
+	isRelayCuratorItemId,
+	isRelayEdgePreparedRef,
+	isRelayReminderId,
+	isSha256Value,
+	isUuidV4,
+	type OpaqueStringFieldValidators,
+	redactStructuredSecrets,
+} from "../security/structured-redaction.js";
 import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import {
 	hermesMcpAuthorityRegistry,
@@ -150,6 +163,40 @@ export type HermesLaunchInvocation = {
 	authSetup?: {
 		openAiCodexRelayToken?: string;
 	};
+};
+
+const TOOL_ACTION_REF_FIELDS: OpaqueStringFieldValidators = {
+	actionRef: isRelayActionRef,
+	approvalRequestId: isRelayApprovalRequestId,
+};
+const TOOL_OUTBOUND_REF_FIELDS: OpaqueStringFieldValidators = {
+	outboundRef: isRelayActionRef,
+	approvalRequestId: isRelayApprovalRequestId,
+	edgePreparedRef: isRelayEdgePreparedRef,
+	edgePreparedHash: isSha256Value,
+};
+const TOOL_ATTACHMENT_REF_FIELDS: OpaqueStringFieldValidators = {
+	attachmentRef: isRelayAttachmentRef,
+};
+const TOOL_CURATOR_REF_FIELDS: OpaqueStringFieldValidators = {
+	curatorItemId: isRelayCuratorItemId,
+};
+const TOOL_SCHEDULE_REF_FIELDS: OpaqueStringFieldValidators = {
+	reminderId: isRelayReminderId,
+	jobId: isRelayCronJobId,
+	proposalHash: isSha256Value,
+};
+const TOOL_RESULT_OPAQUE_FIELDS: Readonly<Record<string, OpaqueStringFieldValidators>> = {
+	tc_provider_prepare_write: TOOL_ACTION_REF_FIELDS,
+	tc_browse_act_prepare: TOOL_ACTION_REF_FIELDS,
+	tc_outbound_prepare: TOOL_OUTBOUND_REF_FIELDS,
+	tc_image_generate: TOOL_ATTACHMENT_REF_FIELDS,
+	tc_tts: TOOL_ATTACHMENT_REF_FIELDS,
+	tc_skill_request: TOOL_CURATOR_REF_FIELDS,
+	tc_schedule_create: TOOL_SCHEDULE_REF_FIELDS,
+	tc_schedule_list: TOOL_SCHEDULE_REF_FIELDS,
+	tc_schedule_cancel: TOOL_SCHEDULE_REF_FIELDS,
+	tc_schedule_update: TOOL_SCHEDULE_REF_FIELDS,
 };
 
 export type HermesLaunchSecretFinding = {
@@ -366,7 +413,7 @@ export async function* executeHermesPrivateRuntime(input: {
 					yield {
 						type: "tool_result",
 						toolName: event.toolName,
-						output: redactHermesRuntimeValue(event.output),
+						output: redactHermesToolResult(event.toolName, event.output),
 					};
 					break;
 				case "done":
@@ -1106,6 +1153,12 @@ export function findHermesLaunchSecretFindings(
 			});
 			continue;
 		}
+		// commands/hermes.ts mints this exact transient home from crypto.randomUUID.
+		// It is relay-owned path identity, not agent/model content. All other env
+		// values, including arbitrary HERMES_HOME paths, remain fail-closed below.
+		if (key === "HERMES_HOME" && isRelayGeneratedTransientHermesHome(value)) {
+			continue;
+		}
 		if (containsRawModelProviderCredential(value) || containsCredentialValue(value)) {
 			findings.push({
 				location: `env.${key}`,
@@ -1129,12 +1182,15 @@ export function redactHermesRuntimeText(value: string): string {
 }
 
 export function redactHermesRuntimeValue(value: unknown): unknown {
-	if (typeof value === "string") return redactHermesRuntimeText(value);
-	if (Array.isArray(value)) return value.map((item) => redactHermesRuntimeValue(item));
-	if (!isRecord(value)) return value;
-	return Object.fromEntries(
-		Object.entries(value).map(([key, entry]) => [key, redactHermesRuntimeValue(entry)]),
-	);
+	return redactStructuredSecrets(value);
+}
+
+function redactHermesToolResult(toolName: string, value: unknown): unknown {
+	// Only relay tool results receive a provenance-scoped preserve map. Tool-use
+	// input is agent-supplied and always takes the default-redact path.
+	return redactStructuredSecrets(value, {
+		opaqueFields: TOOL_RESULT_OPAQUE_FIELDS[toolName],
+	});
 }
 
 export function readHermesCliHeadlessProbeReport(
@@ -1478,6 +1534,11 @@ function isForbiddenCredentialKey(key: string): boolean {
 
 function containsCredentialValue(value: string): boolean {
 	return filterOutput(value).blocked;
+}
+
+function isRelayGeneratedTransientHermesHome(value: string): boolean {
+	const prefix = "/home/hermes/.telclaude-docker-exec/";
+	return value.startsWith(prefix) && isUuidV4(value.slice(prefix.length));
 }
 
 function containsRawModelProviderCredential(value: string): boolean {

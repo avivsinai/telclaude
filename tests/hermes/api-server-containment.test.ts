@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-	buildHermesApiServerLaunchPlan,
 	buildHermesApiServerContainerHttpProbeScript,
+	buildHermesApiServerLaunchPlan,
 	createEphemeralHermesApiServerKey,
 	DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE,
 	findHermesApiServerLaunchSecretFindings,
@@ -212,6 +212,35 @@ describe("Hermes API-server containment", () => {
 		});
 		expect(JSON.stringify(report)).not.toContain("ephemeral-api-key-for-test");
 		expect(JSON.stringify(report)).toContain("[REDACTED:ephemeral_api_auth]");
+	});
+
+	it("preserves a relay-owned Docker ID while redacting real observation content", async () => {
+		const plan = buildHermesApiServerLaunchPlan({
+			apiKey: "ephemeral-api-key-for-test",
+			cwd: "/tmp/telclaude",
+		});
+		const containerId = `aaaaaaaaaaaaaaaaaaaa123456782${"b".repeat(35)}`;
+		const telegramToken = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi";
+		const observation = passingObservation();
+
+		const report = await runHermesApiServerContainmentProbe({
+			allowRun: true,
+			launch: plan,
+			runner: async () => ({
+				...observation,
+				lifecycle: {
+					...observation.lifecycle,
+					containerId,
+				},
+				health: {
+					ok: true,
+					detail: `ready ${telegramToken}`,
+				},
+			}),
+		});
+
+		expect(report.observation?.lifecycle?.containerId).toBe(containerId);
+		expect(report.observation?.health?.detail).toBe("ready [REDACTED:telegram_bot_token]");
 	});
 
 	it("records no-AppArmor posture without turning local dry-run evidence into production proof", async () => {

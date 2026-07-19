@@ -210,6 +210,8 @@ export function householdMediaProbeEvidenceFailure(
 	if (!parsed.success) return `invalid household media evidence: ${flatten(parsed.error)}`;
 	const data = parsed.data;
 	const failures: string[] = [];
+	const attestationFailure = verifyAttestation(data, options);
+	if (attestationFailure) failures.push(attestationFailure);
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (!data.ran) failures.push("harness did not run");
 	const freshnessFailure = hermesAttestationFreshnessFailure(
@@ -227,12 +229,14 @@ export function householdMediaProbeEvidenceFailure(
 		if (!item) failures.push(`check ${name} is missing`);
 		else if (item.status !== "pass") failures.push(`check ${name} is ${item.status}`);
 	}
-	if (FORBIDDEN_EVIDENCE.test(JSON.stringify(data))) {
+	// The already-verified runner attestation is relay-signed crypto metadata,
+	// not media or custody content. Random signature bytes can spell a forbidden
+	// field name, so scan only the evidence body after authenticity is established.
+	const evidenceBody = JSON.stringify({ ...data, runnerAttestation: undefined });
+	if (FORBIDDEN_EVIDENCE.test(evidenceBody)) {
 		failures.push("artifact contains non-sanitized media content or custody metadata");
 	}
 	failures.push(...observationFailures(data.observations));
-	const attestationFailure = verifyAttestation(data, options);
-	if (attestationFailure) failures.push(attestationFailure);
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 

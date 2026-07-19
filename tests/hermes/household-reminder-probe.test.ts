@@ -2,15 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { generateKeyPair } from "../../src/internal-auth.js";
 import {
 	collectFeatureProbeEvidence,
 	hermesAdapterSignatureFilesForSurface,
 } from "../../src/hermes/foundation.js";
+import { signHouseholdReminderAttestation } from "../../src/hermes/household-reminder-attestation.js";
 import {
 	householdReminderProbeEvidenceFailure,
 	runHouseholdReminderProbe,
 } from "../../src/hermes/household-reminder-probe.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
 
 const ORIGINAL_PRIVATE_KEY = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 const ORIGINAL_PUBLIC_KEY = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
@@ -75,6 +76,31 @@ describe("household reminder Hermes probe", () => {
 				{ allowStaleAttestations: true },
 			),
 		).toContain("runnerAttestation observationsSha256 mismatch");
+	});
+
+	it("verifies the runner envelope before scanning only the evidence body", async () => {
+		const { runnerAttestation: _attestation, ...body } = await runHouseholdReminderProbe({
+			allowRun: true,
+			observedAt: "2026-07-18T09:00:00.000Z",
+		});
+		const unsafeBody = { ...body, summary: "תזכורת leaked into evidence" };
+		const unsignedFailure = householdReminderProbeEvidenceFailure(unsafeBody, {
+			allowStaleAttestations: true,
+		});
+
+		expect(unsignedFailure).toMatch(/^runnerAttestation is missing;/);
+		expect(unsignedFailure).toContain(
+			"artifact contains non-sanitized reminder or routing content",
+		);
+
+		const signedFailure = householdReminderProbeEvidenceFailure(
+			{
+				...unsafeBody,
+				runnerAttestation: signHouseholdReminderAttestation(unsafeBody),
+			},
+			{ allowStaleAttestations: true },
+		);
+		expect(signedFailure).toBe("artifact contains non-sanitized reminder or routing content");
 	});
 
 	it("does not self-report a pass without explicit run authority", async () => {

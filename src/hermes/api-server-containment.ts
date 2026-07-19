@@ -2,6 +2,11 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { redactSecrets } from "../security/output-filter.js";
 import {
+	isRelayContainerId,
+	type OpaqueStringFieldValidators,
+	redactStructuredSecrets,
+} from "../security/structured-redaction.js";
+import {
 	type HermesArtifactWriteOptions,
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
@@ -27,6 +32,10 @@ export const DEFAULT_HERMES_API_SERVER_HERMES_HOME = "/home/hermes/.hermes";
 export const DEFAULT_HERMES_RELAY_INTERNAL_HOST = "telclaude";
 export const DEFAULT_HERMES_RELAY_CONTAINER_NAME = "telclaude";
 export const DEFAULT_HERMES_API_SERVER_RUNTIME_USER = "10000:10000";
+
+const API_SERVER_OBSERVATION_OPAQUE_FIELDS: OpaqueStringFieldValidators = {
+	containerId: isRelayContainerId,
+};
 
 type ApiServerContainmentStatus = "pass" | "fail" | "pending";
 type ContainerHttpProbeExpectation = "allow" | "deny";
@@ -390,11 +399,14 @@ export async function runHermesApiServerDockerContainment(
 		};
 	}
 	const containerId = (start.stdout.trim().split(/\s+/)[0] || plan.containerName).trim();
+	const safeContainerId = isRelayContainerId(containerId)
+		? containerId
+		: redactApiServerText(containerId, plan);
 	let observation: HermesApiServerContainmentObservation = {
 		lifecycle: {
 			started: true,
 			stopped: false,
-			containerId: redactSecrets(containerId),
+			containerId: safeContainerId,
 			detail: "contained Hermes API-server container started",
 		},
 	};
@@ -407,7 +419,7 @@ export async function runHermesApiServerDockerContainment(
 			lifecycle: {
 				started: true,
 				stopped: false,
-				containerId: redactSecrets(containerId),
+				containerId: safeContainerId,
 				detail: "contained Hermes API-server container started",
 			},
 			posture,
@@ -658,9 +670,13 @@ function sanitizeObservation(
 	observation: HermesApiServerContainmentObservation,
 	plan: HermesApiServerLaunchPlan,
 ): HermesApiServerContainmentObservation {
-	return JSON.parse(
-		redactApiServerText(JSON.stringify(observation), plan),
-	) as HermesApiServerContainmentObservation;
+	const withoutEphemeralAuth = JSON.stringify(observation).replaceAll(
+		plan.apiKey,
+		"[REDACTED:ephemeral_api_auth]",
+	);
+	return redactStructuredSecrets(JSON.parse(withoutEphemeralAuth), {
+		opaqueFields: API_SERVER_OBSERVATION_OPAQUE_FIELDS,
+	}) as HermesApiServerContainmentObservation;
 }
 
 async function waitForHealth(

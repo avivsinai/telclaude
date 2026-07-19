@@ -82,6 +82,50 @@ describe("HermesApiRuntimeAdapter", () => {
 		});
 	});
 
+	it("preserves server-owned approval correlation IDs while redacting ambiguous event content", async () => {
+		const requestId = "550e8400-e29b-41d4-a716-123456782abc";
+		const runId = "650e8400-e29b-41d4-a716-123456782abc";
+		const actionRef = "effect-550e8400-e29b-41d4-a716-123456782abc";
+		const telegramToken = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi";
+		const adapter = new HermesApiRuntimeAdapter({
+			baseUrl: "http://hermes.local",
+			apiKey: "api-key",
+			fetch: async (url) => {
+				if (url === "http://hermes.local/v1/runs") {
+					return jsonResponse({ run_id: "run-1" }, 202);
+				}
+				return sseResponse([
+					sse({
+						event: "approval.request",
+						request_id: requestId,
+						run_id: runId,
+						actionRef,
+						body: `approve ${telegramToken}`,
+						bodyMetadata: { request_id: requestId },
+					}),
+					sse({ event: "run.completed", output: "done" }),
+				]);
+			},
+		});
+
+		const events = await collect(adapter.run(baseRequest()));
+
+		expect(events[1]).toEqual({
+			type: "tool_use",
+			toolName: "hermes_approval_request",
+			input: {
+				event: "approval.request",
+				request_id: requestId,
+				run_id: runId,
+				actionRef: "effect-550e8400-e29b-41d4-a716-[REDACTED:israeli_id]abc",
+				body: "approve [REDACTED:telegram_bot_token]",
+				bodyMetadata: {
+					request_id: "550e8400-e29b-41d4-a716-[REDACTED:israeli_id]abc",
+				},
+			},
+		});
+	});
+
 	it("sends MCP authority only via transport headers, never prompt instructions or memory", async () => {
 		const calls: Array<{ url: string; init: Record<string, unknown> }> = [];
 		const fetcher: HermesApiFetch = async (url, init) => {
