@@ -220,6 +220,8 @@ export function householdReminderProbeEvidenceFailure(
 	if (!parsed.success) return `invalid household reminder evidence: ${flatten(parsed.error)}`;
 	const data = parsed.data;
 	const failures: string[] = [];
+	const attestationFailure = verifyAttestation(data, options);
+	if (attestationFailure) failures.push(attestationFailure);
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (!data.ran) failures.push("harness did not run");
 	const freshnessFailure = hermesAttestationFreshnessFailure(
@@ -237,12 +239,14 @@ export function householdReminderProbeEvidenceFailure(
 		if (!check) failures.push(`check ${name} is missing`);
 		else if (check.status !== "pass") failures.push(`check ${name} is ${check.status}`);
 	}
-	if (FORBIDDEN_EVIDENCE.test(JSON.stringify(data))) {
+	// Keep relay-signed crypto metadata outside the content/custody scan after
+	// its authenticity is checked. Only the evidence body can carry reminder or
+	// routing content.
+	const evidenceBody = JSON.stringify({ ...data, runnerAttestation: undefined });
+	if (FORBIDDEN_EVIDENCE.test(evidenceBody)) {
 		failures.push("artifact contains non-sanitized reminder or routing content");
 	}
 	failures.push(...observationFailures(data.observations));
-	const attestationFailure = verifyAttestation(data, options);
-	if (attestationFailure) failures.push(attestationFailure);
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 

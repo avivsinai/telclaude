@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -34,6 +35,7 @@ describe("Telclaude live MCP skill-request capability client", () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 		resetDatabase();
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		if (ORIGINAL_DATA_DIR === undefined) {
@@ -44,6 +46,7 @@ describe("Telclaude live MCP skill-request capability client", () => {
 	});
 
 	it("files an operator-review Curator item and never installs anything", async () => {
+		vi.spyOn(crypto, "randomUUID").mockReturnValue("550e8400-e29b-41d4-a716-123456782abc");
 		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
 		const clients = makeClients({ auditEntries });
 
@@ -123,6 +126,23 @@ describe("Telclaude live MCP skill-request capability client", () => {
 		)) as SkillRequestResult;
 		expect(other.curatorItemId).not.toBe(first.curatorItemId);
 		expect(listCuratorItems({ status: "all", kind: "skill_review" })).toHaveLength(2);
+	});
+
+	it("redacts agent-supplied opaque-looking fields in audit notes", async () => {
+		const auditEntries: TelclaudeLiveMcpAuditEntry[] = [];
+		const clients = makeClients({ auditEntries });
+
+		await clients.auditNote({
+			...privateStamp(),
+			kind: "skill.request",
+			payload: {
+				curatorItemId: "curator-550e8400-e29b-41d4-a716-123456782abc",
+			},
+		});
+
+		expect(auditEntries[0]?.payload).toEqual({
+			curatorItemId: "curator-550e8400-e29b-41d4-a716-[REDACTED:israeli_id]abc",
+		});
 	});
 
 	it("enforces the 5/hour skill-request rate limit per actor", async () => {

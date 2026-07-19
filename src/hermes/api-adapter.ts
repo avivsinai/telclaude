@@ -1,3 +1,4 @@
+import { isUuidV4, redactStructuredSecrets } from "../security/structured-redaction.js";
 import {
 	TELCLAUDE_MCP_AUTHORITY_ENDPOINT_HEADER,
 	TELCLAUDE_MCP_AUTHORITY_HEADER,
@@ -11,6 +12,17 @@ import {
 	type HermesRuntimeRequest,
 	redactHermesRuntimeText,
 } from "./private-runtime.js";
+
+// These top-level Hermes API envelope fields are minted by the server, not by
+// tool/model payloads. Nested IDs and approval action/outbound refs remain
+// default-redacted because this unknown event schema cannot prove provenance.
+const HERMES_API_APPROVAL_EVENT_ID_FIELDS = [
+	"approvalRequestId",
+	"requestId",
+	"request_id",
+	"runId",
+	"run_id",
+] as const;
 
 export type HermesApiFetchInit = {
 	method: "GET" | "POST";
@@ -284,7 +296,7 @@ function mapRunEvent(event: HermesRunSseEvent): HermesRuntimeEvent | null {
 				? {
 						type: "tool_use",
 						toolName: event.tool,
-						input: { preview: redactUnknown(event.preview ?? null) },
+						input: { preview: redactStructuredSecrets(event.preview ?? null) },
 					}
 				: null;
 		case "tool.completed":
@@ -299,12 +311,16 @@ function mapRunEvent(event: HermesRunSseEvent): HermesRuntimeEvent | null {
 					}
 				: null;
 		case "approval.request":
-			return { type: "tool_use", toolName: "hermes_approval_request", input: redactUnknown(event) };
+			return {
+				type: "tool_use",
+				toolName: "hermes_approval_request",
+				input: redactApprovalEvent(event),
+			};
 		case "approval.responded":
 			return {
 				type: "tool_result",
 				toolName: "hermes_approval_request",
-				output: redactUnknown(event),
+				output: redactApprovalEvent(event),
 			};
 		case "run.completed":
 			return {
@@ -334,13 +350,15 @@ function mapRunEvent(event: HermesRunSseEvent): HermesRuntimeEvent | null {
 	}
 }
 
-function redactUnknown(value: unknown): unknown {
-	if (typeof value === "string") return redactHermesRuntimeText(value);
-	if (Array.isArray(value)) return value.map((item) => redactUnknown(item));
-	if (!isRecord(value)) return value;
-	return Object.fromEntries(
-		Object.entries(value).map(([key, entry]) => [key, redactUnknown(entry)]),
-	);
+function redactApprovalEvent(value: unknown): unknown {
+	const redacted = redactStructuredSecrets(value);
+	if (!isRecord(value) || !isRecord(redacted)) return redacted;
+	const result = { ...redacted };
+	for (const field of HERMES_API_APPROVAL_EVENT_ID_FIELDS) {
+		const candidate = value[field];
+		if (typeof candidate === "string" && isUuidV4(candidate)) result[field] = candidate;
+	}
+	return result;
 }
 
 async function redactedResponseText(response: HermesApiResponse): Promise<string> {

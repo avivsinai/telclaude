@@ -61,6 +61,16 @@ import type { WhatsAppHouseholdReplyBindingResolver } from "../../relay/whatsapp
 import { fetchWithGuard } from "../../sandbox/fetch-guard.js";
 import { wrapExternalContent } from "../../security/external-content.js";
 import { redactSecrets } from "../../security/output-filter.js";
+import {
+	isRelayActionRef,
+	isRelayAttachmentRef,
+	isRelayCronJobId,
+	isRelayCuratorItemId,
+	isRelayReminderId,
+	isSha256Value,
+	type OpaqueStringFieldValidators,
+	redactStructuredSecrets,
+} from "../../security/structured-redaction.js";
 import { assertSafeWebEgress } from "../../security/web-egress-preflight.js";
 import {
 	githubGetTree,
@@ -243,6 +253,26 @@ export const OUTBOUND_MEDIA_QUARANTINE_TTL_MS = 15 * 60 * 1000;
 const SKILL_REQUEST_RATE_LIMIT: FeatureRateLimitConfig = {
 	maxPerHourPerUser: 5,
 	maxPerDayPerUser: 20,
+};
+
+// Each map is passed only by a relay-owned producer after it mints or resolves
+// the corresponding value. Agent-authored tc_audit_note payloads receive no
+// preserve map, even when a field happens to look like an opaque ref.
+const AUDIT_ACTION_REF_FIELDS: OpaqueStringFieldValidators = {
+	actionRef: isRelayActionRef,
+};
+const AUDIT_ATTACHMENT_REF_FIELDS: OpaqueStringFieldValidators = {
+	attachmentRef: isRelayAttachmentRef,
+};
+const AUDIT_CURATOR_REF_FIELDS: OpaqueStringFieldValidators = {
+	curatorItemId: isRelayCuratorItemId,
+};
+const AUDIT_REMINDER_REF_FIELDS: OpaqueStringFieldValidators = {
+	reminderId: isRelayReminderId,
+	proposalHash: isSha256Value,
+};
+const AUDIT_CRON_REF_FIELDS: OpaqueStringFieldValidators = {
+	jobId: isRelayCronJobId,
 };
 
 /** Authenticated private-repo traversal can pull a lot of context into the model;
@@ -511,6 +541,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		request: TelclaudeMcpAuthorityStamp,
 		kind: string,
 		payload: Record<string, unknown>,
+		opaqueFields: OpaqueStringFieldValidators = {},
 	): void | Promise<void> =>
 		auditNote({
 			actorId: request.actorId,
@@ -518,7 +549,7 @@ export function createTelclaudeLiveMcpRelayClients(
 			domain: request.domain,
 			endpointId: request.endpointId,
 			kind,
-			payload: sanitizePayload(payload),
+			payload: sanitizePayload(payload, opaqueFields),
 		});
 
 	return {
@@ -1023,13 +1054,18 @@ export function createTelclaudeLiveMcpRelayClients(
 					: {}),
 			});
 			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
-			await auditFromRequest(request, "web.browse_act_prepare", {
-				actionRef: record.ref,
-				verb: request.verb,
-				// Display-only summary: verb + redacted target + origin. Never the raw
-				// target/values or any token.
-				display: prepared.display,
-			});
+			await auditFromRequest(
+				request,
+				"web.browse_act_prepare",
+				{
+					actionRef: record.ref,
+					verb: request.verb,
+					// Display-only summary: verb + redacted target + origin. Never the raw
+					// target/values or any token.
+					display: prepared.display,
+				},
+				AUDIT_ACTION_REF_FIELDS,
+			);
 			return {
 				actionRef: record.ref,
 				approvalRequestId: record.approvalRequestId,
@@ -1054,12 +1090,17 @@ export function createTelclaudeLiveMcpRelayClients(
 				mimeType: "image/png",
 				sizeBytes: generated.sizeBytes,
 			});
-			await auditFromRequest(request, "media.image", {
-				attachmentRef: attachment.ref,
-				model: generated.model,
-				sizeBytes: generated.sizeBytes,
-				promptChars: request.prompt.length,
-			});
+			await auditFromRequest(
+				request,
+				"media.image",
+				{
+					attachmentRef: attachment.ref,
+					model: generated.model,
+					sizeBytes: generated.sizeBytes,
+					promptChars: request.prompt.length,
+				},
+				AUDIT_ATTACHMENT_REF_FIELDS,
+			);
 			return {
 				attachmentRef: attachment.ref,
 				sizeBytes: generated.sizeBytes,
@@ -1088,13 +1129,18 @@ export function createTelclaudeLiveMcpRelayClients(
 				mimeType: generated.format === "mp3" ? "audio/mpeg" : `audio/${generated.format}`,
 				sizeBytes: generated.sizeBytes,
 			});
-			await auditFromRequest(request, "media.tts", {
-				attachmentRef: attachment.ref,
-				format: generated.format,
-				voice: generated.voice,
-				sizeBytes: generated.sizeBytes,
-				textChars: request.text.length,
-			});
+			await auditFromRequest(
+				request,
+				"media.tts",
+				{
+					attachmentRef: attachment.ref,
+					format: generated.format,
+					voice: generated.voice,
+					sizeBytes: generated.sizeBytes,
+					textChars: request.text.length,
+				},
+				AUDIT_ATTACHMENT_REF_FIELDS,
+			);
 			return {
 				attachmentRef: attachment.ref,
 				sizeBytes: generated.sizeBytes,
@@ -1142,12 +1188,17 @@ export function createTelclaudeLiveMcpRelayClients(
 				producerId: request.actorId,
 			});
 			consumeRateLimit("skill_request", request.actorId);
-			await auditFromRequest(request, "skill.request", {
-				curatorItemId: item.id,
-				shortId: item.shortId,
-				skillName: request.skillName,
-				itemStatus: item.status,
-			});
+			await auditFromRequest(
+				request,
+				"skill.request",
+				{
+					curatorItemId: item.id,
+					shortId: item.shortId,
+					skillName: request.skillName,
+					itemStatus: item.status,
+				},
+				AUDIT_CURATOR_REF_FIELDS,
+			);
 			return {
 				curatorItemId: item.id,
 				shortId: item.shortId,
@@ -1181,12 +1232,17 @@ export function createTelclaudeLiveMcpRelayClients(
 					source: { kind: "parent" },
 					schedule,
 				});
-				await auditFromRequest(request, "schedule.create", {
-					reminderId: prepared.reminder.id,
-					revision: prepared.reminder.revision,
-					proposalHash: prepared.proposal.proposalHash,
-					status: prepared.reminder.status,
-				});
+				await auditFromRequest(
+					request,
+					"schedule.create",
+					{
+						reminderId: prepared.reminder.id,
+						revision: prepared.reminder.revision,
+						proposalHash: prepared.proposal.proposalHash,
+						status: prepared.reminder.status,
+					},
+					AUDIT_REMINDER_REF_FIELDS,
+				);
 				return householdProposalView(
 					prepared.reminder,
 					prepared.proposal.action,
@@ -1206,11 +1262,16 @@ export function createTelclaudeLiveMcpRelayClients(
 				schedule,
 				action: { kind: "agent-prompt", prompt: request.prompt },
 			});
-			await auditFromRequest(request, "schedule.create", {
-				jobId: job.id,
-				scheduleKind: schedule.kind,
-				promptChars: request.prompt.length,
-			});
+			await auditFromRequest(
+				request,
+				"schedule.create",
+				{
+					jobId: job.id,
+					scheduleKind: schedule.kind,
+					promptChars: request.prompt.length,
+				},
+				AUDIT_CRON_REF_FIELDS,
+			);
 			return scheduleJobView(job);
 		},
 
@@ -1253,12 +1314,17 @@ export function createTelclaudeLiveMcpRelayClients(
 						...context,
 						reminderId: request.jobId,
 					});
-					await auditFromRequest(request, "schedule.cancel", {
-						reminderId: cancelled.id,
-						revision: cancelled.revision,
-						status: cancelled.status,
-						sourceKind: cancelled.source.kind,
-					});
+					await auditFromRequest(
+						request,
+						"schedule.cancel",
+						{
+							reminderId: cancelled.id,
+							revision: cancelled.revision,
+							status: cancelled.status,
+							sourceKind: cancelled.source.kind,
+						},
+						AUDIT_REMINDER_REF_FIELDS,
+					);
 					return {
 						...householdReminderView(cancelled),
 						confirmationRequired: false,
@@ -1269,12 +1335,17 @@ export function createTelclaudeLiveMcpRelayClients(
 					...context,
 					reminderId: request.jobId,
 				});
-				await auditFromRequest(request, "schedule.cancel", {
-					reminderId: prepared.reminder.id,
-					revision: prepared.reminder.revision,
-					proposalHash: prepared.proposal.proposalHash,
-					status: prepared.reminder.status,
-				});
+				await auditFromRequest(
+					request,
+					"schedule.cancel",
+					{
+						reminderId: prepared.reminder.id,
+						revision: prepared.reminder.revision,
+						proposalHash: prepared.proposal.proposalHash,
+						status: prepared.reminder.status,
+					},
+					AUDIT_REMINDER_REF_FIELDS,
+				);
 				return householdProposalView(
 					prepared.reminder,
 					prepared.proposal.action,
@@ -1290,10 +1361,15 @@ export function createTelclaudeLiveMcpRelayClients(
 				throw new TelclaudeLiveMcpScheduleNotFoundError();
 			}
 			const removed = removeCronJob(request.jobId);
-			await auditFromRequest(request, "schedule.cancel", {
-				jobId: request.jobId,
-				removed,
-			});
+			await auditFromRequest(
+				request,
+				"schedule.cancel",
+				{
+					jobId: job.id,
+					removed,
+				},
+				AUDIT_CRON_REF_FIELDS,
+			);
 			return { jobId: request.jobId, cancelled: removed };
 		},
 
@@ -1327,12 +1403,17 @@ export function createTelclaudeLiveMcpRelayClients(
 				...(request.label ? { label: request.label } : {}),
 				schedule,
 			});
-			await auditFromRequest(request, "schedule.update", {
-				reminderId: prepared.reminder.id,
-				revision: prepared.reminder.revision,
-				proposalHash: prepared.proposal.proposalHash,
-				status: prepared.reminder.status,
-			});
+			await auditFromRequest(
+				request,
+				"schedule.update",
+				{
+					reminderId: prepared.reminder.id,
+					revision: prepared.reminder.revision,
+					proposalHash: prepared.proposal.proposalHash,
+					status: prepared.reminder.status,
+				},
+				AUDIT_REMINDER_REF_FIELDS,
+			);
 			return householdProposalView(
 				prepared.reminder,
 				prepared.proposal.action,
@@ -2175,20 +2256,15 @@ function assertAuthorityMemoryBoundary(request: {
 	}
 }
 
-function sanitizePayload(value: unknown): Record<string, unknown> {
-	const sanitized = sanitizeUnknown(value);
+function sanitizePayload(
+	value: unknown,
+	opaqueFields: OpaqueStringFieldValidators,
+): Record<string, unknown> {
+	const sanitized = redactStructuredSecrets(value, {
+		opaqueFields,
+		maxStringLength: 2_000,
+		maxArrayLength: 50,
+	});
 	if (!sanitized || typeof sanitized !== "object" || Array.isArray(sanitized)) return {};
 	return sanitized as Record<string, unknown>;
-}
-
-function sanitizeUnknown(value: unknown): unknown {
-	if (typeof value === "string") return redactSecrets(value).slice(0, 2_000);
-	if (Array.isArray(value)) return value.slice(0, 50).map(sanitizeUnknown);
-	if (!value || typeof value !== "object") return value;
-	return Object.fromEntries(
-		Object.entries(value as Record<string, unknown>).map(([key, child]) => [
-			key,
-			sanitizeUnknown(child),
-		]),
-	);
 }

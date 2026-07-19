@@ -169,6 +169,63 @@ describe("Hermes private runtime seam", () => {
 		]);
 	});
 
+	it("preserves relay-minted tool-result refs without trusting agent-supplied lookalikes", async () => {
+		const actionRef = "effect-550e8400-e29b-41d4-a716-123456782abc";
+		const token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi";
+		const sessions = new HermesSessionMap(() => "tc-session-1");
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* () {
+				yield {
+					type: "tool_use",
+					toolName: "tc_browse_act_execute",
+					input: { actionRef },
+				};
+				yield {
+					type: "tool_result",
+					toolName: "tc_browse_act_prepare",
+					output: { actionRef, display: `prepared ${token}` },
+				};
+				yield {
+					type: "tool_result",
+					toolName: "tc_audit_note",
+					output: { actionRef },
+				};
+			},
+		};
+
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions,
+				request: baseRequest(),
+				now: () => 1000,
+			}),
+		);
+
+		expect(chunks[0]).toEqual({
+			type: "tool_use",
+			toolName: "tc_browse_act_execute",
+			input: {
+				actionRef: "effect-550e8400-e29b-41d4-a716-[REDACTED:israeli_id]abc",
+			},
+		});
+		expect(chunks[1]).toEqual({
+			type: "tool_result",
+			toolName: "tc_browse_act_prepare",
+			output: {
+				actionRef,
+				display: "prepared [REDACTED:telegram_bot_token]",
+			},
+		});
+		expect(chunks[2]).toEqual({
+			type: "tool_result",
+			toolName: "tc_audit_note",
+			output: {
+				actionRef: "effect-550e8400-e29b-41d4-a716-[REDACTED:israeli_id]abc",
+			},
+		});
+	});
+
 	it("mints private MCP authority out-of-band for the runtime and revokes it on completion", async () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const sessions = new HermesSessionMap(() => "tc-session-1");
@@ -876,6 +933,33 @@ describe("Hermes private runtime seam", () => {
 			{
 				location: "argv[2]",
 				reason: "credential-like process argument",
+			},
+		]);
+	});
+
+	it("does not classify the relay-generated transient Hermes home as a launch secret", () => {
+		const opaqueId = "550e8400-e29b-41d4-a716-123456782abc";
+		const generatedHome = `/home/hermes/.telclaude-docker-exec/${opaqueId}`;
+
+		expect(
+			findHermesLaunchSecretFindings({
+				command: "hermes",
+				args: ["chat"],
+				cwd: "/repo",
+				env: { HERMES_HOME: generatedHome },
+			}),
+		).toEqual([]);
+		expect(
+			findHermesLaunchSecretFindings({
+				command: "hermes",
+				args: ["chat"],
+				cwd: "/repo",
+				env: { HERMES_HOME: `/tmp/${opaqueId}` },
+			}),
+		).toEqual([
+			{
+				location: "env.HERMES_HOME",
+				reason: "credential-like environment value",
 			},
 		]);
 	});
