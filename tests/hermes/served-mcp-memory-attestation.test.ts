@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import crypto from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	evaluateServedMcpMemoryEvidence,
 	SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES,
@@ -15,6 +16,7 @@ const savedRelay = {
 	private: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
 	public: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 };
+const CREDENTIAL_SHAPED_NONCE = Buffer.from("aa123456782bcccccccccccccccccccc", "hex");
 let relayPublicKey = "";
 
 beforeEach(() => {
@@ -24,6 +26,7 @@ beforeEach(() => {
 	relayPublicKey = keys.publicKey;
 });
 afterEach(() => {
+	vi.restoreAllMocks();
 	if (savedRelay.private === undefined) delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 	else process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = savedRelay.private;
 	if (savedRelay.public === undefined) delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
@@ -102,6 +105,18 @@ describe("served-MCP memory attestation gate (live cutover)", () => {
 		expect(report.status).toBe("pass");
 		expect(report.productionEnable).toBe(true);
 		expect(report.gates.find((gate) => gate.name === "memory.attestation")).toBeUndefined();
+	});
+
+	it("does not scan relay-signed crypto metadata as evidence content", () => {
+		vi.spyOn(crypto, "randomBytes").mockReturnValue(CREDENTIAL_SHAPED_NONCE);
+		const evidence = signedEvidence();
+
+		const report = evaluateServedMcpMemoryEvidence(evidence, liveOptions());
+		expect(report.status).toBe("pass");
+		expect(report.productionEnable).toBe(true);
+		expect(report.gates).toContainEqual(
+			expect.objectContaining({ name: "memory.artifact_redacted", status: "pass" }),
+		);
 	});
 
 	it("rejects unsigned evidence (runnerAttestation missing)", () => {

@@ -213,7 +213,10 @@ export function evaluateServedMcpHouseholdMemoryEvidence(
 	for (const check of data.checks) {
 		checks.set(check.name, [...(checks.get(check.name) ?? []), check]);
 	}
-	const serialized = JSON.stringify(data);
+	// The already-verified runnerAttestation is relay-signed crypto metadata, not
+	// agent/model content. Scan the evidence body only: random nonce, digest, and
+	// signature bytes can resemble credentials without carrying leaked content.
+	const serialized = JSON.stringify({ ...data, runnerAttestation: undefined });
 	const artifactLeaked = redactSecrets(serialized) !== serialized;
 	for (const property of SERVED_MCP_HOUSEHOLD_MEMORY_REQUIRED_PROPERTIES) {
 		const matches = checks.get(property) ?? [];
