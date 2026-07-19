@@ -15,17 +15,28 @@ export const HOUSEHOLD_PHASE0_CLALIT_WRITE_ACTIONS = ["prescription_renewal"] as
 
 const READ_ACTIONS = new Set<string>(HOUSEHOLD_PHASE0_CLALIT_READ_ACTIONS);
 const WRITE_ACTIONS = new Set<string>(HOUSEHOLD_PHASE0_CLALIT_WRITE_ACTIONS);
+const NO_PARAM_KEYS = new Set<string>();
+const ALLOWED_PARAM_KEYS = new Map<string, ReadonlySet<string>>([
+	...HOUSEHOLD_PHASE0_CLALIT_READ_ACTIONS.map((action) => [action, NO_PARAM_KEYS] as const),
+	["prescription_renewal", new Set(["prescriptionId"])],
+]);
 
 export function assertHouseholdPhase0ProviderActionAllowed(input: {
 	readonly domain: TelclaudeMcpDomain;
 	readonly service: string;
 	readonly action: string;
 	readonly mode: "read" | "write";
+	readonly params: Readonly<Record<string, unknown>>;
 }): void {
 	if (input.domain !== "household") return;
 	const allowed = input.mode === "read" ? READ_ACTIONS : WRITE_ACTIONS;
-	if (input.service === "clalit" && allowed.has(input.action)) return;
-	throw new Error("household Phase 0 provider action denied");
+	if (input.service !== "clalit" || !allowed.has(input.action)) {
+		throw new Error("household Phase 0 provider action denied");
+	}
+	const allowedParamKeys = ALLOWED_PARAM_KEYS.get(input.action);
+	if (!allowedParamKeys || Object.keys(input.params).some((key) => !allowedParamKeys.has(key))) {
+		throw new Error("household Phase 0 provider params denied");
+	}
 }
 
 /**

@@ -915,6 +915,7 @@ async function runHouseholdClalitProbe(input: {
 				service: "clalit",
 				action,
 				mode: "read",
+				params: {},
 			});
 		}
 		assertHouseholdPhase0ProviderActionAllowed({
@@ -922,6 +923,7 @@ async function runHouseholdClalitProbe(input: {
 			service: "clalit",
 			action: "prescription_renewal",
 			mode: "write",
+			params: { prescriptionId: "rx-allowlist-probe" },
 		});
 		for (const [action, mode] of [
 			["home", "read"],
@@ -934,6 +936,29 @@ async function runHouseholdClalitProbe(input: {
 					service: "clalit",
 					action,
 					mode,
+					params: {},
+				});
+				allowlistEnforced = false;
+			} catch {
+				// Required denial.
+			}
+		}
+		for (const [action, mode, params] of [
+			["appointments", "read", { memberId: "synthetic-member" }],
+			["prescription_renewal", "write", { subjectUserId: "synthetic-subject" }],
+			[
+				"prescription_renewal",
+				"write",
+				{ prescriptionId: "rx-allowlist-probe", filter: { subjectId: "synthetic-subject" } },
+			],
+		] as const) {
+			try {
+				assertHouseholdPhase0ProviderActionAllowed({
+					domain: "household",
+					service: "clalit",
+					action,
+					mode,
+					params,
 				});
 				allowlistEnforced = false;
 			} catch {
@@ -947,7 +972,7 @@ async function runHouseholdClalitProbe(input: {
 		input.checks,
 		"clalit.household.action-allowlist-enforced",
 		allowlistEnforced,
-		"reviewed reads and prescription renewal pass while home, booking, and Tofes 17 deny",
+		"reviewed actions and params pass while unreviewed actions and selector params deny",
 	);
 
 	const parentA = input.ledger.prepare(
