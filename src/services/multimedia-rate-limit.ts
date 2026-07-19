@@ -167,10 +167,7 @@ export class MultimediaRateLimiter {
 			};
 
 			if (config.maxPerMinutePerUser !== undefined && minutePoints >= config.maxPerMinutePerUser) {
-				logger.info(
-					{ feature, userId, minutePoints, limit: config.maxPerMinutePerUser },
-					"multimedia minute rate limit hit",
-				);
+				logger.info("multimedia minute rate limit hit");
 				return {
 					allowed: false,
 					remaining: { ...remaining, minute: 0 },
@@ -181,10 +178,7 @@ export class MultimediaRateLimiter {
 
 			// Check hourly limit
 			if (hourPoints >= config.maxPerHourPerUser) {
-				logger.info(
-					{ feature, userId, hourPoints, limit: config.maxPerHourPerUser },
-					"multimedia hourly rate limit hit",
-				);
+				logger.info("multimedia hourly rate limit hit");
 				return {
 					allowed: false,
 					remaining: { ...remaining, hour: 0 },
@@ -195,10 +189,7 @@ export class MultimediaRateLimiter {
 
 			// Check daily limit
 			if (dayPoints >= config.maxPerDayPerUser) {
-				logger.info(
-					{ feature, userId, dayPoints, limit: config.maxPerDayPerUser },
-					"multimedia daily rate limit hit",
-				);
+				logger.info("multimedia daily rate limit hit");
 				return {
 					allowed: false,
 					remaining: { ...remaining, day: 0 },
@@ -212,12 +203,9 @@ export class MultimediaRateLimiter {
 				remaining,
 				resetMs,
 			};
-		} catch (err) {
+		} catch {
 			// FAIL CLOSED: On any error, block the request
-			logger.error(
-				{ error: String(err), feature, userId },
-				"multimedia rate limit check error - blocking",
-			);
+			logger.error("multimedia rate limit check error - blocking");
 			return {
 				allowed: false,
 				remaining: { hour: 0, day: 0 },
@@ -251,9 +239,9 @@ export class MultimediaRateLimiter {
 				this.incrementPoints(feature, userId, "hour", getWindowStart(HOUR_MS, reservationNowMs));
 				this.incrementPoints(feature, userId, "day", getWindowStart(DAY_MS, reservationNowMs));
 			})();
-			logger.debug({ feature, userId }, "multimedia rate limit point reserved");
+			logger.debug("multimedia rate limit point reserved");
 		} catch (err) {
-			logger.error({ error: String(err), feature, userId }, "rate limit reservation failed closed");
+			logger.error("rate limit reservation failed closed");
 			throw err;
 		}
 	}
@@ -273,10 +261,10 @@ export class MultimediaRateLimiter {
 				this.incrementPoints(feature, userId, "day", dayWindow);
 			})();
 
-			logger.debug({ feature, userId }, "multimedia rate limit point consumed");
-		} catch (err) {
+			logger.debug("multimedia rate limit point consumed");
+		} catch {
 			// Log but don't fail - the operation already succeeded
-			logger.error({ error: String(err), feature, userId }, "failed to consume rate limit point");
+			logger.error("failed to consume rate limit point");
 		}
 	}
 
@@ -305,7 +293,7 @@ export class MultimediaRateLimiter {
 			`multimedia_${feature}`,
 			userId,
 		);
-		logger.info({ feature, userId }, "multimedia rate limits reset for user");
+		logger.info("multimedia rate limits reset for user");
 	}
 }
 
