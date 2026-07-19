@@ -872,6 +872,121 @@ describe("Hermes MCP side-effect human approvals", () => {
 	});
 
 	it.each([
+		["Hebrew financial request", "בבקשה לשלם את התשלום בכרטיס אשראי"],
+		["English credential request", "Reply with your OTP verification code"],
+		["scam action", "Click here to verify account"],
+		["external link", "הנה האתר הרשמי: https://www.gov.il"],
+	] as const)("routes unsafe household outbound to human approval: %s", async (_label, body) => {
+		const record = prepareHouseholdOutboundRecord(body);
+		const controller = createController({ autoGrant: { enabled: true } });
+
+		const request = await controller.request({ record, chatId: 111 });
+
+		expect(request).toMatchObject({ ok: true });
+		expect(request).not.toHaveProperty("autoGranted");
+		expect(vault.signCalls).toHaveLength(0);
+		const [approval] = getPendingApprovalsForChat(111);
+		expect(approval?.body).toContain(body);
+
+		if (!request.ok) throw new Error(request.reason);
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+			}),
+		).resolves.toMatchObject({ ok: false, code: "fresh_step_up_required" });
+	});
+
+	it.each([
+		["moved reminder", "העברתי את התזכורת למחר"],
+		["building code", "הקוד לבניין הוא 1234"],
+		["benign urgency now", "אני אזכיר לך עכשיו"],
+		["benign urgency immediately", "אני אזכיר לך מיד"],
+		["English urgency", "Call me now when you are free"],
+		["weather", "מחר יהיה נעים, בערך 24 מעלות"],
+		["health", "הבדיקה יצאה תקינה, תנוחי היום"],
+		["greeting", "בוקר טוב אמא, איך ישנת?"],
+	] as const)("keeps benign household lookalike auto-granted: %s", async (_label, body) => {
+		const record = prepareHouseholdOutboundRecord(body);
+		const controller = createController({ autoGrant: { enabled: true } });
+
+		await expect(controller.request({ record, chatId: 111 })).resolves.toMatchObject({
+			ok: true,
+			autoGranted: true,
+		});
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+		expect(vault.signCalls).toHaveLength(1);
+	});
+
+	it("routes the sixth same-binding household auto-grant to approval with fresh TOTP", async () => {
+		const controller = createController({ autoGrant: { enabled: true } });
+		for (let index = 0; index < 5; index += 1) {
+			const request = await controller.request({
+				record: prepareHouseholdOutboundRecord(`הודעה רגילה ${index + 1}`),
+				chatId: 111,
+			});
+			expect(request).toMatchObject({ ok: true, autoGranted: true });
+		}
+		const record = prepareHouseholdOutboundRecord("הודעה רגילה 6");
+		const request = await controller.request({ record, chatId: 111 });
+
+		expect(request).toMatchObject({ ok: true });
+		expect(request).not.toHaveProperty("autoGranted");
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		if (!request.ok) throw new Error(request.reason);
+		const restartedController = createController({ autoGrant: { enabled: true } });
+
+		await expect(
+			restartedController.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+			}),
+		).resolves.toMatchObject({ ok: false, code: "fresh_step_up_required" });
+		await expect(
+			restartedController.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+				stepUp: freshStepUp(record.approverActorId),
+			}),
+		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
+	});
+
+	it.each([
+		[
+			"classifier",
+			{
+				classifyHouseholdOutboundSafety: () => {
+					throw new Error("classifier unavailable");
+				},
+			},
+		],
+		[
+			"rate limiter",
+			{
+				reserveHouseholdAutoGrantRateLimit: () => {
+					throw new Error("rate limiter unavailable");
+				},
+			},
+		],
+	] as const)("fails %s errors closed to human approval", async (_label, dependency) => {
+		const record = prepareHouseholdOutboundRecord("הכל בסדר, נדבר בערב");
+		const controller = createController({ autoGrant: { enabled: true }, ...dependency });
+
+		const request = await controller.request({ record, chatId: 111 });
+
+		expect(request).toMatchObject({ ok: true });
+		expect(request).not.toHaveProperty("autoGranted");
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		expect(vault.signCalls).toHaveLength(0);
+	});
+
+	it.each([
 		[
 			"missing subject",
 			{ subjectUserId: undefined },
@@ -1356,6 +1471,24 @@ function householdOutboundOverrides(): Partial<
 
 function householdOutboundPrepareInput(): TelclaudeMcpOutboundSideEffectPrepareInput {
 	return outboundPrepareInput(householdOutboundOverrides());
+}
+
+function prepareHouseholdOutboundRecord(
+	body: string,
+): Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }> {
+	const overrides = householdOutboundOverrides();
+	const base = outboundPrepareInput(overrides);
+	return prepareOutboundRecord({
+		...overrides,
+		requestedBody: body,
+		renderedBody: body,
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel: base.channel,
+			resolvedDestination: base.resolvedDestination,
+			body,
+			mediaRefs: base.preparedMediaRefs,
+		}),
+	});
 }
 
 function signatureFor(prefix: string, payload: string): string {
