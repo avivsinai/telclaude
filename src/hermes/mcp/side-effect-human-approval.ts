@@ -12,12 +12,17 @@ import {
 	type PendingApproval,
 	peekPendingApprovalByNonce,
 } from "../../security/approvals.js";
+import {
+	classifyHouseholdOutboundSafetyV1,
+	type HouseholdOutboundSafetyClassification,
+} from "../../security/household-outbound-safety.js";
 import { redactHouseholdSinkText } from "../../security/household-redactor.js";
 import {
 	freshTotpStepUpVerification,
 	type StepUpVerification,
 	type StepUpVerificationMetadata,
 } from "../../security/totp-session.js";
+import { reserveRateLimit } from "../../services/multimedia-rate-limit.js";
 import {
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalBinding,
@@ -27,6 +32,11 @@ import {
 
 const DEFAULT_HUMAN_APPROVAL_TTL_MS = 5 * 60 * 1_000;
 const MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS = 60_000;
+const HOUSEHOLD_AUTO_GRANT_OUTBOUND_RATE_LIMIT = {
+	maxPerMinutePerUser: 5,
+	maxPerHourPerUser: 300,
+	maxPerDayPerUser: 7_200,
+} as const;
 export const TELCLAUDE_MCP_SIDE_EFFECT_HUMAN_APPROVAL_TOOL_KEY_PREFIX =
 	"hermes.side-effect-human-approval.v1";
 
@@ -136,6 +146,10 @@ export type SideEffectHumanApprovalDependencies = {
 	readonly stepUpVerification?: StepUpVerification;
 	readonly stepUpMaxAgeMs?: number;
 	readonly requiresFreshStepUp?: (record: TelclaudeMcpSideEffectRecord) => boolean;
+	readonly classifyHouseholdOutboundSafety?: (
+		body: string,
+	) => HouseholdOutboundSafetyClassification;
+	readonly reserveHouseholdAutoGrantRateLimit?: (bindingKey: string) => void;
 };
 
 export type SideEffectHumanApprovalAutoGrantOptions = {
@@ -160,7 +174,16 @@ export function createSideEffectHumanApprovalController(
 		dependencies.consumeApprovalMatching ?? consumeSecurityApprovalMatching;
 	const nowMs = dependencies.nowMs ?? Date.now;
 	const stepUpVerification = dependencies.stepUpVerification ?? freshTotpStepUpVerification;
-	const requiresFreshStepUp = dependencies.requiresFreshStepUp ?? sideEffectRequiresFreshStepUp;
+	const classifyHouseholdOutboundSafety =
+		dependencies.classifyHouseholdOutboundSafety ?? classifyHouseholdOutboundSafetyV1;
+	const reserveHouseholdAutoGrantRateLimit =
+		dependencies.reserveHouseholdAutoGrantRateLimit ??
+		defaultHouseholdAutoGrantRateLimitReservation;
+	const requiresFreshStepUp =
+		dependencies.requiresFreshStepUp ??
+		((record) => sideEffectRequiresFreshStepUp(record, classifyHouseholdOutboundSafety));
+	const approvalRequiresFreshStepUp = (record: TelclaudeMcpSideEffectRecord): boolean =>
+		(record.kind === "outbound" && record.domain === "household") || requiresFreshStepUp(record);
 	const serverSideApprovals = new Map<string, StoredServerSideApproval>();
 
 	return {
@@ -180,6 +203,8 @@ export function createSideEffectHumanApprovalController(
 				input.stepUp,
 				stepUpVerification,
 				requiresFreshStepUp,
+				classifyHouseholdOutboundSafety,
+				reserveHouseholdAutoGrantRateLimit,
 			);
 			if (autoGrant) return autoGrant;
 			const ttlMs = normalizeTtlMs(input.ttlMs ?? DEFAULT_HUMAN_APPROVAL_TTL_MS);
@@ -247,7 +272,7 @@ export function createSideEffectHumanApprovalController(
 				dependencies,
 				stepUpVerification,
 				authorizationNowMs,
-				requiresFreshStepUp,
+				approvalRequiresFreshStepUp,
 			);
 			if (stepUpFailure) return stepUpFailure;
 			let minted: SideEffectHumanApprovalTokenResult | string;
@@ -363,9 +388,20 @@ async function maybeAutoGrantSideEffect(
 	stepUp: StepUpVerificationMetadata | undefined,
 	stepUpVerification: StepUpVerification,
 	requiresFreshStepUp: (record: TelclaudeMcpSideEffectRecord) => boolean,
+	classifyHouseholdOutboundSafety: (body: string) => HouseholdOutboundSafetyClassification,
+	reserveHouseholdAutoGrantRateLimit: (bindingKey: string) => void,
 ): Promise<SideEffectHumanApprovalResult | null> {
 	if (dependencies.autoGrant?.enabled !== true) return null;
-	if (!autoGrantEligible(record)) return null;
+	if (!autoGrantEligible(record, classifyHouseholdOutboundSafety)) return null;
+	if (record.kind === "outbound" && record.domain === "household") {
+		try {
+			const binding = record.householdReplyBinding;
+			if (!binding) throw new Error("household auto-grant binding unavailable");
+			reserveHouseholdAutoGrantRateLimit(`household:${binding.bindingId}`);
+		} catch {
+			return null;
+		}
+	}
 	const ttlMs = normalizeAutoGrantTtlMs(dependencies.autoGrant.ttlMs);
 	const approvalId = autoGrantJtiFor(record);
 	// The auto-grant and central step-up policies are deliberately independent.
@@ -416,7 +452,12 @@ async function maybeAutoGrantSideEffect(
 	};
 }
 
-function autoGrantEligible(record: TelclaudeMcpSideEffectRecord): boolean {
+function autoGrantEligible(
+	record: TelclaudeMcpSideEffectRecord,
+	classifyHouseholdOutboundSafety: (
+		body: string,
+	) => HouseholdOutboundSafetyClassification = classifyHouseholdOutboundSafetyV1,
+): boolean {
 	if (record.kind !== "outbound") return false;
 	if (record.authorizationState !== "authorized") return false;
 	if (!record.turnConversationRef) return false;
@@ -428,12 +469,17 @@ function autoGrantEligible(record: TelclaudeMcpSideEffectRecord): boolean {
 	if (record.domain === "private") return true;
 	if (record.domain !== "household" || record.channel !== "whatsapp") return false;
 	const binding = record.householdReplyBinding;
-	return (
+	const bindingEligible =
 		Boolean(record.subjectUserId) &&
 		binding?.identityAssurance === "strong_link" &&
 		binding.subjectUserId === record.subjectUserId &&
-		binding.senderPrincipalHash === binding.recipientPrincipalHash
-	);
+		binding.senderPrincipalHash === binding.recipientPrincipalHash;
+	if (!bindingEligible) return false;
+	try {
+		return classifyHouseholdOutboundSafety(record.requestedBody).safeForAutoGrant;
+	} catch {
+		return false;
+	}
 }
 
 function autoGrantJtiFor(record: TelclaudeMcpSideEffectRecord): string {
@@ -468,9 +514,22 @@ async function approvalTokenMintStepUpFailure(
 	}
 }
 
-function sideEffectRequiresFreshStepUp(record: TelclaudeMcpSideEffectRecord): boolean {
+function sideEffectRequiresFreshStepUp(
+	record: TelclaudeMcpSideEffectRecord,
+	classifyHouseholdOutboundSafety: (
+		body: string,
+	) => HouseholdOutboundSafetyClassification = classifyHouseholdOutboundSafetyV1,
+): boolean {
 	if (record.kind === "provider") return true;
-	return !autoGrantEligible(record);
+	return !autoGrantEligible(record, classifyHouseholdOutboundSafety);
+}
+
+function defaultHouseholdAutoGrantRateLimitReservation(bindingKey: string): void {
+	reserveRateLimit(
+		"household_auto_grant_outbound",
+		bindingKey,
+		HOUSEHOLD_AUTO_GRANT_OUTBOUND_RATE_LIMIT,
+	);
 }
 
 function prepareApprovalBinding(

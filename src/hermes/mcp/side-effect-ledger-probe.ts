@@ -17,6 +17,7 @@ import type { ResolvedWhatsAppHouseholdReplyBinding } from "../../relay/whatsapp
 import type { WhatsAppIdentityResolution } from "../../relay/whatsapp-inbound-cl1.js";
 import { createWhatsAppProviderChallengeInterceptor } from "../../relay/whatsapp-provider-challenge-interceptor.js";
 import { redactSecrets } from "../../security/output-filter.js";
+import { closeDb, resetDatabase } from "../../storage/db.js";
 import {
 	type HermesSignedEvidenceValidationOptions,
 	hermesAllowsStaleAttestations,
@@ -220,7 +221,29 @@ export function runTelclaudeMcpSideEffectLedgerProbe(input: {
 	readonly allowRun: boolean;
 	readonly observedAt?: string;
 }): Promise<SideEffectLedgerProbeEvidence> {
-	return runProbe(input);
+	if (input.allowRun !== true) return runProbe(input);
+
+	return runProbeWithIsolatedDataDir(input);
+}
+
+async function runProbeWithIsolatedDataDir(input: {
+	readonly allowRun: boolean;
+	readonly observedAt?: string;
+}): Promise<SideEffectLedgerProbeEvidence> {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-ledger-probe-"));
+	const originalDataDir = process.env.TELCLAUDE_DATA_DIR;
+	closeDb();
+	process.env.TELCLAUDE_DATA_DIR = path.join(tempDir, "relay-data");
+	resetDatabase();
+
+	try {
+		return await runProbe(input);
+	} finally {
+		closeDb();
+		if (originalDataDir === undefined) delete process.env.TELCLAUDE_DATA_DIR;
+		else process.env.TELCLAUDE_DATA_DIR = originalDataDir;
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	}
 }
 
 export function sideEffectLedgerProbeEvidenceFailure(

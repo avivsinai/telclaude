@@ -14,6 +14,12 @@ const LIMITS: FeatureRateLimitConfig = {
 	maxPerDayPerUser: 10,
 };
 
+const MINUTE_LIMITS: FeatureRateLimitConfig = {
+	maxPerMinutePerUser: 5,
+	maxPerHourPerUser: 300,
+	maxPerDayPerUser: 7_200,
+};
+
 describe("multimedia rate-limit windows", () => {
 	let tempDir: string;
 	let limiter: MultimediaRateLimiter;
@@ -89,5 +95,50 @@ describe("multimedia rate-limit windows", () => {
 			allowed: false,
 			reason: expect.stringContaining("Daily limit reached"),
 		});
+	});
+
+	it("atomically reserves at most five points per fixed minute", () => {
+		vi.setSystemTime(new Date("2026-07-19T12:30:30.000Z"));
+
+		for (let index = 0; index < 5; index += 1) {
+			expect(() =>
+				limiter.reserve("household_auto_grant_outbound", "household:parent-a", MINUTE_LIMITS),
+			).not.toThrow();
+		}
+		expect(() =>
+			limiter.reserve("household_auto_grant_outbound", "household:parent-a", MINUTE_LIMITS),
+		).toThrow("Minute limit reached (5/minute)");
+
+		const rows = getDb()
+			.prepare("SELECT limiter_type, points FROM rate_limits WHERE key = ? ORDER BY limiter_type")
+			.all("household:parent-a");
+		expect(rows).toEqual([
+			{ limiter_type: "multimedia_household_auto_grant_outbound_day", points: 5 },
+			{ limiter_type: "multimedia_household_auto_grant_outbound_hour", points: 5 },
+			{ limiter_type: "multimedia_household_auto_grant_outbound_minute", points: 5 },
+		]);
+	});
+
+	it("opens a fresh fixed-minute reservation window", () => {
+		vi.setSystemTime(new Date("2026-07-19T12:30:59.000Z"));
+		for (let index = 0; index < 5; index += 1) {
+			limiter.reserve("household_auto_grant_outbound", "household:parent-a", MINUTE_LIMITS);
+		}
+		expect(() =>
+			limiter.reserve("household_auto_grant_outbound", "household:parent-a", MINUTE_LIMITS),
+		).toThrow("Minute limit reached");
+
+		vi.setSystemTime(new Date("2026-07-19T12:31:00.000Z"));
+		expect(() =>
+			limiter.reserve("household_auto_grant_outbound", "household:parent-a", MINUTE_LIMITS),
+		).not.toThrow();
+	});
+
+	it("throws and reserves nothing when the transactional reservation fails", () => {
+		getDb().exec("DROP TABLE rate_limits");
+
+		expect(() =>
+			limiter.reserve("household_auto_grant_outbound", "household:parent-a", MINUTE_LIMITS),
+		).toThrow();
 	});
 });

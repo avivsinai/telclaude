@@ -121,6 +121,19 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 		expect(sideEffectLedgerProbeEvidenceFailure("sideeffect.ledger", evidence)).toBeNull();
 	});
 
+	it("isolates durable state across consecutive full probe runs", async () => {
+		const first = await runTelclaudeMcpSideEffectLedgerProbe({
+			allowRun: true,
+			observedAt: "2026-05-31T09:00:00.000Z",
+		});
+		const second = await runTelclaudeMcpSideEffectLedgerProbe({
+			allowRun: true,
+			observedAt: "2026-05-31T09:00:01.000Z",
+		});
+
+		expect([first.status, second.status]).toEqual(["pass", "pass"]);
+	});
+
 	it("rejects evidence missing a required denial control", async () => {
 		const evidence = await runTelclaudeMcpSideEffectLedgerProbe({
 			allowRun: true,
