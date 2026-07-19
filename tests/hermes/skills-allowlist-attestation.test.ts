@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +28,7 @@ const savedRelay = {
 	public: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 	catalogDir: process.env.TELCLAUDE_HERMES_SKILL_CATALOG_DIR,
 };
+const CREDENTIAL_SHAPED_NONCE = Buffer.from("aa123456782bcccccccccccccccccccc", "hex");
 let relayPublicKey = "";
 
 beforeEach(() => {
@@ -42,6 +44,7 @@ beforeEach(() => {
 	);
 });
 afterEach(() => {
+	vi.restoreAllMocks();
 	if (savedRelay.private === undefined) delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 	else process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = savedRelay.private;
 	if (savedRelay.public === undefined) delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
@@ -94,6 +97,18 @@ describe("skills-allowlist attestation gate (live cutover)", () => {
 		expect(report.status).toBe("pass");
 		expect(report.productionEnable).toBe(true);
 		expect(report.gates.find((gate) => gate.name === "skills.attestation")).toBeUndefined();
+	});
+
+	it("does not scan relay-signed crypto metadata as evidence content", () => {
+		vi.spyOn(crypto, "randomBytes").mockReturnValue(CREDENTIAL_SHAPED_NONCE);
+		const evidence = signedEvidence();
+
+		const report = evaluateSkillsAllowlistEvidence(evidence, liveOptions());
+		expect(report.status).toBe("pass");
+		expect(report.productionEnable).toBe(true);
+		expect(report.gates).toContainEqual(
+			expect.objectContaining({ name: "skills.artifact_redacted", status: "pass" }),
+		);
 	});
 
 	it("rejects unsigned evidence (runnerAttestation missing)", () => {

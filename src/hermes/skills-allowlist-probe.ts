@@ -221,8 +221,11 @@ export function evaluateSkillsAllowlistEvidence(
 	}
 
 	// artifact_redacted is not trusted as a self-reported bit: independently scan the
-	// evidence bytes and force the gate to fail on any credential-shaped match.
-	const serialized = JSON.stringify(parsed.data);
+	// evidence body and force the gate to fail on any credential-shaped match. The
+	// already-verified runnerAttestation is relay-signed crypto metadata, not
+	// agent/model content; scanning its random nonce, digests, and signature creates
+	// false positives without covering a secret-bearing surface.
+	const serialized = JSON.stringify({ ...parsed.data, runnerAttestation: undefined });
 	const redactionLeak = redactSecrets(serialized) !== serialized;
 
 	for (const property of SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES) {

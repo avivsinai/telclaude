@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import crypto from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	evaluateServedMcpHouseholdMemoryEvidence,
 	runServedMcpHouseholdMemoryProbe,
@@ -12,6 +13,7 @@ const savedRelayKeys = {
 	private: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
 	public: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 };
+const CREDENTIAL_SHAPED_NONCE = Buffer.from("aa123456782bcccccccccccccccccccc", "hex");
 
 const EXPECTED_REQUIRED_PROPERTIES = [
 	"parent_a_authority_observed",
@@ -33,6 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	if (savedRelayKeys.private === undefined) delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 	else process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = savedRelayKeys.private;
 	if (savedRelayKeys.public === undefined) delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
@@ -42,6 +45,18 @@ afterEach(() => {
 describe("served-MCP household memory sibling probe", () => {
 	it("pins the required property catalog independently of the evaluator", () => {
 		expect(SERVED_MCP_HOUSEHOLD_MEMORY_REQUIRED_PROPERTIES).toEqual(EXPECTED_REQUIRED_PROPERTIES);
+	});
+
+	it("does not scan relay-signed crypto metadata as evidence content", async () => {
+		vi.spyOn(crypto, "randomBytes").mockReturnValue(CREDENTIAL_SHAPED_NONCE);
+		const evidence = await passingEvidence();
+
+		const report = evaluateServedMcpHouseholdMemoryEvidence(evidence);
+		expect(report.status).toBe("pass");
+		expect(report.productionEnable).toBe(true);
+		expect(report.gates).toContainEqual(
+			expect.objectContaining({ name: "household-memory.artifact_redacted", status: "pass" }),
+		);
 	});
 
 	it("proves two-way own recall and sibling isolation without weakening the private probe", async () => {
