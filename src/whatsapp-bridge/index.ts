@@ -53,12 +53,21 @@ type BaileysSocket = WhatsAppBridgeBaileysSender & {
 	readonly ev: {
 		on(event: string, handler: (...args: unknown[]) => void): void;
 	};
+	readonly signalRepository: {
+		readonly lidMapping: {
+			getPNForLID(lid: string): Promise<string | null>;
+		};
+	};
 };
 
 type BaileysApi = {
 	readonly default: (options: Record<string, unknown>) => BaileysSocket;
 	readonly DisconnectReason: { readonly loggedOut: number };
 	readonly fetchLatestBaileysVersion: () => Promise<{ readonly version: readonly number[] }>;
+	readonly isHostedLidUser: (jid: string | undefined) => boolean | undefined;
+	readonly isHostedPnUser: (jid: string | undefined) => boolean | undefined;
+	readonly isLidUser: (jid: string | undefined) => boolean | undefined;
+	readonly isPnUser: (jid: string | undefined) => boolean | undefined;
 	readonly useMultiFileAuthState: (
 		folder: string,
 	) => Promise<{ readonly state: unknown; readonly saveCreds: () => Promise<void> }>;
@@ -161,7 +170,7 @@ class WhatsAppBridgeRuntime {
 		});
 		socket.ev.on("connection.update", (update) => this.handleConnectionUpdate(api, update));
 		socket.ev.on("messages.upsert", (event) => {
-			void this.handleMessages(api, event).catch((err) =>
+			void this.handleMessages(api, socket, event).catch((err) =>
 				logger.warn({ err: errorMessage(err) }, "inbound forwarding failed"),
 			);
 		});
@@ -218,16 +227,24 @@ class WhatsAppBridgeRuntime {
 		}
 	}
 
-	private async handleMessages(api: BaileysApi, event: unknown): Promise<void> {
+	private async handleMessages(
+		api: BaileysApi,
+		socket: BaileysSocket,
+		event: unknown,
+	): Promise<void> {
 		if (!INBOUND_SECRET) return;
 		const record = isRecord(event) ? event : {};
 		const messages = Array.isArray(record.messages) ? record.messages : [];
 		for (const message of messages) {
-			await this.forwardMessage(api, message);
+			await this.forwardMessage(api, socket, message);
 		}
 	}
 
-	private async forwardMessage(api: BaileysApi, message: unknown): Promise<void> {
+	private async forwardMessage(
+		api: BaileysApi,
+		socket: BaileysSocket,
+		message: unknown,
+	): Promise<void> {
 		const inboundSecret = INBOUND_SECRET;
 		if (!inboundSecret) return;
 
@@ -244,23 +261,28 @@ class WhatsAppBridgeRuntime {
 			return;
 		}
 
-		const senderJid =
-			typeof key.participant === "string" && key.participant ? key.participant : remoteJid;
-		const senderAddressRef = jidToWhatsAppAddressRef(senderJid);
-		if (!senderAddressRef) {
-			logger.warn({ senderJid }, "skipping inbound message with non-phone sender JID");
+		const identity = await resolveWhatsAppInboundDirectIdentity(key, {
+			isPhoneJid: (jid) => api.isPnUser(jid) === true || api.isHostedPnUser(jid) === true,
+			isLidJid: (jid) => api.isLidUser(jid) === true || api.isHostedLidUser(jid) === true,
+			getPhoneJidForLid: (lid) => socket.signalRepository.lidMapping.getPNForLID(lid),
+		});
+		if (!identity) {
+			logger.warn(
+				{ addressingMode: typeof key.addressingMode === "string" ? key.addressingMode : undefined },
+				"skipping inbound message because sender phone JID could not be resolved",
+			);
 			return;
 		}
 
 		const receivedAtMs = Date.now();
-		const relayConversationId = ["whatsapp", remoteJid].join(":");
+		const relayConversationId = identity.conversationKey;
 		const eventPayload: WhatsAppInboundBridgeEvent = {
 			schemaVersion: WHATSAPP_INBOUND_BRIDGE_SCHEMA_VERSION,
 			eventId: `wa:${remoteJid}:${messageId}`,
 			messageId,
 			cursorSequence: this.nextSequence(relayConversationId, receivedAtMs),
 			chatKind,
-			senderAddressRef,
+			senderAddressRef: identity.senderAddressRef,
 			conversationKey: relayConversationId,
 			...extractText(message.message),
 			attachments: await extractAttachments(api, message),
@@ -295,6 +317,44 @@ class WhatsAppBridgeRuntime {
 		this.sequenceByConversation.set(conversationKey, next);
 		return next;
 	}
+}
+
+export type WhatsAppInboundDirectIdentity = {
+	readonly senderAddressRef: string;
+	readonly conversationKey: string;
+};
+
+export async function resolveWhatsAppInboundDirectIdentity(
+	key: Record<string, unknown>,
+	options: {
+		readonly isPhoneJid: (jid: string) => boolean;
+		readonly isLidJid: (jid: string) => boolean;
+		readonly getPhoneJidForLid: (lid: string) => Promise<string | null>;
+	},
+): Promise<WhatsAppInboundDirectIdentity | null> {
+	const primaryJid = typeof key.remoteJid === "string" ? key.remoteJid : null;
+	if (!primaryJid) return null;
+	const alternateJid = typeof key.remoteJidAlt === "string" ? key.remoteJidAlt : null;
+
+	let phoneJid = [primaryJid, alternateJid].find((candidate): candidate is string =>
+		Boolean(candidate && options.isPhoneJid(candidate)),
+	);
+	if (!phoneJid && options.isLidJid(primaryJid)) {
+		try {
+			phoneJid = (await options.getPhoneJidForLid(primaryJid)) ?? undefined;
+		} catch {
+			return null;
+		}
+	}
+	if (!phoneJid || !options.isPhoneJid(phoneJid)) return null;
+
+	const senderAddressRef = jidToWhatsAppAddressRef(phoneJid);
+	if (!senderAddressRef) return null;
+	const phoneDigits = senderAddressRef.slice("whatsapp:+".length);
+	return {
+		senderAddressRef,
+		conversationKey: `whatsapp:${phoneDigits}@s.whatsapp.net`,
+	};
 }
 
 export async function sendWhatsAppBridgeRequest(
