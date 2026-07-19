@@ -15,6 +15,11 @@ const ALERT_WINDOW_MS = 5 * 60_000;
 const TRIGGER_PREVIEW_CHARS = 800;
 const logger = getChildLogger({ module: "household-emergency-notifier" });
 
+type EmergencyAlertIncident = {
+	readonly lastObservedAtMs: number;
+	readonly repeatCount: number;
+};
+
 export type HouseholdEmergencyNotifier = (input: {
 	readonly event: WhatsAppInboundBridgeEvent;
 	readonly identity: WhatsAppIdentityResolution;
@@ -35,7 +40,7 @@ export function createHouseholdEmergencyNotifier(options: {
 	readonly nowMs?: () => number;
 }): HouseholdEmergencyNotifier {
 	const nowMs = options.nowMs ?? Date.now;
-	const lastAlertAt = new Map<string, number>();
+	const alertIncidents = new Map<string, EmergencyAlertIncident>();
 
 	return async ({ event, identity, ensureConversation }) => {
 		if (
@@ -70,35 +75,52 @@ export function createHouseholdEmergencyNotifier(options: {
 			);
 		}
 
-		const rateLimitRef = `${identity.bindingId}\0${classification.class}`;
+		const incidentRef = `${identity.bindingId}\0${classification.class}`;
 		const now = nowMs();
-		const previous = lastAlertAt.get(rateLimitRef);
-		if (previous === undefined || now - previous >= ALERT_WINDOW_MS) {
-			lastAlertAt.set(rateLimitRef, now);
-			const triggerText = triggerPreview(event.text ?? "");
-			try {
-				await options.sendAdminAlert({
-					level: "error",
-					title: "Household emergency signal",
-					message: [
-						`class=${classification.class}`,
-						`parent=${identity.displayName?.trim() || identity.bindingId}`,
-						`timestamp=${new Date(event.receivedAtMs).toISOString()}`,
-						`reply_sent=${replySent}`,
-						`trigger=${triggerText}`,
-					].join("\n"),
-				});
-			} catch (error) {
-				if (lastAlertAt.get(rateLimitRef) === now) lastAlertAt.delete(rateLimitRef);
-				logger.warn(
-					{
-						bindingId: identity.bindingId,
-						class: classification.class,
-						error: redactSecrets(String(error)),
-					},
-					"household emergency operator alert failed",
-				);
+		const previousIncident = alertIncidents.get(incidentRef);
+		const repeated =
+			previousIncident !== undefined && now - previousIncident.lastObservedAtMs < ALERT_WINDOW_MS;
+		const reservedIncident: EmergencyAlertIncident = {
+			lastObservedAtMs: now,
+			repeatCount: repeated ? previousIncident.repeatCount + 1 : 1,
+		};
+		alertIncidents.set(incidentRef, reservedIncident);
+		const triggerText = triggerPreview(event.text ?? "");
+		const repeatMetadata =
+			repeated && previousIncident
+				? [
+						`repeat_count=${reservedIncident.repeatCount}`,
+						`seconds_since_previous=${Math.max(0, Math.floor((now - previousIncident.lastObservedAtMs) / 1_000))}`,
+					]
+				: [];
+		try {
+			await options.sendAdminAlert({
+				level: "error",
+				title: repeated
+					? `REPEATED household emergency signal — escalating (${reservedIncident.repeatCount}×)`
+					: "Household emergency signal",
+				message: [
+					...repeatMetadata,
+					`class=${classification.class}`,
+					`parent=${identity.displayName?.trim() || identity.bindingId}`,
+					`timestamp=${new Date(event.receivedAtMs).toISOString()}`,
+					`reply_sent=${replySent}`,
+					`trigger=${triggerText}`,
+				].join("\n"),
+			});
+		} catch (error) {
+			if (alertIncidents.get(incidentRef) === reservedIncident) {
+				if (repeated && previousIncident) alertIncidents.set(incidentRef, previousIncident);
+				else alertIncidents.delete(incidentRef);
 			}
+			logger.warn(
+				{
+					bindingId: identity.bindingId,
+					class: classification.class,
+					error: redactSecrets(String(error)),
+				},
+				"household emergency operator alert failed",
+			);
 		}
 
 		return { matched: true, class: classification.class, replySent };
