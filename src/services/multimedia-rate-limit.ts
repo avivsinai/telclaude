@@ -49,6 +49,13 @@ export type MultimediaRateLimitResult = {
 // Window durations in milliseconds
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+type RateLimitWindow = "hour" | "day";
+
+function limiterTypeFor(feature: MultimediaFeature, window: RateLimitWindow): string {
+	// Hour and day window starts coincide during the midnight UTC hour, so the
+	// window kind must be part of the persistent key rather than inferred from time.
+	return `multimedia_${feature}_${window}`;
+}
 
 /**
  * Get the start of the current window for a given duration.
@@ -66,9 +73,14 @@ export class MultimediaRateLimiter {
 	/**
 	 * Get current usage count for a feature/user/window combination.
 	 */
-	private getPoints(feature: MultimediaFeature, userId: string, windowStart: number): number {
+	private getPoints(
+		feature: MultimediaFeature,
+		userId: string,
+		window: RateLimitWindow,
+		windowStart: number,
+	): number {
 		const db = getDb();
-		const limiterType = `multimedia_${feature}`;
+		const limiterType = limiterTypeFor(feature, window);
 		const row = db
 			.prepare(
 				"SELECT points FROM rate_limits WHERE limiter_type = ? AND key = ? AND window_start = ?",
@@ -81,9 +93,14 @@ export class MultimediaRateLimiter {
 	 * Atomically increment usage count for a feature/user/window combination.
 	 * Returns the new count.
 	 */
-	private incrementPoints(feature: MultimediaFeature, userId: string, windowStart: number): number {
+	private incrementPoints(
+		feature: MultimediaFeature,
+		userId: string,
+		window: RateLimitWindow,
+		windowStart: number,
+	): number {
 		const db = getDb();
-		const limiterType = `multimedia_${feature}`;
+		const limiterType = limiterTypeFor(feature, window);
 
 		const result = db.transaction(() => {
 			db.prepare(
@@ -122,8 +139,8 @@ export class MultimediaRateLimiter {
 			const hourWindow = getWindowStart(HOUR_MS);
 			const dayWindow = getWindowStart(DAY_MS);
 
-			const hourPoints = this.getPoints(feature, userId, hourWindow);
-			const dayPoints = this.getPoints(feature, userId, dayWindow);
+			const hourPoints = this.getPoints(feature, userId, "hour", hourWindow);
+			const dayPoints = this.getPoints(feature, userId, "day", dayWindow);
 
 			const hourRemaining = Math.max(0, config.maxPerHourPerUser - hourPoints);
 			const dayRemaining = Math.max(0, config.maxPerDayPerUser - dayPoints);
@@ -190,8 +207,8 @@ export class MultimediaRateLimiter {
 
 			const db = getDb();
 			db.transaction(() => {
-				this.incrementPoints(feature, userId, hourWindow);
-				this.incrementPoints(feature, userId, dayWindow);
+				this.incrementPoints(feature, userId, "hour", hourWindow);
+				this.incrementPoints(feature, userId, "day", dayWindow);
 			})();
 
 			logger.debug({ feature, userId }, "multimedia rate limit point consumed");
@@ -209,8 +226,8 @@ export class MultimediaRateLimiter {
 		const dayWindow = getWindowStart(DAY_MS);
 
 		return {
-			hour: this.getPoints(feature, userId, hourWindow),
-			day: this.getPoints(feature, userId, dayWindow),
+			hour: this.getPoints(feature, userId, "hour", hourWindow),
+			day: this.getPoints(feature, userId, "day", dayWindow),
 		};
 	}
 
@@ -219,9 +236,10 @@ export class MultimediaRateLimiter {
 	 */
 	resetUser(feature: MultimediaFeature, userId: string): void {
 		const db = getDb();
-		const limiterType = `multimedia_${feature}`;
-		db.prepare("DELETE FROM rate_limits WHERE limiter_type = ? AND key = ?").run(
-			limiterType,
+		db.prepare("DELETE FROM rate_limits WHERE limiter_type IN (?, ?, ?) AND key = ?").run(
+			limiterTypeFor(feature, "hour"),
+			limiterTypeFor(feature, "day"),
+			`multimedia_${feature}`,
 			userId,
 		);
 		logger.info({ feature, userId }, "multimedia rate limits reset for user");

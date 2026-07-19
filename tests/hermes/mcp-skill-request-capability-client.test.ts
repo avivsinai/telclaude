@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listCuratorItems } from "../../src/curator/store.js";
 import type {
 	TelclaudeMcpAuthorityStamp,
@@ -33,6 +33,7 @@ describe("Telclaude live MCP skill-request capability client", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		resetDatabase();
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		if (ORIGINAL_DATA_DIR === undefined) {
@@ -125,6 +126,8 @@ describe("Telclaude live MCP skill-request capability client", () => {
 	});
 
 	it("enforces the 5/hour skill-request rate limit per actor", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-07-19T00:30:00.000Z"));
 		const clients = makeClients();
 
 		for (let index = 0; index < 5; index += 1) {
