@@ -4,7 +4,7 @@ import { createHouseholdEmergencyNotifier } from "../../src/relay/household-emer
 const NOW = Date.parse("2026-07-18T12:00:00.000Z");
 
 describe("household emergency notifier", () => {
-	it("sends the fixed reply for every match but rate-limits redacted alerts per binding and class", async () => {
+	it("escalates every same-class repeat and resets after five minutes of silence", async () => {
 		let now = NOW;
 		const sendControl = vi.fn(async () => true);
 		const sendAdminAlert = vi.fn(async () => undefined);
@@ -22,62 +22,163 @@ describe("household emergency notifier", () => {
 			class: "cardiac",
 			replySent: true,
 		});
-		now += 60_000;
+		now += 3 * 60_000;
 		await notify({ event: { ...event, messageId: "wa-msg-2" }, identity, ensureConversation });
+		now += 3 * 60_000;
+		await notify({ event: { ...event, messageId: "wa-msg-3" }, identity, ensureConversation });
 
-		expect(ensureConversation).toHaveBeenCalledTimes(2);
-		expect(sendControl).toHaveBeenCalledTimes(2);
-		expect(sendAdminAlert).toHaveBeenCalledTimes(1);
-		const alertText = sendAdminAlert.mock.calls[0]?.[0]?.message ?? "";
-		expect(alertText).toContain("cardiac");
-		expect(alertText).toContain("Parent A");
-		expect(alertText).toContain(new Date(NOW).toISOString());
-		expect(alertText).toContain("reply_sent=true");
-		expect(alertText).not.toContain("123456");
-		expect(alertText).not.toContain("123456782");
-		expect(alertText).toContain("[REDACTED:");
+		expect(ensureConversation).toHaveBeenCalledTimes(3);
+		expect(sendControl).toHaveBeenCalledTimes(3);
+		expect(sendAdminAlert).toHaveBeenCalledTimes(3);
+		expect(sendAdminAlert.mock.calls.map(([alert]) => alert.title)).toEqual([
+			"Household emergency signal",
+			"REPEATED household emergency signal — escalating (2×)",
+			"REPEATED household emergency signal — escalating (3×)",
+		]);
+		const firstAlertText = sendAdminAlert.mock.calls[0]?.[0]?.message ?? "";
+		expect(firstAlertText).toContain("cardiac");
+		expect(firstAlertText).toContain("Parent A");
+		expect(firstAlertText).toContain(new Date(NOW).toISOString());
+		expect(firstAlertText).toContain("reply_sent=true");
+		const repeatedAlertText = sendAdminAlert.mock.calls[1]?.[0]?.message ?? "";
+		expect(repeatedAlertText).toContain("repeat_count=2");
+		expect(repeatedAlertText).toContain("seconds_since_previous=180");
+		expect(repeatedAlertText).not.toContain("123456");
+		expect(repeatedAlertText).not.toContain("123456782");
+		expect(repeatedAlertText).toContain("[REDACTED:");
+		expect(Array.from(repeatedAlertText).length).toBeLessThan(1_200);
 
+		now += 5 * 60_000;
 		await notify({
-			event: { ...event, messageId: "wa-msg-3", text: "דימום חזק" },
+			event: { ...event, messageId: "wa-msg-4" },
 			identity,
 			ensureConversation,
 		});
-		await notify({
-			event: { ...event, messageId: "wa-msg-4" },
-			identity: { ...identity, bindingId: "parent-b", displayName: "Parent B" },
-			ensureConversation,
-		});
-		expect(sendAdminAlert).toHaveBeenCalledTimes(3);
+		expect(sendAdminAlert.mock.calls[3]?.[0]?.title).toBe("Household emergency signal");
+		expect(sendAdminAlert.mock.calls[3]?.[0]?.message).not.toContain("repeat_count=");
+		expect(sendControl).toHaveBeenCalledTimes(4);
 	});
 
-	it("isolates reply and alert failures and never absorbs the matched event", async () => {
-		const sendAdminAlert = vi.fn(async () => {
-			throw new Error("alert offline");
+	it("tracks repeat incidents independently per binding and emergency class", async () => {
+		let now = NOW;
+		const sendAdminAlert = vi.fn(async () => undefined);
+		const notify = createHouseholdEmergencyNotifier({
+			sendControl: vi.fn(async () => true),
+			sendAdminAlert,
+			nowMs: () => now,
 		});
+		const cardiac = householdEvent("כאב בחזה");
+		const parentA = householdIdentity("parent-a", "f");
+
+		await notify({ event: cardiac, identity: parentA, ensureConversation: () => undefined });
+		now += 60_000;
+		await notify({
+			event: { ...cardiac, messageId: "wa-msg-2", text: "דימום חזק" },
+			identity: parentA,
+			ensureConversation: () => undefined,
+		});
+		await notify({
+			event: { ...cardiac, messageId: "wa-msg-3" },
+			identity: { ...parentA, bindingId: "parent-b", displayName: "Parent B" },
+			ensureConversation: () => undefined,
+		});
+		await notify({
+			event: { ...cardiac, messageId: "wa-msg-4" },
+			identity: parentA,
+			ensureConversation: () => undefined,
+		});
+
+		expect(sendAdminAlert.mock.calls.map(([alert]) => alert.title)).toEqual([
+			"Household emergency signal",
+			"Household emergency signal",
+			"Household emergency signal",
+			"REPEATED household emergency signal — escalating (2×)",
+		]);
+	});
+
+	it("rolls failed first and repeated alerts back so the next event retries the same count", async () => {
+		let now = NOW;
+		const sendAdminAlert = vi
+			.fn<(alert: { title: string; message: string }) => Promise<void>>()
+			.mockRejectedValueOnce(new Error("first alert offline"))
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("repeat alert offline"))
+			.mockResolvedValueOnce(undefined);
 		const notify = createHouseholdEmergencyNotifier({
 			sendControl: vi.fn(async () => {
 				throw new Error("bridge offline");
 			}),
 			sendAdminAlert,
-			nowMs: () => NOW,
+			nowMs: () => now,
 		});
+		const event = householdEvent("אני לא יכולה לנשום");
+		const identity = householdIdentity("parent-a", "f");
 
-		await expect(
-			notify({
-				event: householdEvent("אני לא יכולה לנשום"),
-				identity: householdIdentity("parent-a", "f"),
-				ensureConversation: () => undefined,
-			}),
-		).resolves.toMatchObject({ matched: true, class: "breathing", replySent: false });
-		expect(sendAdminAlert).toHaveBeenCalledWith(
-			expect.objectContaining({ message: expect.stringContaining("reply_sent=false") }),
-		);
+		for (let index = 0; index < 5; index += 1) {
+			await expect(
+				notify({
+					event: { ...event, messageId: `wa-msg-${index + 1}` },
+					identity,
+					ensureConversation: () => undefined,
+				}),
+			).resolves.toMatchObject({ matched: true, class: "breathing", replySent: false });
+			now += 60_000;
+		}
+
+		expect(sendAdminAlert.mock.calls.map(([alert]) => alert.title)).toEqual([
+			"Household emergency signal",
+			"Household emergency signal",
+			"REPEATED household emergency signal — escalating (2×)",
+			"REPEATED household emergency signal — escalating (3×)",
+			"REPEATED household emergency signal — escalating (3×)",
+		]);
+		expect(sendAdminAlert.mock.calls[4]?.[0]?.message).toContain("repeat_count=3");
+		expect(sendAdminAlert.mock.calls[4]?.[0]?.message).toContain("reply_sent=false");
+	});
+
+	it("does not let a failed older alert roll back a newer successful reservation", async () => {
+		let rejectFirstAlert: ((error: Error) => void) | undefined;
+		const sendAdminAlert = vi
+			.fn<(alert: { title: string; message: string }) => Promise<void>>()
+			.mockImplementationOnce(
+				() =>
+					new Promise((_resolve, reject) => {
+						rejectFirstAlert = reject;
+					}),
+			)
+			.mockResolvedValue(undefined);
+		let now = NOW;
+		const notify = createHouseholdEmergencyNotifier({
+			sendControl: vi.fn(async () => true),
+			sendAdminAlert,
+			nowMs: () => now,
+		});
+		const event = householdEvent("כאב בחזה");
+		const identity = householdIdentity("parent-a", "f");
+
+		const first = notify({ event, identity, ensureConversation: () => undefined });
+		await vi.waitFor(() => expect(sendAdminAlert).toHaveBeenCalledTimes(1));
+		now += 60_000;
 		await notify({
-			event: { ...householdEvent("אני לא יכולה לנשום"), messageId: "wa-msg-retry" },
-			identity: householdIdentity("parent-a", "f"),
+			event: { ...event, messageId: "wa-msg-2" },
+			identity,
 			ensureConversation: () => undefined,
 		});
-		expect(sendAdminAlert).toHaveBeenCalledTimes(2);
+		rejectFirstAlert?.(new Error("first alert finished late"));
+		await first;
+		now += 60_000;
+		await notify({
+			event: { ...event, messageId: "wa-msg-3" },
+			identity,
+			ensureConversation: () => undefined,
+		});
+
+		expect(sendAdminAlert.mock.calls.map(([alert]) => alert.title)).toEqual([
+			"Household emergency signal",
+			"REPEATED household emergency signal — escalating (2×)",
+			"REPEATED household emergency signal — escalating (3×)",
+		]);
 	});
 
 	it("does not classify OTP-shaped or media-derived text", async () => {
