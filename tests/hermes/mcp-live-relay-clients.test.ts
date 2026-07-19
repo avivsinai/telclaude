@@ -332,6 +332,48 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		).resolves.toMatchObject({ actionRef: expect.any(String) });
 	});
 
+	it("rejects unexpected household Clalit params before proxying or ledger preparation", async () => {
+		const ledger = testLedger();
+		const providerProxy = vi.fn(async () => ({
+			status: "ok" as const,
+			data: { appointments: [] },
+		}));
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			providerWriteApproverActorId: "telegram:111",
+			providerProxy,
+		});
+
+		await expect(
+			clients.providerRead(
+				providerRead({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointments",
+					params: { subjectUserId: "synthetic-subject" },
+				}),
+			),
+		).rejects.toThrowError(new Error("household Phase 0 provider params denied"));
+		await expect(
+			clients.providerPrepareWrite(
+				providerPrepare({
+					...householdStamp(),
+					providerId: "clalit",
+					service: "clalit",
+					action: "prescription_renewal",
+					params: {
+						prescriptionId: "synthetic-rx",
+						filter: { subjectId: "synthetic-subject" },
+					},
+				}),
+			),
+		).rejects.toThrowError(new Error("household Phase 0 provider params denied"));
+
+		expect(providerProxy).not.toHaveBeenCalled();
+		expect(ledger.list()).toEqual([]);
+	});
+
 	it("counts household auth-required reads without changing the provider failure", async () => {
 		configureHouseholdMetrics({ enabled: true });
 		const clients = createTelclaudeLiveMcpRelayClients({

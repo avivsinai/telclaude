@@ -2024,15 +2024,16 @@ function assertProviderOperationPolicy(
 	domain: TelclaudeMcpDomain,
 	mode: "read" | "write",
 ): void {
+	if (request.service === "clalit" && containsUrgentHealthSignalV1(JSON.stringify(request))) {
+		throw new Error("provider policy denied: urgent_health_escalation_required");
+	}
 	assertHouseholdPhase0ProviderActionAllowed({
 		domain,
 		service: request.service,
 		action: request.action,
 		mode,
+		params: request.params,
 	});
-	if (request.service === "clalit" && containsUrgentHealthSignalV1(JSON.stringify(request))) {
-		throw new Error("provider policy denied: urgent_health_escalation_required");
-	}
 }
 
 function providerWriteApproverFor(
