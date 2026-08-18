@@ -775,7 +775,7 @@ describe("Telclaude live MCP relay-side server", () => {
 		).toEqual({
 			ok: false,
 			code: "outbound_delivery_dispatcher_missing",
-			reason: "outbound delivery dispatcher is not configured for WhatsApp",
+			reason: "outbound delivery dispatcher is not configured for channel whatsapp",
 			retryable: false,
 			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
 		});

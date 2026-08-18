@@ -454,6 +454,13 @@ export class TelclaudeEdgeRuntime {
 						"social.private-memory-denied",
 						"Hermes may not access public-social transport custody directly",
 					);
+				default:
+					// Invariant: a non-edge requester never reaches raw transport for ANY
+					// channel. New channels fail closed here just like the named ones.
+					return this.deny(
+						"channel.direct-transport-denied",
+						"Hermes may not access raw channel transport directly",
+					);
 			}
 		}
 		return {
@@ -876,6 +883,12 @@ export class TelclaudeEdgeRuntime {
 				return this.deny("email.wrong-thread-denied", "Email sender is not bound to the thread");
 			case "social":
 				return this.deny("social.unapproved-posting-denied", "Social sender is not approved");
+			default:
+				// Any channel without a paired/authorized sender fails closed.
+				return this.deny(
+					"channel.unauthorized-sender-denied",
+					`${channel} sender is not authorized`,
+				);
 		}
 	}
 

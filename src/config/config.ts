@@ -78,6 +78,10 @@ const SOCIAL_SERVICE_DEFAULTS = {
 } as const;
 const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
 const DASHBOARD_DEFAULTS = { enabled: false, port: 3005 } as const;
+const EMAIL_DEFAULTS = {
+	enabled: false,
+	defaultSubject: "Message from your assistant",
+} as const;
 const WEBHOOKS_DEFAULTS = {
 	enabled: false,
 	port: 3015,
@@ -826,6 +830,63 @@ const WebhooksConfigSchema = z.object({
 	allowedHosts: z.array(z.string().min(1)).default(WEBHOOKS_DEFAULTS.allowedHosts),
 });
 
+// Outbound email delivery (via the google-services sidecar gmail.send action).
+// DEFAULT OFF: when disabled, no email connector is registered, so an email
+// outbound fails closed at the executor registry. Delivery is at-most-once (the
+// Gmail transport never retries after the sidecar call) until exactly-once
+// idempotency-dedupe lands — keep this OFF until that follow-up or explicit
+// operator acceptance of at-most-once semantics.
+// from-when-enabled is enforced fail-closed at the relay (it registers the email
+// connector only when enabled AND from is set AND the vault is available, else it
+// logs DISABLED), so this stays a plain object — no refine — to keep .default({}).
+const EmailConfigSchema = z.object({
+	enabled: z.boolean().default(EMAIL_DEFAULTS.enabled),
+	// Operator's From address; also the default Message-ID domain.
+	from: z.string().email().optional(),
+	defaultSubject: z.string().min(1).default(EMAIL_DEFAULTS.defaultSubject),
+	messageIdDomain: z.string().min(1).optional(),
+});
+
+// Per-channel outbound delivery config (Claude channel batch). DEFAULT OFF: a
+// channel's connector is registered only when enabled; otherwise it fails closed
+// at the executor registry. Like email, transports send through the vault
+// credential proxy (creds never reach the connector). All fields optional so an
+// absent channel is simply OFF.
+// Strict host-only (optional :port) — the shape the credential proxy keys on.
+// Rejects scheme, path, query, fragment, userinfo (@), whitespace, and percent
+// encoding by construction (the charset excludes / : ? # @ % and space except a
+// single :port group).
+const HOST_ONLY_RE = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$/;
+
+const OutboundChannelConfigSchema = z.object({
+	enabled: z.boolean().default(false),
+	// Override host for the relay credential proxy (defaults to the platform host
+	// in the transport). Must be host-only ([:port]) — the proxy key. Self-host /
+	// staging only.
+	credentialHost: z
+		.string()
+		.regex(HOST_ONLY_RE, "credentialHost must be a bare host or host:port")
+		.optional(),
+	// custom-webhook / social-gateway endpoint override (full http(s) URL).
+	endpoint: z.string().url().optional(),
+	// custom-webhook: the logical addressRef this configured webhook serves. An
+	// outbound to any other addressRef fails closed (no implicit fan-out).
+	addressRef: z.string().min(1).optional(),
+	// agentmail From address.
+	from: z.string().email().optional(),
+	defaultSubject: z.string().min(1).optional(),
+});
+
+const OutboundChannelsConfigSchema = z.object({
+	slack: OutboundChannelConfigSchema.optional(),
+	discord: OutboundChannelConfigSchema.optional(),
+	"custom-webhook": OutboundChannelConfigSchema.optional(),
+	agentmail: OutboundChannelConfigSchema.optional(),
+	"social-gateway": OutboundChannelConfigSchema.optional(),
+	dashboard: OutboundChannelConfigSchema.optional(),
+	"api-server": OutboundChannelConfigSchema.optional(),
+});
+
 // Main config schema
 const TelclaudeConfigSchema = z.object({
 	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
@@ -908,10 +969,17 @@ const TelclaudeConfigSchema = z.object({
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
 	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),
+	// Outbound email delivery (default OFF — see EmailConfigSchema).
+	email: EmailConfigSchema.default(EMAIL_DEFAULTS),
+	// Per-channel outbound delivery (Claude batch), all default OFF.
+	channels: OutboundChannelsConfigSchema.default({}),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
 export type HouseholdRolloutRung = (typeof HOUSEHOLD_ROLLOUT_RUNGS)[number];
+export type EmailConfig = z.infer<typeof EmailConfigSchema>;
+export type OutboundChannelConfig = z.infer<typeof OutboundChannelConfigSchema>;
+export type OutboundChannelsConfig = z.infer<typeof OutboundChannelsConfigSchema>;
 export type ReplyConfig = z.infer<typeof ReplyConfigSchema>;
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;

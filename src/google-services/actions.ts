@@ -85,6 +85,24 @@ const GMAIL_ACTIONS: ActionDefinition[] = [
 		},
 		scope: "https://www.googleapis.com/auth/gmail.compose",
 	},
+	{
+		id: "send",
+		service: "gmail",
+		type: "action",
+		description: "Send a pre-composed email message (requires approval)",
+		params: {
+			// The relay composes the CRLF-safe RFC822 message (header-injection
+			// rejected, single membership-validated recipient) and base64url-encodes
+			// it. The approval token's paramsHash binds this exact value, so the
+			// sidecar sends bytes the relay authorized — it does not re-parse headers.
+			raw: {
+				type: "string",
+				required: true,
+				description: "Relay-composed RFC822 message, base64url-encoded",
+			},
+		},
+		scope: "https://www.googleapis.com/auth/gmail.send",
+	},
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════

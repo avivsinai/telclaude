@@ -206,6 +206,28 @@ type ProviderProxy = (request: ProviderProxyRequest) => Promise<ProviderProxyRes
 
 const PROVIDER_PATH = "/v1/fetch";
 
+/**
+ * Outbound channels whose delivery is performed by the relay's outbound
+ * delivery dispatcher. An outbound on one of these channels requires a
+ * configured dispatcher and is delivered through it (after the ledger burn,
+ * before markExecuted). The dispatcher itself fails closed if no connector is
+ * registered for the channel, so a channel listed here but not actually
+ * configured/enabled cannot silently skip delivery — it fails the execute.
+ */
+const DISPATCHER_DELIVERED_CHANNELS: ReadonlySet<string> = new Set([
+	"whatsapp",
+	"email",
+	// Claude outbound batch — each gets burn-before-dispatch (at-most-once) and
+	// fails closed at the registry until its connector+transport is registered.
+	"slack",
+	"discord",
+	"custom-webhook",
+	"agentmail",
+	"social",
+	"dashboard",
+	"api-server",
+]);
+
 export function createTelclaudeMcpLedgerExecuteDependencies(
 	options: CreateTelclaudeMcpLedgerExecuteDependenciesOptions,
 ): TelclaudeMcpLedgerExecuteDependencies {
@@ -271,10 +293,13 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				options.resolveHouseholdReplyBinding,
 			);
 			if (!checked.ok) return checked;
-			if (checked.record.channel === "whatsapp" && !options.outboundDeliveryDispatcher) {
+			if (
+				DISPATCHER_DELIVERED_CHANNELS.has(checked.record.channel) &&
+				!options.outboundDeliveryDispatcher
+			) {
 				return terminalFailure(
 					"outbound_delivery_dispatcher_missing",
-					"outbound delivery dispatcher is not configured for WhatsApp",
+					`outbound delivery dispatcher is not configured for channel ${checked.record.channel}`,
 					checked.record,
 				);
 			}
@@ -294,7 +319,7 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (
 				options.outboundDeliveryDispatcher &&
 				claim.record.kind === "outbound" &&
-				claim.record.channel === "whatsapp"
+				DISPATCHER_DELIVERED_CHANNELS.has(claim.record.channel)
 			) {
 				const delivered = await executeOutboundDelivery(
 					options.outboundDeliveryDispatcher,

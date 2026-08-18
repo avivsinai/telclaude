@@ -78,6 +78,7 @@ import {
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
+import { generateApprovalToken } from "../relay/approval-token.js";
 import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
 import { startAttachmentQuarantineSweeper } from "../relay/attachment-quarantine-sweeper.js";
 import { createBrowserActDriverFactory } from "../relay/browser-act-driver.js";
@@ -101,7 +102,21 @@ import {
 	parseBrowserCatastrophicDomains,
 } from "../relay/browser-session-resolver.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
+import { createAgentMailConnector } from "../relay/channels/agentmail-connector.js";
+import { createAgentMailSender } from "../relay/channels/agentmail-sender.js";
+import { createCustomWebhookConnector } from "../relay/channels/custom-webhook-connector.js";
+import {
+	buildCustomWebhookTargetResolver,
+	createCustomWebhookSender,
+} from "../relay/channels/custom-webhook-sender.js";
+import { createDiscordConnector } from "../relay/channels/discord-connector.js";
+import { createDiscordSender } from "../relay/channels/discord-sender.js";
+import { createSlackConnector } from "../relay/channels/slack-connector.js";
+import { createSlackSender } from "../relay/channels/slack-sender.js";
+import type { EdgeChannelConnector } from "../relay/edge-channel-connector.js";
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
+import { createEmailConnector } from "../relay/email/connector.js";
+import { createGmailEmailTransport } from "../relay/email/gmail-transport.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { createHouseholdEmergencyControlPolicyStore } from "../relay/household-emergency-control-policy.js";
 import { createHouseholdEmergencyControlSender } from "../relay/household-emergency-control-sender.js";
@@ -129,6 +144,7 @@ import {
 	createProviderLoginCoordinator,
 	setConfiguredProviderLoginCoordinator,
 } from "../relay/provider-login-coordinator.js";
+import { proxyProviderRequest } from "../relay/provider-proxy.js";
 import { createReminderConfirmationControlPolicyStore } from "../relay/reminder-confirmation-control-policy.js";
 import { createReminderConfirmationControlSender } from "../relay/reminder-confirmation-control-sender.js";
 import { initTokenManager } from "../relay/token-manager.js";
@@ -519,8 +535,129 @@ export function registerRelayCommand(program: Command): void {
 				});
 				schedulerHandles.push(liveMcpAttachmentQuarantineSweeper);
 				const householdReminderFailureClassifier = createOutboundDeliveryFailureClassifier();
+				// Outbound email connector — registered ONLY when explicitly enabled
+				// AND the vault is available (the transport mints a vault-signed
+				// google-services approval token and never sees raw credentials). When
+				// off, no email connector is registered, so an email outbound fails
+				// closed at the executor registry. Delivery is at-most-once.
+				const emailConnectors: EdgeChannelConnector[] = [];
+				if (cfg.email.enabled && cfg.email.from && vaultAvailable) {
+					const emailVaultClient = new VaultClient(
+						vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+					);
+					emailConnectors.push(
+						createEmailConnector({
+							transport: createGmailEmailTransport({
+								issueApprovalToken: (tokenInput) =>
+									generateApprovalToken(tokenInput, emailVaultClient),
+								callProvider: proxyProviderRequest,
+							}),
+							from: cfg.email.from,
+							defaultSubject: cfg.email.defaultSubject,
+							...(cfg.email.messageIdDomain ? { messageIdDomain: cfg.email.messageIdDomain } : {}),
+						}),
+					);
+					console.log("  Email delivery: enabled (gmail.send via google-services sidecar)");
+				} else if (cfg.email.enabled) {
+					console.log(
+						"  Email delivery: DISABLED — enabled in config but vault unavailable or no from address (fail closed)",
+					);
+				}
+
+				// Outbound channel connectors (Claude batch), each registered ONLY when
+				// explicitly enabled AND the vault is available — every transport posts
+				// through the relay credential proxy (port 8792), which injects the
+				// vault credential for the platform host; connectors hold no credential.
+				// Off/misconfigured channels are not registered and fail closed at the
+				// registry. Delivery is at-most-once. social-gateway is intentionally NOT
+				// registered for the private persona (private/public air-gap); dashboard
+				// and api-server await their relay-internal sinks.
+				const channelConnectors: EdgeChannelConnector[] = [];
+				if (vaultAvailable) {
+					const channelProxyPost = async (req: {
+						host: string;
+						path: string;
+						method?: string;
+						body?: string;
+						headers?: Record<string, string>;
+					}): Promise<{ status: number; json: unknown; text: string }> => {
+						const res = await fetch(`http://127.0.0.1:8792/${req.host}${req.path}`, {
+							method: req.method ?? "POST",
+							...(req.body !== undefined ? { body: req.body } : {}),
+							headers: req.headers ?? {},
+						});
+						const text = await res.text();
+						let json: unknown = null;
+						try {
+							json = text ? JSON.parse(text) : null;
+						} catch {
+							json = null;
+						}
+						return { status: res.status, json, text };
+					};
+					const ch = cfg.channels;
+					if (ch.slack?.enabled) {
+						channelConnectors.push(
+							createSlackConnector({ send: createSlackSender({ post: channelProxyPost }) }),
+						);
+						console.log("  Channel slack: enabled (vault credential proxy)");
+					}
+					if (ch.discord?.enabled) {
+						channelConnectors.push(
+							createDiscordConnector({
+								send: createDiscordSender({
+									post: channelProxyPost,
+									...(ch.discord.credentialHost ? { host: ch.discord.credentialHost } : {}),
+								}),
+							}),
+						);
+						console.log("  Channel discord: enabled (vault credential proxy)");
+					}
+					if (ch.agentmail?.enabled && ch.agentmail.from) {
+						channelConnectors.push(
+							createAgentMailConnector({
+								send: createAgentMailSender({
+									post: channelProxyPost,
+									host: ch.agentmail.credentialHost ?? "api.agentmail.to",
+								}),
+								from: ch.agentmail.from,
+								defaultSubject: ch.agentmail.defaultSubject ?? "Message from your assistant",
+							}),
+						);
+						console.log("  Channel agentmail: enabled (vault credential proxy)");
+					}
+					const webhookCfg = ch["custom-webhook"];
+					if (webhookCfg?.enabled) {
+						// Bind the configured addressRef to its endpoint (host + path +
+						// QUERY preserved); any other addressRef fails closed. A missing
+						// addressRef/endpoint or a URL with userinfo/fragment yields a null
+						// resolver -> the channel is not registered (fail closed).
+						const resolveTarget =
+							webhookCfg.addressRef && webhookCfg.endpoint
+								? buildCustomWebhookTargetResolver({
+										addressRef: webhookCfg.addressRef,
+										endpoint: webhookCfg.endpoint,
+									})
+								: null;
+						if (resolveTarget) {
+							channelConnectors.push(
+								createCustomWebhookConnector({
+									send: createCustomWebhookSender({ post: channelProxyPost, resolveTarget }),
+								}),
+							);
+							console.log("  Channel custom-webhook: enabled (vault credential proxy)");
+						} else {
+							console.log(
+								"  Channel custom-webhook: DISABLED — enabled but missing/invalid addressRef+endpoint (fail closed)",
+							);
+						}
+					}
+				}
+
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
-					registry: createDefaultEdgeOutboundExecutorRegistry(),
+					registry: createDefaultEdgeOutboundExecutorRegistry({
+						additionalConnectors: [...emailConnectors, ...channelConnectors],
+					}),
 					resolveConversation: async (prepared) => {
 						const emergencyControl =
 							await householdEmergencyControlPolicyStore?.resolveConversation(prepared);
