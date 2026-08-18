@@ -354,12 +354,7 @@ export async function proxyProviderRequest(
 
 	if (!response.ok) {
 		const errorData = data as Record<string, unknown>;
-		const errorCode =
-			typeof errorData.errorCode === "string"
-				? errorData.errorCode
-				: response.status === 401 && errorData.status === "auth_required"
-					? "auth_required"
-					: undefined;
+		const errorCode = inferProviderAuthErrorCode(response.status, errorData);
 
 		// Intercept approval_required: create pending approval for /approve flow
 		if (
@@ -469,6 +464,19 @@ function isProviderChallengePending(statusCode: number, data: unknown): boolean 
 	if (!data || typeof data !== "object" || Array.isArray(data)) return false;
 	const record = data as Record<string, unknown>;
 	return record.status === "challenge_pending" || record.errorCode === "challenge_pending";
+}
+
+function inferProviderAuthErrorCode(
+	statusCode: number,
+	data: Record<string, unknown>,
+): string | undefined {
+	if (typeof data.errorCode === "string") return data.errorCode;
+	if (statusCode !== 401 || data.status !== "auth_required") return undefined;
+
+	const error = typeof data.error === "string" ? data.error.toLowerCase() : "";
+	if (/credentials?\s+(?:not found|missing)/.test(error)) return "credentials_missing";
+	if (/session\s+expired/.test(error)) return "session_expired";
+	return "auth_required";
 }
 
 function sanitizeProviderChallengePayload(data: unknown): unknown {

@@ -405,6 +405,22 @@ describe("Telclaude live MCP relay-client adapters", () => {
 	});
 
 	it.each([
+		["credentials_missing", "provider read failed: credentials_missing"],
+		["session_expired", "provider read failed: session_expired"],
+	] as const)("throws the distinct provider auth code: %s", async (errorCode, message) => {
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			providerProxy: async () => ({
+				status: "error",
+				errorCode,
+				error: "provider auth failure",
+			}),
+		});
+
+		await expect(clients.providerRead(providerRead())).rejects.toThrow(message);
+	});
+
+	it.each([
 		["cardiac", "לחץ בחזה"],
 		["stroke", "חצי גוף חלש ודיבור מעורפל"],
 		["breathing", "אני לא יכולה לנשום"],
