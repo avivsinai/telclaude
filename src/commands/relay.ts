@@ -144,9 +144,9 @@ import {
 	createProviderLoginCoordinator,
 	setConfiguredProviderLoginCoordinator,
 } from "../relay/provider-login-coordinator.js";
+import { proxyProviderRequest } from "../relay/provider-proxy.js";
 import { createReminderConfirmationControlPolicyStore } from "../relay/reminder-confirmation-control-policy.js";
 import { createReminderConfirmationControlSender } from "../relay/reminder-confirmation-control-sender.js";
-import { proxyProviderRequest } from "../relay/provider-proxy.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
 import { dispatchWhatsAppInboundToHermes } from "../relay/whatsapp-inbound-dispatcher.js";
