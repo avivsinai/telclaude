@@ -74,6 +74,7 @@ The command outputs JSON. The exact shape is provider-dependent, but the common 
 ```json
 {
   "status": "ok" | "auth_required" | "challenge_pending" | "error",
+  "errorCode": "credentials_missing" | "session_expired" | "auth_required" | "...",
   "data": { ... },
   "attachments": [
     {
@@ -99,7 +100,14 @@ Some providers may include additional fields (e.g., `confidence`, `lastUpdated`,
 ### 4. Handle status codes
 
 - `ok`: Present the data. Check for `noResults` field - if present, tell user "no records found"
-- `auth_required`: Inform user that service needs authentication setup
+- `credentials_missing`: The provider has no stored session for this user. For session-only
+  providers, tell the operator to run `/providers enroll <service>`. Do not give CLI password
+  setup instructions and do not ask the user for credentials.
+- `session_expired`: The stored provider session is no longer usable. Tell the operator to
+  re-enroll with `/providers enroll <service>`. Do not treat this as first-time setup or give
+  CLI password instructions.
+- `auth_required`: Authentication is required but the provider did not identify whether the
+  session is missing or expired. Use the provider's documented session-only enrollment path.
 - `challenge_pending`: Ask user to complete verification via `/otp <service> <code>`
 - `error`: Show error message to user
 
@@ -168,7 +176,8 @@ You MUST include the exact path in your response. The relay watches for this pat
 1. **ALWAYS extract user-id for provider queries** - Look for `<request-context user-id="..." />` in your context. Pass it via `--user-id` when available, or rely on `TELCLAUDE_REQUEST_USER_ID` only when the relay already exports it.
 2. **ALWAYS use the provider** - NEVER search for local files in the workspace when the user asks for health, banking, or government data. Always use `telclaude providers query` to fetch fresh data from the provider.
 3. **Use CLI for provider queries** - Use `telclaude providers query`, not WebFetch or curl
-4. **Never ask for credentials** - The provider handles authentication separately
+4. **Never ask for credentials** - The provider handles authentication separately. Session-only
+   providers use `/providers enroll <service>` and never use CLI password setup.
 5. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
 6. **Show freshness** - Always tell user when data was last updated
 7. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
@@ -183,7 +192,13 @@ You MUST include the exact path in your response. The relay watches for this pat
 "To access this service, please complete verification. Check your phone for an SMS code, then reply with `/otp <service> <code>`."
 
 ### Auth required:
-"This service needs to be set up first. Please ask the operator to configure authentication."
+"Authentication is required. Ask the operator to run `/providers enroll <service>`."
+
+### Provider session missing:
+"This provider is not enrolled for this user. Ask the operator to run `/providers enroll <service>`."
+
+### Provider session expired:
+"The provider session expired. Ask the operator to re-enroll with `/providers enroll <service>`."
 
 ### Attachment available:
 "I found a document from [date]. There's a PDF available ([size]). Would you like me to send it to you?"

@@ -122,6 +122,32 @@ describe("provider proxy approval interception", () => {
 		).resolves.toMatchObject({ status: "error", errorCode: "auth_required" });
 	});
 
+	it.each([
+		["Credentials not found.", "credentials_missing"],
+		["Credentials missing.", "credentials_missing"],
+		["Session expired, please re-authenticate.", "session_expired"],
+	] as const)("preserves the provider auth distinction for %s", async (error, errorCode) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ status: "auth_required", error }), {
+						status: 401,
+						headers: { "content-type": "application/json" },
+					}),
+			),
+		);
+
+		await expect(
+			proxyProviderRequest({
+				providerId: "google",
+				path: "/v1/fetch",
+				body: JSON.stringify({ service: "clalit", action: "appointments", params: {} }),
+				userId: "household:whatsapp:parent-a",
+			}),
+		).resolves.toMatchObject({ status: "error", errorCode });
+	});
+
 	it("does not expose provider challenge interaction URLs or visual payloads to callers", async () => {
 		const opaqueFrame = Buffer.from("login-page-capture".repeat(64)).toString("base64");
 		vi.stubGlobal(
