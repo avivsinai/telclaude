@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-18 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), and vitest coverage-v8 4.1.10 (#196). Live household activation is still dark. Version stays 0.8.0 until an explicit 0.9.0 cut.
+The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-19 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), Beads/OSS hygiene and Unreleased tracking (#244), the egress-broker report CLI (#245), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), dependency overrides (#246, #248), network-probe spoof-denial hardening (#247), CI ffmpeg apt retries (#249), and vitest coverage-v8 4.1.10 (#196). Live household activation is still dark. Version stays 0.8.0 until an explicit 0.9.0 cut.
 
 ### Added
 
@@ -33,7 +33,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - **Provider degradation handling (#213)** — Relay startup now stays available when provider health checks fail; `TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS=1` retains strict fail-fast behavior.
 - **Reminder confirmation UX (#214)** — Streamlined household reminder confirmation and aligned the scheduled outbound authorization path.
 - **Hermes compatibility lock in CI (#211)** — CI now runs `hermes doctor --probes --compat-lock` so the household reminder/media probe surfaces stay coherent.
-- **CI apt-get ffmpeg retries** — `scripts/ci-install-ffmpeg.sh` retries `apt-get update` so Azure archive timeouts (exit 124) do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
+- **CI apt-get ffmpeg retries (#249)** — `scripts/ci-install-ffmpeg.sh` retries `apt-get update` so Azure archive timeouts (exit 124) do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
 
 ### Security
 
