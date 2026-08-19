@@ -137,7 +137,7 @@ jobs:
           cache: pnpm
 
       - name: Install system dependencies
-        timeout-minutes: 16
+        timeout-minutes: 25
         run: bash scripts/ci-install-ffmpeg.sh
 
       - name: Install dependencies
