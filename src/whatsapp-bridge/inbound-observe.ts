@@ -142,7 +142,12 @@ export function createRecentInboundMessageStore(maxEntries = 64): RecentInboundM
 		},
 		async getMessage(key) {
 			if (!key.remoteJid || !key.id) return undefined;
-			return cache.get(`${key.remoteJid}:${key.id}`);
+			const cacheId = `${key.remoteJid}:${key.id}`;
+			const content = cache.get(cacheId);
+			if (content === undefined) return undefined;
+			cache.delete(cacheId);
+			cache.set(cacheId, content);
+			return content;
 		},
 	};
 }

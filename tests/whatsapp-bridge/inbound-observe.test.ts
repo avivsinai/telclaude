@@ -91,4 +91,22 @@ describe("WhatsApp inbound observe", () => {
 			conversation: "three",
 		});
 	});
+
+	it("promotes a retry-hot hit so the next insert evicts the unread entry", async () => {
+		const store = createRecentInboundMessageStore(2);
+		store.remember({ remoteJid: "a@s.whatsapp.net", id: "1" }, { conversation: "one" });
+		store.remember({ remoteJid: "a@s.whatsapp.net", id: "2" }, { conversation: "two" });
+		expect(await store.getMessage({ remoteJid: "a@s.whatsapp.net", id: "1" })).toEqual({
+			conversation: "one",
+		});
+		store.remember({ remoteJid: "a@s.whatsapp.net", id: "3" }, { conversation: "three" });
+
+		expect(await store.getMessage({ remoteJid: "a@s.whatsapp.net", id: "1" })).toEqual({
+			conversation: "one",
+		});
+		expect(await store.getMessage({ remoteJid: "a@s.whatsapp.net", id: "2" })).toBeUndefined();
+		expect(await store.getMessage({ remoteJid: "a@s.whatsapp.net", id: "3" })).toEqual({
+			conversation: "three",
+		});
+	});
 });
