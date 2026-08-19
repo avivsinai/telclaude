@@ -34,6 +34,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - **Reminder confirmation UX (#214)** — Streamlined household reminder confirmation and aligned the scheduled outbound authorization path.
 - **Hermes compatibility lock in CI (#211)** — CI now runs `hermes doctor --probes --compat-lock` so the household reminder/media probe surfaces stay coherent.
 - **CI apt-get ffmpeg retries (#249, #251)** — `scripts/ci-install-ffmpeg.sh` rewrites `azure.archive.ubuntu.com` to `archive.ubuntu.com`, then retries `apt-get update` so Azure archive hangs do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
+- **Bash `always` grant → exec-policy glob** — Document that `grantAllowlist` already persists the glob, and test the live path (safe command records `npm test*`; destructive and non-Bash grants do not).
 
 ### Security
 

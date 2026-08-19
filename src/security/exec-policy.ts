@@ -555,21 +555,16 @@ export function checkExecPolicy(input: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// W1 integration hook (pending merge)
+// W1 always-grant hook
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * TODO(W1 merge): wire the "approve always" grant path into this helper so
- * a Bash `always` grant persists an exec-policy glob for the chat.
- *
- * The W1 dynamic branch owns `src/security/approvals.ts` and the
- * ApprovalScopeCard flow in `src/telegram/cards/`, so this worktree leaves
- * a stable import target instead of editing those files directly. When
- * both waves land, `grantAllowlist` in approvals.ts should call this with
- * the approved Bash command string; exec-policy will store a
- * conservative glob derived from the binary + first argument.
- *
- * Signature kept intentionally narrow so approvals.ts needs no new deps.
+ * Persist a conservative exec-policy glob when the operator grants Bash
+ * `always`. `grantAllowlist` already calls this for `scope === "always"`
+ * plus a Bash `toolKey` and `bashCommand`. Destructive commands are
+ * refused here even if the approvals layer failed to clamp them to
+ * "once". The glob is binary + first positional arg (see
+ * `deriveGlobFromCommand`).
  */
 export function recordAlwaysFromAllowlist(input: {
 	chatId: number | string;

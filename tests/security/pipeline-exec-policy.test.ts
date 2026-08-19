@@ -183,6 +183,51 @@ describe("pipeline ↔ exec-policy", () => {
 		expect(d.decision).toBe("prompt");
 	});
 
+	it("Bash always grant records an exec-policy glob from bashCommand", async () => {
+		const { grantAllowlist } = await import("../../src/security/approvals.js");
+		const { listExecPolicy } = await import("../../src/security/exec-policy.js");
+		grantAllowlist({
+			userId: "tg:307",
+			tier: "WRITE_LOCAL",
+			toolKey: "Bash",
+			scope: "always",
+			sessionKey: null,
+			chatId: 307,
+			bashCommand: "npm test --watch",
+		});
+		expect(listExecPolicy({ chatId: 307 })).toEqual([{ chatId: "307", globs: ["npm test*"] }]);
+	});
+
+	it("Bash always grant refuses to record a glob for destructive commands", async () => {
+		const { grantAllowlist } = await import("../../src/security/approvals.js");
+		const { listExecPolicy } = await import("../../src/security/exec-policy.js");
+		grantAllowlist({
+			userId: "tg:308",
+			tier: "WRITE_LOCAL",
+			toolKey: "Bash",
+			scope: "always",
+			sessionKey: null,
+			chatId: 308,
+			bashCommand: "rm -rf /",
+		});
+		expect(listExecPolicy({ chatId: 308 })).toEqual([]);
+	});
+
+	it("non-Bash always grant does not record an exec-policy glob", async () => {
+		const { grantAllowlist } = await import("../../src/security/approvals.js");
+		const { listExecPolicy } = await import("../../src/security/exec-policy.js");
+		grantAllowlist({
+			userId: "tg:309",
+			tier: "WRITE_LOCAL",
+			toolKey: "Edit",
+			scope: "always",
+			sessionKey: null,
+			chatId: 309,
+			bashCommand: "npm test --watch",
+		});
+		expect(listExecPolicy({ chatId: 309 })).toEqual([]);
+	});
+
 	it("admin bypass still wins over exec-policy", async () => {
 		const { decideToolApproval } = await import("../../src/security/pipeline.js");
 		const d = decideToolApproval({
