@@ -46,6 +46,7 @@ const RELAY_INBOUND_URL =
 const INBOUND_SECRET = process.env.TELCLAUDE_WHATSAPP_INBOUND_SECRET?.trim();
 const BRIDGE_SECRET = process.env.TELCLAUDE_WHATSAPP_BRIDGE_SECRET?.trim();
 const MAX_BODY_BYTES = 30 * 1024 * 1024;
+export const WHATSAPP_INBOUND_FORWARD_TIMEOUT_MS = 30_000;
 
 export type WhatsAppBridgeBaileysSender = {
 	sendMessage(
@@ -263,7 +264,13 @@ class WhatsAppBridgeRuntime {
 				this.recentMessages.remember(message.key, message.message);
 			}
 		}
-		if (!INBOUND_SECRET) return;
+		if (!INBOUND_SECRET) {
+			logWhatsAppInboundForwardOutcome(logger, {
+				kind: "skipped",
+				reason: "inbound_unconfigured",
+			});
+			return;
+		}
 		for (const message of messages) {
 			await this.forwardMessage(api, socket, message);
 		}
@@ -340,6 +347,7 @@ class WhatsAppBridgeRuntime {
 					),
 				},
 				body,
+				signal: AbortSignal.timeout(WHATSAPP_INBOUND_FORWARD_TIMEOUT_MS),
 			});
 			if (!response.ok) {
 				logWhatsAppInboundForwardOutcome(logger, {

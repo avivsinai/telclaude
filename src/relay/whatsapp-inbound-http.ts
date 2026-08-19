@@ -247,42 +247,23 @@ export async function handleWhatsAppInboundBridgePost(input: {
 			`WhatsApp inbound profile is not configured: ${cl1.identity.profileId}`,
 		);
 	}
-
-	let dispatchEvent = cl1.event;
-	if (resolved.processInboundMedia) {
-		try {
-			dispatchEvent = InboundEventSchema.parse(
-				await resolved.processInboundMedia({
-					event: cl1.event,
-					identity: cl1.identity,
-					conversation: cl1.conversation,
-					turn: cl1.turn,
-				}),
-			);
-		} catch {
-			return failure(
-				500,
-				"whatsapp_inbound_media_processing_failed",
-				"WhatsApp inbound media processing failed",
-				true,
-			);
-		}
-	}
-	const dispatch = await resolved.dispatch({
-		event: dispatchEvent,
+	logWhatsAppInboundRelayOutcome(logger, {
+		kind: "accepted",
+		duplicate: false,
+		intercepted: false,
+		dispatched: false,
+	});
+	scheduleWhatsAppInboundDispatch({
+		dispatch: resolved.dispatch,
+		event: cl1.event,
 		conversation: cl1.conversation,
 		turn: cl1.turn,
 		config: resolved.config,
 		profile: dispatchProfile,
 		identity: cl1.identity,
+		...(resolved.processInboundMedia ? { processInboundMedia: resolved.processInboundMedia } : {}),
 		...(resolved.cwd ? { cwd: resolved.cwd } : {}),
 		...(resolved.timeoutMs !== undefined ? { timeoutMs: resolved.timeoutMs } : {}),
-	});
-	logWhatsAppInboundRelayOutcome(logger, {
-		kind: "accepted",
-		duplicate: false,
-		intercepted: false,
-		dispatched: dispatch.ok,
 	});
 
 	return {
@@ -291,12 +272,68 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		payload: {
 			ok: true,
 			duplicate: false,
-			dispatched: dispatch.ok,
-			dispatch: publicDispatchResult(dispatch),
-			sourceAudit: dispatchEvent.sourceAudit,
-			ordering: dispatchEvent.ordering,
+			dispatched: false,
+			dispatchPending: true,
+			sourceAudit: cl1.event.sourceAudit,
+			ordering: cl1.event.ordering,
 		},
 	};
+}
+
+function scheduleWhatsAppInboundDispatch(
+	input: WhatsAppInboundDispatchInput & {
+		readonly dispatch: WhatsAppInboundDispatch;
+		readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
+	},
+): void {
+	void Promise.resolve()
+		.then(async () => {
+			let dispatchEvent = input.event;
+			if (input.processInboundMedia) {
+				try {
+					dispatchEvent = InboundEventSchema.parse(
+						await input.processInboundMedia({
+							event: input.event,
+							identity: input.identity,
+							conversation: input.conversation,
+							turn: input.turn,
+						}),
+					);
+				} catch {
+					logWhatsAppInboundRelayOutcome(logger, {
+						kind: "failed",
+						code: "whatsapp_inbound_media_processing_failed",
+					});
+					return;
+				}
+			}
+			const dispatch = await input.dispatch({
+				event: dispatchEvent,
+				conversation: input.conversation,
+				turn: input.turn,
+				config: input.config,
+				profile: input.profile,
+				identity: input.identity,
+				...(input.cwd ? { cwd: input.cwd } : {}),
+				...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+			});
+			if (!dispatch.ok) {
+				logWhatsAppInboundRelayOutcome(logger, { kind: "failed", code: dispatch.code });
+				return;
+			}
+			logWhatsAppInboundRelayOutcome(logger, {
+				kind: "accepted",
+				duplicate: false,
+				intercepted: false,
+				dispatched: true,
+			});
+		})
+		.catch(() => {
+			logWhatsAppInboundRelayOutcome(logger, {
+				kind: "failed",
+				code: "whatsapp_inbound_dispatch_exception",
+			});
+		});
 }
 
 function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
@@ -434,23 +471,6 @@ function cl1Failure(result: Extract<WhatsAppInboundCl1Result, { ok: false }>) {
 					? 409
 					: 400;
 	return failure(status, result.code, result.reason, result.retryable);
-}
-
-function publicDispatchResult(dispatch: WhatsAppInboundDispatchResult): Record<string, unknown> {
-	if (!dispatch.ok) {
-		return {
-			ok: false,
-			code: dispatch.code,
-			reason: dispatch.reason,
-			retryable: dispatch.retryable,
-		};
-	}
-	return {
-		ok: true,
-		success: dispatch.success,
-		toolUses: dispatch.toolUses,
-		toolResults: dispatch.toolResults,
-	};
 }
 
 function requiredOption(

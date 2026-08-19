@@ -122,10 +122,11 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			payload: {
 				ok: true,
 				duplicate: false,
-				dispatched: true,
-				dispatch: { ok: true, toolUses: 1, toolResults: 1 },
+				dispatched: false,
+				dispatchPending: true,
 			},
 		});
+		await vi.waitFor(() => expect(dispatched).toHaveLength(1));
 		expect(dispatched).toHaveLength(1);
 		const [{ event: sanitized, conversation, turn }] = dispatched as Array<{
 			event: { normalized: { text?: string; mediaRefs: unknown[] }; riskLabels: string[] };
@@ -163,6 +164,62 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			payload: { ok: true, duplicate: true, duplicateHandling: "duplicate" },
 		});
 		expect(dispatched).toHaveLength(1);
+	});
+
+	it("returns 202 before Hermes dispatch settles", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		let releaseDispatch: (() => void) | undefined;
+		const dispatch = vi.fn(async () => {
+			await new Promise<void>((resolve) => {
+				releaseDispatch = resolve;
+			});
+			return {
+				ok: true as const,
+				response: "prepared",
+				success: true,
+				toolUses: 0,
+				toolResults: 0,
+			};
+		});
+		const event = whatsappEvent({ messageId: "wa-message-async" });
+		const response = await Promise.race([
+			handleWhatsAppInboundBridgePost({
+				body: whatsappInboundBridgeBody(event),
+				signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+				options: {
+					signatureSecret: SECRET,
+					operatorAddressRefs: [OPERATOR_PHONE],
+					profile,
+					config,
+					conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+					quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+					nowMs: () => NOW,
+					dispatch,
+				},
+			}),
+			new Promise<never>((_, reject) => {
+				setTimeout(() => reject(new Error("inbound response waited for Hermes")), 250);
+			}),
+		]);
+
+		expect(response).toMatchObject({
+			status: 202,
+			payload: { ok: true, duplicate: false, dispatched: false, dispatchPending: true },
+		});
+		await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+		if (!releaseDispatch) throw new Error("dispatch was not held");
+		releaseDispatch();
 	});
 
 	it("denies invalid signatures, unlinked senders, groups, and bad attachments before dispatch", async () => {
@@ -397,29 +454,31 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			ensureConversation();
 			return { matched: true as const, class: "cardiac" as const, replySent: true };
 		});
-		await expect(
-			handleWhatsAppInboundBridgePost({
-				body: whatsappInboundBridgeBody(emergencyEvent),
-				signatureHeader: signWhatsAppInboundBridgeEvent(emergencyEvent, SECRET),
-				options: {
-					signatureSecret: SECRET,
-					config: householdDispatcherConfig,
-					conversationStore,
-					quarantineStore,
+		const emergencyResult = await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(emergencyEvent),
+			signatureHeader: signWhatsAppInboundBridgeEvent(emergencyEvent, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				config: householdDispatcherConfig,
+				conversationStore,
+				quarantineStore,
+				nowMs: () => NOW,
+				dispatch,
+				handleHouseholdEmergency: emergency,
+				interceptBeforePersistence: createWhatsAppProviderChallengeInterceptor({
+					registry,
 					nowMs: () => NOW,
-					dispatch,
-					handleHouseholdEmergency: emergency,
-					interceptBeforePersistence: createWhatsAppProviderChallengeInterceptor({
-						registry,
-						nowMs: () => NOW,
-						respondToChallenge,
-						sendControl,
-					}),
-				},
-			}),
-		).resolves.toMatchObject({ status: 202, payload: { dispatched: true } });
+					respondToChallenge,
+					sendControl,
+				}),
+			},
+		});
+		expect(emergencyResult).toMatchObject({
+			status: 202,
+			payload: { dispatched: false, dispatchPending: true },
+		});
 		expect(emergency).toHaveBeenCalledTimes(1);
-		expect(dispatch).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
 		expect(respondToChallenge).not.toHaveBeenCalled();
 		expect(
 			registry.peekForInbound({
@@ -545,9 +604,10 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			await expect(accepted.json()).resolves.toMatchObject({
 				ok: true,
 				duplicate: false,
-				dispatched: true,
+				dispatched: false,
+				dispatchPending: true,
 			});
-			expect(dispatched).toHaveLength(1);
+			await vi.waitFor(() => expect(dispatched).toHaveLength(1));
 		} finally {
 			await closeServer(server);
 		}
@@ -617,13 +677,16 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			},
 		};
 
-		await expect(
-			handleWhatsAppInboundBridgePost({
-				body: whatsappInboundBridgeBody(householdEvent),
-				signatureHeader: signWhatsAppInboundBridgeEvent(householdEvent, SECRET),
-				options: baseOptions,
-			}),
-		).resolves.toMatchObject({ status: 202, payload: { dispatched: true } });
+		const result = await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(householdEvent),
+			signatureHeader: signWhatsAppInboundBridgeEvent(householdEvent, SECRET),
+			options: baseOptions,
+		});
+		expect(result).toMatchObject({
+			status: 202,
+			payload: { dispatched: false, dispatchPending: true },
+		});
+		await vi.waitFor(() => expect(dispatched).toHaveLength(1));
 		expect(dispatched).toEqual([
 			expect.objectContaining({
 				profile: expect.objectContaining({ id: "parent-a" }),
@@ -745,10 +808,15 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			},
 		});
 
-		expect(result).toMatchObject({ status: 202, payload: { dispatched: true } });
-		expect(mediaTurnRef).toMatch(/^turn_[a-f0-9]{32}$/u);
-		expect(mediaTurnRef).toBe(dispatchTurnRef);
-		expect(seenPrompt).toContain("[FORWARDED CONTENT (WHATSAPP-VOICE-TRANSCRIPT) - UNTRUSTED]");
+		expect(result).toMatchObject({
+			status: 202,
+			payload: { dispatched: false, dispatchPending: true },
+		});
+		await vi.waitFor(() => {
+			expect(mediaTurnRef).toMatch(/^turn_[a-f0-9]{32}$/u);
+			expect(dispatchTurnRef).toBe(mediaTurnRef);
+			expect(seenPrompt).toContain("[FORWARDED CONTENT (WHATSAPP-VOICE-TRANSCRIPT) - UNTRUSTED]");
+		});
 		expect(seenPrompt).toContain("היה לי תור היום והרופאה הייתה נחמדה");
 		expect(seenPrompt).not.toContain("<attachments>");
 		expect(seenPrompt).not.toContain("tc-quarantine:");
@@ -878,7 +946,11 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				},
 			});
 
-			expect(result).toMatchObject({ status: 202, payload: { dispatched: true } });
+			expect(result).toMatchObject({
+				status: 202,
+				payload: { dispatched: false, dispatchPending: true },
+			});
+			await vi.waitFor(() => expect(seenPrompts.has(fixture.profileId)).toBe(true));
 		}
 
 		expect(seenPrompts.size).toBe(2);
