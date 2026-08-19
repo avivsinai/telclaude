@@ -16,6 +16,7 @@ overrides:
   fast-uri: ^3.1.2
   brace-expansion@5: 5.0.9
   postcss: 8.5.26
+  protobufjs: 7.6.5
 
 importers:
 
@@ -2289,8 +2290,8 @@ packages:
   process-warning@5.1.0:
     resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
 
-  protobufjs@7.6.4:
-    resolution: {integrity: sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==}
+  protobufjs@7.6.5:
+    resolution: {integrity: sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==}
     engines: {node: '>=12.0.0'}
 
   proxy-addr@2.0.7:
@@ -3661,7 +3662,7 @@ snapshots:
       music-metadata: 11.13.0
       p-queue: 9.3.0
       pino: 9.14.0
-      protobufjs: 7.6.4
+      protobufjs: 7.6.5
       sharp: 0.35.1
       whatsapp-rust-bridge: 0.5.4
       ws: 8.21.0
@@ -4599,7 +4600,7 @@ snapshots:
   libsignal@6.0.0:
     dependencies:
       curve25519-js: 0.0.4
-      protobufjs: 7.6.4
+      protobufjs: 7.6.5
 
   light-my-request@6.6.0:
     dependencies:
@@ -5191,7 +5192,7 @@ snapshots:
 
   process-warning@5.1.0: {}
 
-  protobufjs@7.6.4:
+  protobufjs@7.6.5:
     dependencies:
       '@protobufjs/aspromise': 1.1.2
       '@protobufjs/base64': 1.1.2
