@@ -136,3 +136,11 @@ docker/docker-compose.override.yml
 
 # Agent Message Queue
 .amqrc
+
+# Beads local Dolt workspace (ops/memory; not OSS)
+.beads/
+.dolt/
+.beads-credential-key
+
+# Homelab-only Cursor overlays. OSS-generic rules must be reviewed before commit.
+.cursor/rules/
