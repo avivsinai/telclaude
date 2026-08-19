@@ -6,6 +6,7 @@ import {
 	createRelayConversationStore,
 	type RelayConversationStore,
 } from "../hermes/relay-conversation-store.js";
+import { getChildLogger } from "../logging.js";
 import { normalizeWhatsAppAddressRef } from "../whatsapp/address.js";
 import {
 	type AttachmentQuarantineStore,
@@ -34,6 +35,8 @@ import {
 import type { WhatsAppMediaActionConfirmationInterceptor } from "./whatsapp-media-action-confirmation-interceptor.js";
 import type { WhatsAppProviderChallengeInterceptor } from "./whatsapp-provider-challenge-interceptor.js";
 import type { WhatsAppReminderConfirmationInterceptor } from "./whatsapp-reminder-confirmation-interceptor.js";
+
+const logger = getChildLogger({ module: "whatsapp-inbound-http" });
 
 export const WHATSAPP_INBOUND_BRIDGE_PATH = "/v1/whatsapp/inbound";
 export const WHATSAPP_INBOUND_SIGNATURE_HEADER = "x-telclaude-whatsapp-inbound-signature";
@@ -121,6 +124,39 @@ export type WhatsAppInboundBridgeHttpResult =
 			readonly payload: Record<string, unknown>;
 	  };
 
+export type WhatsAppInboundRelayOutcome =
+	| {
+			readonly kind: "accepted";
+			readonly duplicate: boolean;
+			readonly intercepted: boolean;
+			readonly dispatched: boolean;
+	  }
+	| { readonly kind: "failed"; readonly code: string };
+
+export type WhatsAppInboundRelayLogSink = {
+	info(bindings: Record<string, unknown>, msg: string): void;
+	warn(bindings: Record<string, unknown>, msg: string): void;
+};
+
+export function logWhatsAppInboundRelayOutcome(
+	sink: WhatsAppInboundRelayLogSink,
+	outcome: WhatsAppInboundRelayOutcome,
+): void {
+	if (outcome.kind === "accepted") {
+		sink.info(
+			{
+				outcome: "accepted",
+				duplicate: outcome.duplicate,
+				intercepted: outcome.intercepted,
+				dispatched: outcome.dispatched,
+			},
+			"WhatsApp inbound POST",
+		);
+		return;
+	}
+	sink.warn({ outcome: "failed", code: outcome.code }, "WhatsApp inbound POST");
+}
+
 export async function handleWhatsAppInboundBridgePost(input: {
 	readonly body: string;
 	readonly signatureHeader: string | readonly string[] | undefined;
@@ -173,6 +209,12 @@ export async function handleWhatsAppInboundBridgePost(input: {
 	});
 	if (!cl1.ok) return cl1Failure(cl1);
 	if (cl1.duplicate) {
+		logWhatsAppInboundRelayOutcome(logger, {
+			kind: "accepted",
+			duplicate: true,
+			intercepted: false,
+			dispatched: false,
+		});
 		return {
 			ok: true,
 			status: 200,
@@ -185,6 +227,12 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		};
 	}
 	if (cl1.intercepted) {
+		logWhatsAppInboundRelayOutcome(logger, {
+			kind: "accepted",
+			duplicate: false,
+			intercepted: true,
+			dispatched: false,
+		});
 		return {
 			ok: true,
 			status: 202,
@@ -229,6 +277,12 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		identity: cl1.identity,
 		...(resolved.cwd ? { cwd: resolved.cwd } : {}),
 		...(resolved.timeoutMs !== undefined ? { timeoutMs: resolved.timeoutMs } : {}),
+	});
+	logWhatsAppInboundRelayOutcome(logger, {
+		kind: "accepted",
+		duplicate: false,
+		intercepted: false,
+		dispatched: dispatch.ok,
 	});
 
 	return {
@@ -415,6 +469,7 @@ function failure(
 	reason: string,
 	retryable = false,
 ): WhatsAppInboundBridgeHttpFailure {
+	logWhatsAppInboundRelayOutcome(logger, { kind: "failed", code });
 	return {
 		ok: false,
 		status,
