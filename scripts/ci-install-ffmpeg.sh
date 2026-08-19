@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GitHub-hosted Ubuntu runners often stall on azure.archive.ubuntu.com.
-# Retry apt-get update so a 180s timeout does not fail the whole Verify job.
+# GitHub-hosted Ubuntu runners pin azure.archive.ubuntu.com. That mirror
+# often hangs until timeout even when archive.ubuntu.com is reachable, so
+# retries of apt-get update still fail. Rewrite the Azure hostname first.
+rewrite_azure_apt_mirrors() {
+	local path
+	shopt -s nullglob
+	for path in \
+		/etc/apt/sources.list \
+		/etc/apt/apt-mirrors.txt \
+		/etc/apt/mirrors.txt \
+		/etc/apt/sources.list.d/*.list \
+		/etc/apt/sources.list.d/*.sources \
+		/etc/apt/mirrors/*.list; do
+		[[ -f "$path" ]] || continue
+		if grep -q 'azure.archive.ubuntu.com' "$path"; then
+			sudo sed -i 's/azure\.archive\.ubuntu.com/archive.ubuntu.com/g' "$path"
+			echo "rewrote azure apt mirror in ${path}"
+		fi
+	done
+}
+
+rewrite_azure_apt_mirrors
+
+# Retry apt-get update if a remaining mirror still stalls.
 apt_opts=(
 	-o Acquire::Retries=3
 	-o Acquire::http::Timeout=20
