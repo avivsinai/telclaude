@@ -144,6 +144,7 @@ export type WhatsAppInboundRelayOutcome =
 			readonly dispatched: true;
 			readonly toolUses: number;
 			readonly toolResults: number;
+			readonly outboundToolUses: number;
 	  }
 	| { readonly kind: "failed"; readonly code: string };
 
@@ -166,6 +167,7 @@ export function logWhatsAppInboundRelayOutcome(
 		if (outcome.dispatched) {
 			bindings.toolUses = outcome.toolUses;
 			bindings.toolResults = outcome.toolResults;
+			bindings.outboundToolUses = outcome.outboundToolUses;
 		}
 		sink.info(bindings, "WhatsApp inbound POST");
 		return;
@@ -349,8 +351,9 @@ function scheduleWhatsAppInboundDispatch(
 				dispatched: true,
 				toolUses: dispatch.toolUses,
 				toolResults: dispatch.toolResults,
+				outboundToolUses: dispatch.outboundToolUses,
 			});
-			if (dispatch.toolUses > 0) {
+			if (dispatch.outboundToolUses > 0) {
 				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_tools" });
 				return;
 			}

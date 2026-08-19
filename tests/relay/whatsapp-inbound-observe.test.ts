@@ -15,6 +15,7 @@ describe("WhatsApp inbound relay observability", () => {
 			intercepted: false,
 			dispatched: true,
 			toolUses: 0,
+			outboundToolUses: 0,
 			toolResults: 0,
 		});
 		logWhatsAppInboundRelayOutcome(sink, {
@@ -42,6 +43,7 @@ describe("WhatsApp inbound relay observability", () => {
 				intercepted: false,
 				dispatched: true,
 				toolUses: 0,
+				outboundToolUses: 0,
 				toolResults: 0,
 			},
 			"WhatsApp inbound POST",
