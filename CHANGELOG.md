@@ -53,7 +53,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Fixed
 
-- **WhatsApp inbound upsert silence (#258)** — Companion DMs could be accepted on the phone while the bridge logged nothing, because `messages.upsert` was unobserved and the socket used a custom browser identity plus a silent Baileys logger. The bridge now logs content-free upsert counts, uses `Browsers.macOS("Chrome")` with a cacheable Signal key store and a small `getMessage` cache, and forwards only Baileys decrypt/unavailable strings (no JIDs or bodies).
+- **WhatsApp inbound upsert silence (#258)** — Companion DMs could be accepted on the phone while the bridge logged nothing, because `messages.upsert` was unobserved and the socket used a custom browser identity plus a silent Baileys logger. The bridge now logs content-free upsert counts, uses `Browsers.macOS("Chrome")` with a cacheable Signal key store and a small `getMessage` cache, and forwards only allowlisted Baileys log kinds such as `decrypt_failed` (never raw library strings, JIDs, or bodies).
 - **Heartbeat `/system` copy-paste (#257)** — The missing-heartbeat remediation omitted `--private`, so `cron add` rejected the suggested command. It now includes `--private`.
 - **daily-brief cron example (#254)** — The skill preset used `--private` and `--prompt` together; `cron add` allows exactly one action. The example now uses `--prompt` plus `--skill daily-brief`.
 - **Past-dated cron `--at` examples (#255)** — Weekly-business-report and operator-playbook one-shots used May 2026 timestamps that `cron add` rejects. They now use a one-minute-ahead ISO timestamp, with a docs regression test.

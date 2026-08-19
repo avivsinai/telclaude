@@ -1,5 +1,13 @@
-const BAILEYS_INTERESTING_LOG =
-	/unavailable|decrypt|retry|placeholder|ciphertext|failed to decrypt|no session|missing keys/i;
+const BAILEYS_LOG_KINDS: ReadonlyArray<readonly [needle: string, kind: string]> = [
+	["failed to decrypt", "decrypt_failed"],
+	["placeholder", "placeholder_resend"],
+	["unavailable", "unavailable_skipped"],
+	["missing keys", "missing_keys"],
+	["no session", "no_session"],
+	["ciphertext", "ciphertext"],
+	["decrypt", "decrypt_failed"],
+	["retry", "retry"],
+];
 
 export type WhatsAppUpsertSummary = {
 	readonly type: string;
@@ -36,11 +44,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function extractContentFreeBaileysLogText(obj: unknown, msg?: string): string {
+function rawBaileysLogText(obj: unknown, msg?: string): string {
 	if (typeof msg === "string" && msg.trim()) return msg;
 	if (typeof obj === "string" && obj.trim()) return obj;
 	if (isRecord(obj) && typeof obj.msg === "string" && obj.msg.trim()) return obj.msg;
+	return "";
+}
+
+export function classifyBaileysLogKind(text: string): string {
+	const lower = text.toLowerCase();
+	for (const [needle, kind] of BAILEYS_LOG_KINDS) {
+		if (lower.includes(needle)) return kind;
+	}
 	return "baileys";
+}
+
+export function extractContentFreeBaileysLogText(obj: unknown, msg?: string): string {
+	return classifyBaileysLogKind(rawBaileysLogText(obj, msg));
 }
 
 export function summarizeWhatsAppUpsert(event: unknown): WhatsAppUpsertSummary {
@@ -78,9 +98,9 @@ export function summarizeWhatsAppUpsert(event: unknown): WhatsAppUpsertSummary {
 
 export function createContentFreeBaileysLogger(sink: ContentFreeLogSink): ContentFreeBaileysLogger {
 	const log = (level: "info" | "warn" | "error", obj: unknown, msg?: string): void => {
-		const text = extractContentFreeBaileysLogText(obj, msg);
-		if (level === "info" && !BAILEYS_INTERESTING_LOG.test(text)) return;
-		sink[level]({ component: "baileys" }, text);
+		const kind = extractContentFreeBaileysLogText(obj, msg);
+		if (level === "info" && kind === "baileys") return;
+		sink[level]({ component: "baileys" }, kind);
 	};
 	const logger: ContentFreeBaileysLogger = {
 		level: "debug",

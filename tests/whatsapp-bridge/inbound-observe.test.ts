@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	classifyBaileysLogKind,
 	createContentFreeBaileysLogger,
 	createRecentInboundMessageStore,
 	extractContentFreeBaileysLogText,
@@ -37,7 +38,7 @@ describe("WhatsApp inbound observe", () => {
 		expect(JSON.stringify(summary)).not.toContain("secret household text");
 	});
 
-	it("keeps only Baileys log strings so JID-bearing objects never reach the sink", () => {
+	it("maps Baileys logs to allowlisted kinds and never forwards interpolated identifiers", () => {
 		const sink = {
 			info: vi.fn(),
 			warn: vi.fn(),
@@ -49,24 +50,31 @@ describe("WhatsApp inbound observe", () => {
 			{ remoteJid: "15551234567@s.whatsapp.net", key: { id: "AAAA" } },
 			"failed to decrypt message",
 		);
+		logger.warn({}, "failed to decrypt SYNTHETIC_JID_7f4 SYNTHETIC_BODY_91c");
 		logger.debug(
-			{ remoteJid: "15551234567@s.whatsapp.net", unavailableType: "hosted_unavailable_fanout" },
-			"skipping placeholder resend for excluded unavailable type",
+			{},
+			"sendRetryRequest: requested placeholder resend for message SYNTHETIC_JID_7f4",
 		);
+		logger.debug(`Added message to retry cache: 15551234567@s.whatsapp.net/AAAA`);
 		logger.debug({ remoteJid: "15551234567@s.whatsapp.net" }, "ignored routine stanza");
 
 		expect(
 			extractContentFreeBaileysLogText({ remoteJid: "1555" }, "failed to decrypt message"),
-		).toBe("failed to decrypt message");
-		expect(sink.warn).toHaveBeenCalledTimes(1);
-		expect(sink.warn).toHaveBeenCalledWith({ component: "baileys" }, "failed to decrypt message");
-		expect(sink.info).toHaveBeenCalledTimes(1);
-		expect(sink.info).toHaveBeenCalledWith(
-			{ component: "baileys" },
-			"skipping placeholder resend for excluded unavailable type",
-		);
-		expect(JSON.stringify(sink.warn.mock.calls)).not.toContain("15551234567");
-		expect(JSON.stringify(sink.info.mock.calls)).not.toContain("15551234567");
+		).toBe("decrypt_failed");
+		expect(
+			classifyBaileysLogKind("skipping placeholder resend for excluded unavailable type"),
+		).toBe("placeholder_resend");
+		expect(sink.warn).toHaveBeenCalledTimes(2);
+		expect(sink.warn).toHaveBeenNthCalledWith(1, { component: "baileys" }, "decrypt_failed");
+		expect(sink.warn).toHaveBeenNthCalledWith(2, { component: "baileys" }, "decrypt_failed");
+		expect(sink.info).toHaveBeenCalledTimes(2);
+		expect(sink.info).toHaveBeenNthCalledWith(1, { component: "baileys" }, "placeholder_resend");
+		expect(sink.info).toHaveBeenNthCalledWith(2, { component: "baileys" }, "retry");
+		const serialized = JSON.stringify([...sink.warn.mock.calls, ...sink.info.mock.calls]);
+		expect(serialized).not.toContain("15551234567");
+		expect(serialized).not.toContain("SYNTHETIC_JID_7f4");
+		expect(serialized).not.toContain("SYNTHETIC_BODY_91c");
+		expect(serialized).not.toContain("@s.whatsapp.net");
 	});
 
 	it("returns recent plaintext for Baileys retries and evicts the oldest entry", async () => {
