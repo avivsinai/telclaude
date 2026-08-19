@@ -40,6 +40,48 @@ export type RecentInboundMessageStore = {
 	getMessage(key: { readonly remoteJid?: string; readonly id?: string }): Promise<unknown>;
 };
 
+export type WhatsAppInboundForwardOutcome =
+	| {
+			readonly kind: "skipped";
+			readonly reason: "from_me" | "group" | "unresolved_sender" | "missing_id";
+	  }
+	| { readonly kind: "forwarded"; readonly status: number }
+	| { readonly kind: "rejected"; readonly status: number }
+	| { readonly kind: "failed"; readonly error: unknown };
+
+export type WhatsAppInboundForwardLogSink = {
+	info(bindings: Record<string, unknown>, msg: string): void;
+	warn(bindings: Record<string, unknown>, msg: string): void;
+};
+
+export function logWhatsAppInboundForwardOutcome(
+	sink: WhatsAppInboundForwardLogSink,
+	outcome: WhatsAppInboundForwardOutcome,
+): void {
+	switch (outcome.kind) {
+		case "skipped":
+			sink.info({ outcome: "skipped", reason: outcome.reason }, "WhatsApp inbound forward");
+			return;
+		case "forwarded":
+			sink.info({ outcome: "forwarded", status: outcome.status }, "WhatsApp inbound forward");
+			return;
+		case "rejected":
+			sink.warn({ outcome: "rejected", status: outcome.status }, "WhatsApp inbound forward");
+			return;
+		case "failed":
+			sink.warn(
+				{ outcome: "failed", errorClass: contentFreeWhatsAppErrorClass(outcome.error) },
+				"WhatsApp inbound forward",
+			);
+			return;
+	}
+}
+
+export function contentFreeWhatsAppErrorClass(error: unknown): string {
+	if (!(error instanceof Error)) return "UnknownError";
+	return /^[A-Za-z][A-Za-z0-9]*(?:Error|Exception)$/.test(error.name) ? error.name : "Error";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

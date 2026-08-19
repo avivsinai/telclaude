@@ -30,6 +30,7 @@ import {
 import {
 	createContentFreeBaileysLogger,
 	createRecentInboundMessageStore,
+	logWhatsAppInboundForwardOutcome,
 	summarizeWhatsAppUpsert,
 } from "./inbound-observe.js";
 
@@ -190,7 +191,10 @@ class WhatsAppBridgeRuntime {
 		socket.ev.on("connection.update", (update) => this.handleConnectionUpdate(api, update));
 		socket.ev.on("messages.upsert", (event) => {
 			void this.handleMessages(api, socket, event).catch((err) =>
-				logger.warn({ err: errorMessage(err) }, "inbound forwarding failed"),
+				logWhatsAppInboundForwardOutcome(logger, {
+					kind: "failed",
+					error: err,
+				}),
 			);
 		});
 	}
@@ -273,16 +277,25 @@ class WhatsAppBridgeRuntime {
 		const inboundSecret = INBOUND_SECRET;
 		if (!inboundSecret) return;
 
-		if (!isRecord(message)) return;
+		if (!isRecord(message)) {
+			logWhatsAppInboundForwardOutcome(logger, { kind: "skipped", reason: "missing_id" });
+			return;
+		}
 		const key = isRecord(message.key) ? message.key : {};
-		if (key.fromMe === true) return;
+		if (key.fromMe === true) {
+			logWhatsAppInboundForwardOutcome(logger, { kind: "skipped", reason: "from_me" });
+			return;
+		}
 		const remoteJid = typeof key.remoteJid === "string" ? key.remoteJid : undefined;
 		const messageId = typeof key.id === "string" ? key.id : undefined;
-		if (!remoteJid || !messageId) return;
+		if (!remoteJid || !messageId) {
+			logWhatsAppInboundForwardOutcome(logger, { kind: "skipped", reason: "missing_id" });
+			return;
+		}
 
 		const chatKind = isWhatsAppGroupJid(remoteJid) ? "group" : "direct";
 		if (chatKind === "group") {
-			logger.info({ remoteJid, messageId }, "skipping WhatsApp group inbound event");
+			logWhatsAppInboundForwardOutcome(logger, { kind: "skipped", reason: "group" });
 			return;
 		}
 
@@ -292,10 +305,10 @@ class WhatsAppBridgeRuntime {
 			getPhoneJidForLid: (lid) => socket.signalRepository.lidMapping.getPNForLID(lid),
 		});
 		if (!identity) {
-			logger.warn(
-				{ addressingMode: typeof key.addressingMode === "string" ? key.addressingMode : undefined },
-				"skipping inbound message because sender phone JID could not be resolved",
-			);
+			logWhatsAppInboundForwardOutcome(logger, {
+				kind: "skipped",
+				reason: "unresolved_sender",
+			});
 			return;
 		}
 
@@ -315,24 +328,35 @@ class WhatsAppBridgeRuntime {
 		};
 
 		const body = whatsappInboundBridgeBody(eventPayload);
-		const response = await fetch(RELAY_INBOUND_URL, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Accept: "application/json",
-				[WHATSAPP_INBOUND_SIGNATURE_HEADER]: signWhatsAppInboundBridgeEvent(
-					eventPayload,
-					inboundSecret,
-				),
-			},
-			body,
-		});
-		if (!response.ok) {
-			const text = await response.text().catch(() => "");
-			logger.warn(
-				{ status: response.status, messageId, text: text.slice(0, 300) },
-				"inbound relay rejected WhatsApp event",
-			);
+		try {
+			const response = await fetch(RELAY_INBOUND_URL, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Accept: "application/json",
+					[WHATSAPP_INBOUND_SIGNATURE_HEADER]: signWhatsAppInboundBridgeEvent(
+						eventPayload,
+						inboundSecret,
+					),
+				},
+				body,
+			});
+			if (!response.ok) {
+				logWhatsAppInboundForwardOutcome(logger, {
+					kind: "rejected",
+					status: response.status,
+				});
+				return;
+			}
+			logWhatsAppInboundForwardOutcome(logger, {
+				kind: "forwarded",
+				status: response.status,
+			});
+		} catch (error) {
+			logWhatsAppInboundForwardOutcome(logger, {
+				kind: "failed",
+				error,
+			});
 		}
 	}
 

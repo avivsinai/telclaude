@@ -4,6 +4,7 @@ import {
 	createContentFreeBaileysLogger,
 	createRecentInboundMessageStore,
 	extractContentFreeBaileysLogText,
+	logWhatsAppInboundForwardOutcome,
 	summarizeWhatsAppUpsert,
 } from "../../src/whatsapp-bridge/inbound-observe.js";
 
@@ -74,6 +75,46 @@ describe("WhatsApp inbound observe", () => {
 		expect(serialized).not.toContain("15551234567");
 		expect(serialized).not.toContain("SYNTHETIC_JID_7f4");
 		expect(serialized).not.toContain("SYNTHETIC_BODY_91c");
+		expect(serialized).not.toContain("@s.whatsapp.net");
+	});
+
+	it("logs bridge forward outcomes without identifiers, bodies, or error messages", () => {
+		const sink = {
+			info: vi.fn(),
+			warn: vi.fn(),
+		};
+
+		logWhatsAppInboundForwardOutcome(sink, { kind: "skipped", reason: "group" });
+		logWhatsAppInboundForwardOutcome(sink, { kind: "forwarded", status: 202 });
+		logWhatsAppInboundForwardOutcome(sink, { kind: "rejected", status: 403 });
+		logWhatsAppInboundForwardOutcome(sink, {
+			kind: "failed",
+			error: new Error("SYNTHETIC_BODY_91c"),
+		});
+
+		expect(sink.info).toHaveBeenNthCalledWith(
+			1,
+			{ outcome: "skipped", reason: "group" },
+			"WhatsApp inbound forward",
+		);
+		expect(sink.info).toHaveBeenNthCalledWith(
+			2,
+			{ outcome: "forwarded", status: 202 },
+			"WhatsApp inbound forward",
+		);
+		expect(sink.warn).toHaveBeenNthCalledWith(
+			1,
+			{ outcome: "rejected", status: 403 },
+			"WhatsApp inbound forward",
+		);
+		expect(sink.warn).toHaveBeenNthCalledWith(
+			2,
+			{ outcome: "failed", errorClass: "Error" },
+			"WhatsApp inbound forward",
+		);
+		const serialized = JSON.stringify([...sink.info.mock.calls, ...sink.warn.mock.calls]);
+		expect(serialized).not.toContain("SYNTHETIC_BODY_91c");
+		expect(serialized).not.toContain("15551234567");
 		expect(serialized).not.toContain("@s.whatsapp.net");
 	});
 
