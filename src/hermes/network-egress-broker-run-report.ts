@@ -112,7 +112,7 @@ export async function runNetworkEgressBrokerRunReport(
 		const target = options.targets[kind]?.trim();
 		if (!target) continue;
 		const result = await probeContainer({ mode: "http-deny", kind, target, timeoutMs });
-		attempts.push(httpDenialAttempt(kind, target, result));
+		attempts.push(httpDenialAttempt(kind, target, distrustSpoofedPolicyDenial(result)));
 	}
 	if (attempts.length === 0) {
 		throw new Error("network egress-broker report generation has no configured probes to run");
@@ -190,10 +190,9 @@ function httpDenialAttempt(
 	result: NetworkEgressBrokerContainerProbeResult,
 ): NetworkEgressBrokerRunAttempt {
 	const pass =
-		result.observed === "policy_denied" ||
-		(result.observed === "denied" &&
-			result.errorCode !== undefined &&
-			DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES.has(result.errorCode));
+		result.observed === "denied" &&
+		result.errorCode !== undefined &&
+		DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES.has(result.errorCode);
 	return withOptionalFields({
 		name: `${kind}-direct-denied`,
 		kind,
@@ -322,13 +321,10 @@ try {
     }
   } else {
     const response = await fetch(String(request.target), {method: "GET", redirect: "manual", signal: controller.signal});
-    const policyDenied = response.status === 403 && response.headers.get("x-telclaude-network-policy") === "denied";
     emit({
-      observed: policyDenied ? "policy_denied" : "reachable",
+      observed: "reachable",
       httpStatus: response.status,
-      detail: policyDenied
-        ? "target was denied by the Telclaude network policy proxy"
-        : "target was reachable from the contained runtime"
+      detail: "target was reachable from the contained runtime"
     });
   }
 } catch (error) {
@@ -341,6 +337,18 @@ try {
   clearTimeout(timer);
 }
 `;
+
+function distrustSpoofedPolicyDenial(
+	result: NetworkEgressBrokerContainerProbeResult,
+): NetworkEgressBrokerContainerProbeResult {
+	if (result.observed !== "policy_denied") return result;
+	return {
+		...result,
+		observed: "reachable",
+		detail:
+			"HTTP 403 x-telclaude-network-policy is not authenticated broker evidence; treating target as reachable",
+	};
+}
 
 function withOptionalFields(
 	attempt: NetworkEgressBrokerRunAttempt & {

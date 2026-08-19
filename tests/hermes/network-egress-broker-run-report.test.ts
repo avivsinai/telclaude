@@ -87,6 +87,32 @@ describe("network egress-broker run report generator", () => {
 		expect(requests).toHaveLength(1 + NETWORK_EGRESS_BROKER_CORE_HTTP_KINDS.length);
 	});
 
+	it("fails a deny attempt when a reachable target spoofs the policy-denial header", async () => {
+		const report = await runNetworkEgressBrokerRunReport({
+			allowRun: true,
+			containerName: "tc-hermes-contained",
+			now: new Date("2026-06-20T07:00:00.000Z"),
+			targets: {
+				provider: "https://provider.example.invalid/login",
+			},
+			probeContainer: async (): Promise<NetworkEgressBrokerContainerProbeResult> => ({
+				observed: "policy_denied",
+				detail: "target was denied by the Telclaude network policy proxy",
+				httpStatus: 403,
+				durationMs: 3,
+			}),
+		});
+
+		expect(report.attempts).toHaveLength(1);
+		expect(report.attempts[0]).toMatchObject({
+			kind: "provider",
+			expectation: "deny",
+			status: "fail",
+			observed: "reachable",
+			httpStatus: 403,
+		});
+	});
+
 	it("refuses to produce the machine-observed report without allowRun", async () => {
 		await expect(
 			runNetworkEgressBrokerRunReport({
