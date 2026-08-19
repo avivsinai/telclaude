@@ -13,9 +13,9 @@
  *
  * 2. Per-chat glob allowlist (`checkExecPolicy`):
  *    Operator-curated globs persisted to `~/.telclaude/exec-policy.json`.
- *    Populated via `telclaude exec-policy add` and (once W1 dynamic lands)
- *    via the "approve always" button on the ApprovalScopeCard. Match
- *    semantics are intentionally coarse: the whole normalised command
+ *    Populated via `telclaude exec-policy add` and via Bash `always`
+ *    grants on ApprovalScopeCard (`grantAllowlist` → `recordAlwaysFromAllowlist`).
+ *    Match semantics are intentionally coarse: the whole normalised command
  *    string is matched against the glob.
  *
  * Both layers FAIL OPEN to "prompt" — they can only grant bypass, never
@@ -125,7 +125,7 @@ export function saveExecPolicy(file: ExecPolicyFile, filePath?: string): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Mutations — CLI + future W1 integration hook call these.
+// Mutations — CLI and grantAllowlist (Bash always) call these.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function normalizeChatId(chatId: number | string): string {
