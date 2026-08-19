@@ -6,6 +6,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import type { EffectiveOperatorProfile } from "../../src/config/profiles.js";
+import {
+	DeliveryReceiptSchema,
+	EdgeAdapterSchemaVersions,
+} from "../../src/hermes/edge-adapter-contract.js";
 import type { StreamChunk } from "../../src/runtime/stream.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
@@ -220,6 +224,149 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
 		if (!releaseDispatch) throw new Error("dispatch was not held");
 		releaseDispatch();
+	});
+
+	it("sends a no-tool Hermes response through the injected reply sender", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const conversationStore = createRelayConversationStore({ nowMs: () => NOW });
+		const replyInputs: unknown[] = [];
+		const replySender = vi.fn(async (input) => {
+			replyInputs.push(input);
+			return sentReceipt("wa-reply-no-tools");
+		});
+		const dispatch = vi.fn(async () => ({
+			ok: true as const,
+			response: "  תשובה מהירה  ",
+			success: true,
+			toolUses: 0,
+			toolResults: 0,
+		}));
+		const event = whatsappEvent({ messageId: "wa-message-reply-fallback" });
+
+		const result = await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profile,
+				config,
+				conversationStore,
+				quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+				nowMs: () => NOW,
+				dispatch,
+				replySender,
+			},
+		});
+
+		expect(result).toMatchObject({
+			status: 202,
+			payload: { dispatched: false, dispatchPending: true },
+		});
+		await vi.waitFor(() => expect(replySender).toHaveBeenCalledTimes(1));
+		expect(replyInputs[0]).toMatchObject({
+			body: "תשובה מהירה",
+			recipientAddressRef: OPERATOR_PHONE,
+			turnRef: expect.stringMatching(/^turn_[0-9a-f]{32}$/),
+			conversation: { authorizationState: "authorized" },
+		});
+	});
+
+	it("does not send a fallback reply after Hermes used outbound tools", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const dispatch = vi.fn(async () => ({
+			ok: true as const,
+			response: "already sent through a tool",
+			success: true,
+			toolUses: 1,
+			toolResults: 1,
+		}));
+		const replySender = vi.fn();
+		const event = whatsappEvent({ messageId: "wa-message-tool-reply" });
+
+		await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profile,
+				config,
+				conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+				quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+				nowMs: () => NOW,
+				dispatch,
+				replySender,
+			},
+		});
+
+		await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+		expect(replySender).not.toHaveBeenCalled();
+	});
+
+	it("skips the fallback reply when Hermes returns no text", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const dispatch = vi.fn(async () => ({
+			ok: true as const,
+			response: " \n\t",
+			success: true,
+			toolUses: 0,
+			toolResults: 0,
+		}));
+		const replySender = vi.fn();
+		const event = whatsappEvent({ messageId: "wa-message-empty-reply" });
+
+		await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profile,
+				config,
+				conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+				quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+				nowMs: () => NOW,
+				dispatch,
+				replySender,
+			},
+		});
+
+		await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+		expect(replySender).not.toHaveBeenCalled();
 	});
 
 	it("denies invalid signatures, unlinked senders, groups, and bad attachments before dispatch", async () => {
@@ -1216,6 +1363,17 @@ function whatsappEvent(overrides: WhatsAppEventOverride = {}) {
 		receivedAtMs: NOW,
 		...overrides,
 	};
+}
+
+function sentReceipt(outboundRef: string) {
+	const timestamp = new Date(NOW).toISOString();
+	return DeliveryReceiptSchema.parse({
+		schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+		outboundRef,
+		deliveryStatus: "sent",
+		timestamps: { observedAt: timestamp, sentAt: timestamp },
+		retry: { attempt: 1, maxAttempts: 3, idempotencyKey: `${outboundRef}:idempotency` },
+	});
 }
 
 const config = {
