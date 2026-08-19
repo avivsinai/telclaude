@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-18 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), and vitest coverage-v8 4.1.10 (#196). Live household activation is still dark. Version stays 0.8.0 until an explicit 0.9.0 cut.
+
+### Added
+
+- **Recovered extra outbound sinks, still gated off (#243)** — Restored email MIME/Gmail send and extra channel dispatcher paths from the hermes-delivery scout; extra sinks remain gated off. The dispatcher claims executing then releases on delivery failure.
+- **Telegram `/learn` and slash-command guard (#199)** — Profile-scoped `/learn` write/list/forget, and unknown slash commands stay out of Hermes with rate-limited unmatched replies.
+- **Telegram `/update` deploy command (#200)** — Operator can check running revision against GitHub main and dispatch the verify-gated deploy workflow.
+- **WhatsApp household identity isolation (#209)** — Added explicit household profiles and bindings, profile-scoped memory, and fail-closed authority checks for inbound WhatsApp turns.
+- **Phase 0 WhatsApp provider flow (#210)** — Added identity-bound household replies, provider challenge interception and login coordination, OTP and Israeli-ID redaction, and gated Clalit renewals.
+- **Phase 0 household reminders (#211)** — Added durable reminder storage, confirmation and scheduled-fire flows, outbound authorization, send journaling, interception receipts, and an acceptance probe.
+- **Phase 0 household media assistance (#212)** — Added durable attachment quarantine, bounded voice and document derivation, interactive choices, and confirmation-gated derived actions while preserving attachment metadata.
+- **Deterministic household emergency layer (#216)** — Added emergency classification, fixed guidance, rate-limited operator control alerts, and authenticated inbound handling.
+- **Household observability metrics (#217)** — Added content-free household counters, durable metric storage, digest execution, and operator/CLI surfaces.
+- **Household activation preflight (#220)** — Added a read-only `telclaude household preflight` command with deterministic exit codes and rollout-gate checks for bindings, consent, media/data controls, switches, providers, bridge state, and rollout readiness.
+
+### Changed
+
+- **CI action pins (#203, #232, #229, #239)** — Bumped GitHub attest, `action-gh-release`, `actions/setup-node` v7, and atomic CodeQL init+analyze 4.37.0.
+- **Dependabot grouped npm minors (#241, #242)** — Minor/patch group updates, including later undici and playwright-core bumps after the undici 8.9.0 floor.
+- **vitest coverage-v8 4.1.10 (#196)** — Bumped `@vitest/coverage-v8` from 3.2.4 to 4.1.10.
+- **GitHub Actions checkout 7 (#194)** — Bumped `actions/checkout` from 6.0.3 to 7.0.0.
+- **WhatsApp bridge deployment pinning (#208)** — Pinned the bridge deploy image and added CI/config validation for the required bridge image settings.
+- **Provider degradation handling (#213)** — Relay startup now stays available when provider health checks fail; `TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS=1` retains strict fail-fast behavior.
+- **Reminder confirmation UX (#214)** — Streamlined household reminder confirmation and aligned the scheduled outbound authorization path.
+- **Hermes compatibility lock in CI (#211)** — CI now runs `hermes doctor --probes --compat-lock` so the household reminder/media probe surfaces stay coherent.
+
+### Security
+
+- **undici 8.9.0 (#236)** — Bumped undici to 8.9.0 (later grouped minors continue from that floor).
+- **Update-deploy token scope (#202)** — `/update` uses repo-scoped `contents: read`; `/update deploy` uses repo-scoped `actions: write`.
+- **undici security floor (#215)** — Updated undici to pick up security fixes.
+- **Household kill-switch revocation (#218)** — Enforced reminder switches, reconciled and purged durable state when bindings are removed, and revoked persisted conversations and turns.
+- **Household DLP display sinks (#219)** — Added household-scoped Israeli phone redaction at outbound approval, emergency preview, and reminder proposal displays, with CORE-secret sanitization in generic approval renderers.
+- **Key-aware structured redaction (#224)** — Preserved only provenance-scoped opaque relay identifiers under strict grammars and prevented verified crypto envelopes from corrupting audits, probes, tools, and approvals.
+- **Household outbound auto-grants (#225)** — Added content-safety checks and atomic rate limiting for auto-granted household outbound actions.
+- **Per-action Clalit policy (#227)** — Added fail-closed action parameter allowlists and removed subject selectors from household Clalit requests.
+
+### Fixed
+
+- **Provider session error copy (#237)** — Sidecar 401s map to `credentials_missing` / `session_expired` / `auth_required`, and the external-provider skill points operators at `/providers enroll`.
+- **Persistent Docker volumes (#201)** — Named persistent volumes are `external: true` so a missing volume fails closed instead of creating an empty replacement.
+- **Household confirmation voice and gendered copy (#221)** — Corrected Gabriel's recurring-reminder decline voice and locked cross-surface gendered copy coverage.
+- **Hermes evidence scanning and multimedia budgets (#222)** — Excluded verified attestation cryptography from secret scans and separated hourly and daily multimedia rate-limit buckets. Standalone #223 was closed unmerged; the midnight-UTC limiter fix landed here.
+- **Repeated emergency alerts (#226)** — Repeated household emergency alerts now escalate instead of being suppressed.
+- **Baileys v7 inbound identity resolution (#228)** — Resolves LID addresses to phone-number identity for sender and conversation binding, and fails closed when resolution is unavailable.
+
 ## [0.8.0] - 2026-07-01
 
 ### Added
