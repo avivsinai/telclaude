@@ -85,6 +85,10 @@ describe("WhatsApp inbound observe", () => {
 		};
 
 		logWhatsAppInboundForwardOutcome(sink, { kind: "skipped", reason: "group" });
+		logWhatsAppInboundForwardOutcome(sink, {
+			kind: "skipped",
+			reason: "inbound_unconfigured",
+		});
 		logWhatsAppInboundForwardOutcome(sink, { kind: "forwarded", status: 202 });
 		logWhatsAppInboundForwardOutcome(sink, { kind: "rejected", status: 403 });
 		logWhatsAppInboundForwardOutcome(sink, {
@@ -99,6 +103,11 @@ describe("WhatsApp inbound observe", () => {
 		);
 		expect(sink.info).toHaveBeenNthCalledWith(
 			2,
+			{ outcome: "skipped", reason: "inbound_unconfigured" },
+			"WhatsApp inbound forward",
+		);
+		expect(sink.info).toHaveBeenNthCalledWith(
+			3,
 			{ outcome: "forwarded", status: 202 },
 			"WhatsApp inbound forward",
 		);

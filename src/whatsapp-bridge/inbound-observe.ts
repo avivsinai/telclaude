@@ -43,7 +43,12 @@ export type RecentInboundMessageStore = {
 export type WhatsAppInboundForwardOutcome =
 	| {
 			readonly kind: "skipped";
-			readonly reason: "from_me" | "group" | "unresolved_sender" | "missing_id";
+			readonly reason:
+				| "from_me"
+				| "group"
+				| "unresolved_sender"
+				| "missing_id"
+				| "inbound_unconfigured";
 	  }
 	| { readonly kind: "forwarded"; readonly status: number }
 	| { readonly kind: "rejected"; readonly status: number }

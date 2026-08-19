@@ -53,6 +53,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Fixed
 
+- **WhatsApp inbound dispatch latency** — The relay now acknowledges a CL-1-ingested inbound event with `202` before Hermes and media work completes, records background dispatch failures by static code, and bounds bridge-to-relay forwarding with a 30-second timeout plus an explicit unconfigured outcome.
 - **WhatsApp inbound forwarding outcomes (#259)** — The bridge and relay now record content-free skip, forward, reject, failure, duplicate, interception, and dispatch outcomes without JIDs, phones, bodies, or message ids.
 - **WhatsApp inbound upsert silence (#258)** — Companion DMs could be accepted on the phone while the bridge logged nothing, because `messages.upsert` was unobserved and the socket used a custom browser identity plus a silent Baileys logger. The bridge now logs content-free upsert counts, uses `Browsers.macOS("Chrome")` with a cacheable Signal key store and a small `getMessage` cache, and forwards only allowlisted Baileys log kinds such as `decrypt_failed` (never raw library strings, JIDs, or bodies).
 - **Heartbeat `/system` copy-paste (#257)** — The missing-heartbeat remediation omitted `--private`, so `cron add` rejected the suggested command. It now includes `--private`.
