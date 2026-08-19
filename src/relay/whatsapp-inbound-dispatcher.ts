@@ -158,7 +158,7 @@ export function buildWhatsAppInboundHermesPrompt(
 	}
 	lines.push(
 		"",
-		"Decide whether this needs a WhatsApp reply. If it does, use the relay MCP tool tc_outbound_prepare with the exact conversationToken from system context. Do not claim a message was sent unless a relay tool result says so.",
+		"Write the WhatsApp reply as your final text. The relay delivers that text to the sender. Do not call tc_outbound_prepare or tc_outbound_execute for this chat reply.",
 		"</whatsapp-inbound-message>",
 	);
 	return lines.join("\n");
@@ -226,9 +226,6 @@ export function buildWhatsAppInboundHermesOptions(
 			...(providerContext.capabilityScopes.length
 				? { capabilityScopes: providerContext.capabilityScopes }
 				: {}),
-			...(providerContext.outboundChannels.length
-				? { outboundChannels: providerContext.outboundChannels }
-				: {}),
 			turnConversationRef: input.turn.ref,
 			...(input.identity.domain === "household"
 				? {
@@ -247,7 +244,7 @@ function buildWhatsAppAuthorityContext(
 	return [
 		"<whatsapp-edge-authority>",
 		"Relay CL-1 has authenticated, paired, replay-checked, risk-wrapped, and quarantined this inbound WhatsApp event.",
-		"Use the value inside <relay-conversation-ref> as the tc_outbound_prepare conversationToken argument.",
+		"The relay sends your final assistant text as the WhatsApp reply. Do not call tc_outbound_prepare or tc_outbound_execute for this chat reply.",
 		`<relay-conversation-ref>${escapeXmlText(input.conversation.token)}</relay-conversation-ref>`,
 		"The current MCP authority is already bound to the inbound turn. Do not include turn refs, conversation tokens, or internal relay refs in user-visible text.",
 		"Never call WhatsApp, provider, browser, or credential services directly; use only the served MCP tools.",

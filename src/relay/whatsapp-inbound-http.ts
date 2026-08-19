@@ -353,10 +353,6 @@ function scheduleWhatsAppInboundDispatch(
 				toolResults: dispatch.toolResults,
 				outboundToolUses: dispatch.outboundToolUses,
 			});
-			if (dispatch.outboundToolUses > 0) {
-				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_tools" });
-				return;
-			}
 			const response = dispatch.response.trim();
 			if (!response) {
 				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_empty" });

@@ -44,7 +44,6 @@ export type WhatsAppInboundReplySender = (
 export type WhatsAppInboundReplyOutcome =
 	| { readonly kind: "reply_sent" }
 	| { readonly kind: "reply_skipped_empty" }
-	| { readonly kind: "reply_skipped_tools" }
 	| { readonly kind: "reply_failed"; readonly code: string };
 
 export type WhatsAppInboundReplyLogSink = {
