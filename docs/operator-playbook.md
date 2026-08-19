@@ -213,21 +213,68 @@ The curator inbox (`/curator`, `src/commands/curator.ts`) sits across all three:
 
 ## Workflow recipes
 
-Concrete cron-job invocations operators can copy-paste. TODO stubs — fill in once the real prompts settle.
+Copy-paste `pnpm dev maintenance cron add` examples. Cron expressions are **UTC**.
+Choose exactly one action: `--prompt` (these recipes), `--private` (heartbeat),
+`--social`, or `--curator-scan`. Do not combine `--private` with `--prompt`.
+
+Prereqs: `telclaude providers doctor google` for calendar/gmail recipes;
+`/sethome` before `--delivery home`. Full skill text lives under
+`.claude/skills/daily-brief`, `meeting-prep`, and `weekly-business-report`
+(mirrored in `.agents/skills/`). Webhooks are not required.
 
 ### Daily brief
 
-TODO. Sketch: `--cron "30 7 * * *"`, `--prompt "Summarise overnight activity"`, `--skill summarize --skill telegram-reply`, `--delivery chat --chat-id <ops-chat>`. Decide whether to bind the chat to a `morning` profile first.
+Morning private Telegram brief (today's calendar, Gmail highlights, weather).
+Skill: `daily-brief`. Read-only Google only. Adjust the UTC hour for local morning.
+
+```bash
+pnpm dev maintenance cron add \
+  --name "daily-brief" \
+  --cron "0 6 * * *" \
+  --skill daily-brief \
+  --prompt "Use the daily-brief skill to prepare my morning Telegram brief. Gather today's Google Calendar, recent Gmail inbox highlights, and weather. Use only read-only provider queries for Google. Keep the result concise." \
+  --delivery home \
+  --owner admin \
+  --json
+```
+
+Optional: `/profile switch` to a morning profile first so memory and `allowedSkills` match.
 
 ### Meeting prep
 
-TODO. Sketch: `--every 1h` during business hours via `--cron "0 9-17 * * 1-5"`, `--prompt` pulling Google Calendar agenda for the next two hours, requires `setup-google` and the Google provider, plus the `external-provider` skill in `allowedSkills`.
+Cron cannot fire 30 minutes before each calendar event. Poll weekdays every 10
+minutes and reply `[IDLE]` when nothing matches. Skill: `meeting-prep`. Read-only
+Google Calendar + Gmail.
+
+```bash
+pnpm dev maintenance cron add \
+  --name "meeting-prep-poller" \
+  --cron "*/10 * * * 1-5" \
+  --skill meeting-prep \
+  --prompt "Use the meeting-prep skill. Actor user id: admin. Look for Google Calendar events starting 25-35 minutes from now. Use only read-only telclaude providers query calls against google calendar and gmail. If no event matches, reply exactly [IDLE]. If one or more events match, prepare one concise Telegram briefing for the next event." \
+  --delivery home \
+  --owner admin \
+  --json
+```
 
 ### Weekly report
 
-TODO. Sketch: `--cron "0 16 * * 5"`, `--prompt` aggregating Codex work-unit results and curator decisions from the week, `--delivery chat --chat-id <ops-chat>`. Probably wants a `researcher` profile with its own memory.
+Monday-morning private business digest from already-configured providers. Skill:
+`weekly-business-report`. Does not auto-install integrations.
 
-Each recipe will note: required profile config, required providers, required skills, expected runtime, and whether a webhook trigger is appropriate.
+```bash
+pnpm dev maintenance cron add \
+  --name weekly-business-report \
+  --cron "30 6 * * 1" \
+  --skill weekly-business-report \
+  --prompt "Run the weekly-business-report skill for the previous full business week. Use only configured telclaude providers through telclaude providers query. Include revenue, support, CRM, analytics, and docs/sheets sections when the input contract has those integrations. Report setup gaps instead of guessing." \
+  --delivery home \
+  --owner admin \
+  --json
+```
+
+Inspect or dry-run with `pnpm dev maintenance cron list --all --json` and
+`pnpm dev maintenance cron run <id>`.
 
 ## Hermes private runtime
 

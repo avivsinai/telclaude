@@ -148,7 +148,7 @@ Cron expressions are UTC; adjust the hour for the operator's morning timezone.
 pnpm dev maintenance cron add \
   --name "daily-brief" \
   --cron "0 6 * * *" \
-  --private \
+  --skill daily-brief \
   --prompt "Use the daily-brief skill to prepare my morning Telegram brief. Gather today's Google Calendar, recent Gmail inbox highlights, and weather. Use only read-only provider queries for Google. Keep the result concise." \
   --delivery home \
   --owner admin \
