@@ -376,7 +376,7 @@ describe("exec-policy", () => {
 	});
 
 	// ───────────────────────────────────────────────────────────────────────
-	// recordAlwaysFromAllowlist — pending W1 merge wiring
+	// recordAlwaysFromAllowlist — called by grantAllowlist on Bash always grants
 	// ───────────────────────────────────────────────────────────────────────
 
 	describe("recordAlwaysFromAllowlist", () => {
