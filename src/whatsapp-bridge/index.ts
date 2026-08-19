@@ -27,6 +27,11 @@ import {
 	WhatsAppBridgeIdempotencyJournal,
 	type WhatsAppBridgeJournalResponse,
 } from "./idempotency-journal.js";
+import {
+	createContentFreeBaileysLogger,
+	createRecentInboundMessageStore,
+	summarizeWhatsAppUpsert,
+} from "./inbound-observe.js";
 
 const logger = pino({
 	level: process.env.LOG_LEVEL ?? process.env.TELCLAUDE_LOG_LEVEL ?? "info",
@@ -62,12 +67,16 @@ type BaileysSocket = WhatsAppBridgeBaileysSender & {
 
 type BaileysApi = {
 	readonly default: (options: Record<string, unknown>) => BaileysSocket;
+	readonly Browsers: {
+		readonly macOS: (browser: string) => readonly [string, string, string];
+	};
 	readonly DisconnectReason: { readonly loggedOut: number };
 	readonly fetchLatestBaileysVersion: () => Promise<{ readonly version: readonly number[] }>;
 	readonly isHostedLidUser: (jid: string | undefined) => boolean | undefined;
 	readonly isHostedPnUser: (jid: string | undefined) => boolean | undefined;
 	readonly isLidUser: (jid: string | undefined) => boolean | undefined;
 	readonly isPnUser: (jid: string | undefined) => boolean | undefined;
+	readonly makeCacheableSignalKeyStore: (keys: unknown, logger: unknown) => unknown;
 	readonly useMultiFileAuthState: (
 		folder: string,
 	) => Promise<{ readonly state: unknown; readonly saveCreds: () => Promise<void> }>;
@@ -95,6 +104,7 @@ class WhatsAppBridgeRuntime {
 	private starting: Promise<void> | null = null;
 	private readonly authDir: string;
 	private readonly idempotencyJournal: WhatsAppBridgeIdempotencyJournal;
+	private readonly recentMessages = createRecentInboundMessageStore();
 	private readonly sequenceByConversation = new Map<string, number>();
 	private status: BridgeStatus = {
 		connected: false,
@@ -155,13 +165,22 @@ class WhatsAppBridgeRuntime {
 		fs.mkdirSync(this.authDir, { recursive: true });
 		const api = (await import("@whiskeysockets/baileys")) as unknown as BaileysApi;
 		const { state, saveCreds } = await api.useMultiFileAuthState(this.authDir);
+		if (!isRecord(state) || !("creds" in state) || !("keys" in state)) {
+			throw new Error("WhatsApp auth state is missing creds or keys");
+		}
 		const { version } = await api.fetchLatestBaileysVersion();
+		const baileysLogger = createContentFreeBaileysLogger(logger);
 		const socket = api.default({
-			auth: state,
+			auth: {
+				creds: state.creds,
+				keys: api.makeCacheableSignalKeyStore(state.keys, baileysLogger),
+			},
 			version,
-			browser: ["Telclaude", "Chrome", "1.0"],
-			logger: pino({ level: "silent" }),
+			browser: api.Browsers.macOS("Chrome"),
+			logger: baileysLogger,
 			syncFullHistory: false,
+			getMessage: (key: { readonly remoteJid?: string; readonly id?: string }) =>
+				this.recentMessages.getMessage(key),
 		});
 
 		this.socket = socket;
@@ -232,9 +251,15 @@ class WhatsAppBridgeRuntime {
 		socket: BaileysSocket,
 		event: unknown,
 	): Promise<void> {
-		if (!INBOUND_SECRET) return;
+		logger.info(summarizeWhatsAppUpsert(event), "WhatsApp inbound upsert");
 		const record = isRecord(event) ? event : {};
 		const messages = Array.isArray(record.messages) ? record.messages : [];
+		for (const message of messages) {
+			if (isRecord(message) && isRecord(message.key)) {
+				this.recentMessages.remember(message.key, message.message);
+			}
+		}
+		if (!INBOUND_SECRET) return;
 		for (const message of messages) {
 			await this.forwardMessage(api, socket, message);
 		}
