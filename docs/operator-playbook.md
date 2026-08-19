@@ -191,7 +191,7 @@ Move workflows up this ladder one rung at a time.
 
    ```
    pnpm dev maintenance cron add --name brief-test \
-     --at 2026-05-17T07:30:00Z \
+     --at "$(node -e 'console.log(new Date(Date.now()+60000).toISOString())')" \
      --prompt "<frozen prompt>" \
      --skill summarize --skill telegram-reply \
      --delivery chat --chat-id <id>
