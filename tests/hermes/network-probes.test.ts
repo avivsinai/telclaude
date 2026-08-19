@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -26,17 +27,22 @@ import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-
 describe("Hermes network probes", () => {
 	it("uses provider URL prefixes as provider-specific direct-deny attempt names", async () => {
 		const restoreKeys = installNetworkProbeRunnerKeys();
-		const policyDenied = await policyDeniedProbeUrl();
+		const deniedUrl = await closedProbeUrl();
 		const relay = await openProbeUrl();
 		const fetchSpy = spyOnDeterministicDnsDenialFetch();
+		const realExistsSync = fs.existsSync;
+		const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((candidate) => {
+			if (candidate === DEFAULT_FIREWALL_SENTINEL_PATH) return true;
+			return realExistsSync(candidate);
+		});
 		try {
 			const report = await runHermesNetworkProbes({
 				allowRun: true,
 				posture: "contained-internal",
 				relayUrl: relay.url,
-				providerUrls: requiredProviderUrls(policyDenied.url),
+				providerUrls: requiredProviderUrls(deniedUrl),
 				vaultSocketPath: path.join(os.tmpdir(), "missing-hermes-vault.sock"),
-				modelProviderUrl: policyDenied.url,
+				modelProviderUrl: deniedUrl,
 				dnsExfilUrls: [DETERMINISTIC_DNS_DENIAL_URL],
 				firewallSentinelPath: path.join(os.tmpdir(), "missing-hermes-firewall-sentinel"),
 				timeoutMs: 100,
@@ -50,6 +56,7 @@ describe("Hermes network probes", () => {
 				"provider:clalit",
 				"provider:government",
 				"provider:google",
+				"firewall-sentinel",
 			]);
 			expect(directProviderEvidence?.attempts.every((attempt) => attempt.status === "pass")).toBe(
 				true,
@@ -109,7 +116,10 @@ describe("Hermes network probes", () => {
 				probe.id === "network.direct-provider-denied"
 					? {
 							...probe,
-							attempts: [{ ...policyProviderDenialAttempt("generic"), name: "provider" }],
+							attempts: [
+								passingFirewallSentinelAttempt(),
+								{ ...genericProviderDenialAttempt(), name: "provider" },
+							],
 						}
 					: probe,
 			);
@@ -123,9 +133,7 @@ describe("Hermes network probes", () => {
 					? {
 							...probe,
 							attempts: requiredProviderNames().map((provider) =>
-								provider === "bank"
-									? genericProviderSpecificDenialAttempt(provider)
-									: policyProviderDenialAttempt(provider),
+								genericProviderSpecificDenialAttempt(provider),
 							),
 						}
 					: probe,
@@ -139,11 +147,14 @@ describe("Hermes network probes", () => {
 				probe.id === "network.direct-provider-denied"
 					? {
 							...probe,
-							attempts: requiredProviderNames().map((provider) =>
-								provider === "bank"
-									? dnsGuardProviderDenialAttempt(provider)
-									: policyProviderDenialAttempt(provider),
-							),
+							attempts: [
+								passingFirewallSentinelAttempt(),
+								...requiredProviderNames().map((provider) =>
+									provider === "bank"
+										? dnsGuardProviderDenialAttempt(provider)
+										: genericProviderSpecificDenialAttempt(provider),
+								),
+							],
 						}
 					: probe,
 			);
@@ -275,9 +286,10 @@ describe("Hermes network probes", () => {
 			);
 			nonContainedSentinelAttributedReport.posture = agentIptablesPosture;
 			writeJson(reportPath, nonContainedSentinelAttributedReport);
-			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
-				"network probe evidence network.direct-provider-denied direct network denial requires contained-internal posture",
-			);
+			expect(readHermesNetworkProbeRunReport(reportPath)).toMatchObject({
+				status: "pass",
+				posture: agentIptablesPosture,
+			});
 
 			const nonContainedMixedVaultReport = resignReportEvidence(importableReport, (probe) => ({
 				...probe,
@@ -297,9 +309,10 @@ describe("Hermes network probes", () => {
 			}));
 			nonContainedMixedVaultReport.posture = "agent-iptables";
 			writeJson(reportPath, nonContainedMixedVaultReport);
-			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
-				"network probe evidence network.direct-vault-denied direct network denial requires contained-internal posture",
-			);
+			expect(readHermesNetworkProbeRunReport(reportPath)).toMatchObject({
+				status: "pass",
+				posture: "agent-iptables",
+			});
 
 			const overridableDnsGuardReport = resignReportEvidence(importableReport, (probe) =>
 				probe.id === "network.dns-exfil-denied"
@@ -366,14 +379,14 @@ describe("Hermes network probes", () => {
 				"network probe evidence network.relay-control-allowed attestation signature is invalid",
 			);
 		} finally {
+			existsSpy.mockRestore();
 			fetchSpy.mockRestore();
 			restoreKeys();
-			await policyDenied.close();
 			await relay.close();
 		}
 	});
 
-	it("does not count direct network errors as denial proof outside contained-internal", async () => {
+	it("counts OS-level network denials as proof for agent-iptables", async () => {
 		const restoreKeys = installNetworkProbeRunnerKeys();
 		const relay = await openProbeUrl();
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-non-contained-"));
@@ -409,21 +422,59 @@ describe("Hermes network probes", () => {
 				(probe) => probe.id === "network.direct-vault-denied",
 			);
 
-			expect(report.status).toBe("fail");
+			expect(report.status).toBe("pass");
 			expect(
 				directProvider?.attempts.find((attempt) => attempt.name === "provider:bank"),
-			).toMatchObject({ status: "fail", observed: "inconclusive_error", errorCode: "ENETUNREACH" });
+			).toMatchObject({ status: "pass", observed: "denied", errorCode: "ENETUNREACH" });
 			expect(
 				directModel?.attempts.find((attempt) => attempt.name === "model-provider"),
-			).toMatchObject({ status: "fail", observed: "inconclusive_error", errorCode: "ENETUNREACH" });
+			).toMatchObject({ status: "pass", observed: "denied", errorCode: "ENETUNREACH" });
 			expect(directVault?.attempts.find((attempt) => attempt.name === "vault-url")).toMatchObject({
-				status: "fail",
-				observed: "inconclusive_error",
+				status: "pass",
+				observed: "denied",
 				errorCode: "ENETUNREACH",
 			});
 		} finally {
 			fetchSpy.mockRestore();
 			restoreKeys();
+			await relay.close();
+		}
+	});
+
+	it("fails when a reachable target spoofs the policy-denial header", async () => {
+		const restoreKeys = installNetworkProbeRunnerKeys();
+		const policyDenied = await policyDeniedProbeUrl();
+		const relay = await openProbeUrl();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
+		try {
+			const report = await runHermesNetworkProbes({
+				allowRun: true,
+				posture: "agent-iptables",
+				relayUrl: relay.url,
+				providerUrls: requiredProviderUrls(policyDenied.url),
+				vaultSocketPath: path.join(os.tmpdir(), "missing-hermes-vault.sock"),
+				modelProviderUrl: policyDenied.url,
+				dnsExfilUrls: [DETERMINISTIC_DNS_DENIAL_URL],
+				firewallSentinelPath: path.join(os.tmpdir(), "missing-hermes-firewall-sentinel"),
+				timeoutMs: 100,
+				now: new Date("2026-06-01T09:10:00.000Z"),
+			});
+			expect(report.status).toBe("fail");
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "provider:bank"),
+			).toMatchObject({
+				status: "fail",
+				observed: "reachable",
+				httpStatus: 403,
+				detail:
+					"HTTP 403 x-telclaude-network-policy is not authenticated denial evidence; treating target as reachable",
+			});
+		} finally {
+			fetchSpy.mockRestore();
+			restoreKeys();
+			await policyDenied.close();
 			await relay.close();
 		}
 	});
@@ -784,20 +835,6 @@ function passingFirewallSentinelAttempt() {
 	};
 }
 
-function policyProviderDenialAttempt(provider: string) {
-	return {
-		name: `provider:${provider}`,
-		kind: "http" as const,
-		target: `https://${provider}.provider.internal/probe`,
-		expectation: "deny" as const,
-		status: "pass" as const,
-		observed: "policy_denied",
-		detail: "target was denied by the Telclaude network policy proxy",
-		durationMs: 1,
-		httpStatus: 403,
-	};
-}
-
 function dnsGuardProviderDenialAttempt(provider: string) {
 	return {
 		name: `provider:${provider}`,
@@ -875,6 +912,22 @@ async function openProbeUrl(): Promise<{ url: string; close: () => Promise<void>
 				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
+}
+
+async function closedProbeUrl(): Promise<string> {
+	const server = net.createServer();
+	await new Promise<void>((resolve) => {
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	const address = server.address();
+	if (!address || typeof address === "string") {
+		throw new Error("expected TCP server address");
+	}
+	const url = `http://127.0.0.1:${address.port}/probe`;
+	await new Promise<void>((resolve, reject) => {
+		server.close((error) => (error ? reject(error) : resolve()));
+	});
+	return url;
 }
 
 async function policyDeniedProbeUrl(): Promise<{ url: string; close: () => Promise<void> }> {

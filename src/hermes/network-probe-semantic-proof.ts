@@ -77,10 +77,6 @@ export function networkProbeSemanticProofFailures(
 		if (evidence.id === "network.direct-provider-denied") {
 			failures.push(...containedInternalProviderDenyFailures(evidence));
 		}
-	} else if (hasAnyDirectNetworkDenial(evidence)) {
-		failures.push(
-			`network probe evidence ${evidence.id} direct network denial requires contained-internal posture`,
-		);
 	} else if (options.allowFirewallSentinelFallback === true) {
 		if (!hasPassingFirewallSentinel(evidence)) {
 			failures.push(
@@ -129,17 +125,12 @@ function hasContainedInternalProof(evidence: NetworkProbeSemanticEvidence): bool
 					attempt.expectation === "deny" &&
 					attempt.status === "pass" &&
 					((attempt.kind === "unix_socket" && attempt.observed === "absent") ||
-						hasPolicyProxyDenial(attempt) ||
-						hasSentinelAttributedDirectNetworkDenial(evidence, attempt)),
+						hasPositiveHttpDenial(evidence, attempt)),
 			);
 		case "network.dns-exfil-denied":
 			return evidence.attempts.some(hasPositiveDnsGuardDenial);
 		default:
-			return evidence.attempts.some(
-				(attempt) =>
-					hasPolicyProxyDenial(attempt) ||
-					hasSentinelAttributedDirectNetworkDenial(evidence, attempt),
-			);
+			return evidence.attempts.some((attempt) => hasPositiveHttpDenial(evidence, attempt));
 	}
 }
 
@@ -160,7 +151,7 @@ function containedInternalProviderDenyFailures(evidence: NetworkProbeSemanticEvi
 	for (const provider of REQUIRED_CONTAINED_PROVIDER_DENY_NAMES) {
 		const attemptName = `provider:${provider}`;
 		const attempt = evidence.attempts.find((candidate) => candidate.name === attemptName);
-		if (!attempt || !hasPositiveContainedProviderHttpDenial(evidence, attempt)) {
+		if (!attempt || !hasPositiveHttpDenial(evidence, attempt)) {
 			failures.push(
 				`network probe evidence ${evidence.id} ${attemptName} contained-internal denial proof is missing or not pass`,
 			);
@@ -169,23 +160,14 @@ function containedInternalProviderDenyFailures(evidence: NetworkProbeSemanticEvi
 	return failures;
 }
 
-function hasPositiveContainedProviderHttpDenial(
+function hasPositiveHttpDenial(
 	evidence: NetworkProbeSemanticEvidence,
 	attempt: NetworkProbeSemanticAttempt,
 ): boolean {
-	return (
-		hasPolicyProxyDenial(attempt) || hasSentinelAttributedDirectNetworkDenial(evidence, attempt)
-	);
-}
-
-function hasPolicyProxyDenial(attempt: NetworkProbeSemanticAttempt): boolean {
-	return (
-		attempt.kind === "http" &&
-		attempt.expectation === "deny" &&
-		attempt.status === "pass" &&
-		attempt.observed === "policy_denied" &&
-		attempt.httpStatus === 403
-	);
+	if (evidence.posture === "contained-internal") {
+		return hasSentinelAttributedDirectNetworkDenial(evidence, attempt);
+	}
+	return hasDirectNetworkDenial(attempt);
 }
 
 function hasSentinelAttributedDirectNetworkDenial(
