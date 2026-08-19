@@ -54,6 +54,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 ### Fixed
 
 - **daily-brief cron example** — The skill preset used `--private` and `--prompt` together; `cron add` allows exactly one action. The example now uses `--prompt` plus `--skill daily-brief`.
+- **Past-dated cron `--at` examples** — Weekly-business-report and operator-playbook one-shots used May 2026 timestamps that `cron add` rejects. They now use a one-minute-ahead ISO timestamp, with a docs regression test.
 - **Provider session error copy (#237)** — Sidecar 401s map to `credentials_missing` / `session_expired` / `auth_required`, and the external-provider skill points operators at `/providers enroll`.
 - **Persistent Docker volumes (#201)** — Named persistent volumes are `external: true` so a missing volume fails closed instead of creating an empty replacement.
 - **Household confirmation voice and gendered copy (#221)** — Corrected Gabriel's recurring-reminder decline voice and locked cross-surface gendered copy coverage.

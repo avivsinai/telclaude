@@ -218,7 +218,7 @@ One-shot test run before recurring scheduling:
 ```bash
 pnpm dev maintenance cron add \
   --name weekly-business-report-test \
-  --at 2026-05-18T06:30:00Z \
+  --at "$(node -e 'console.log(new Date(Date.now()+60000).toISOString())')" \
   --prompt "Test the weekly-business-report workflow against configured read-only business providers and report data coverage gaps." \
   --delivery home \
   --owner admin \
