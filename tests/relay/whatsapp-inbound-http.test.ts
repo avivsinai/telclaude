@@ -116,7 +116,14 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				nowMs: () => NOW,
 				dispatch: async (input) => {
 					dispatched.push(input);
-					return { ok: true, response: "prepared", success: true, toolUses: 1, toolResults: 1 };
+					return {
+						ok: true,
+						response: "prepared",
+						success: true,
+						toolUses: 1,
+						outboundToolUses: 0,
+						toolResults: 1,
+					};
 				},
 			},
 		});
@@ -158,7 +165,14 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				nowMs: () => NOW,
 				dispatch: async (input) => {
 					dispatched.push(input);
-					return { ok: true, response: "duplicate", success: true, toolUses: 0, toolResults: 0 };
+					return {
+						ok: true,
+						response: "duplicate",
+						success: true,
+						toolUses: 0,
+						outboundToolUses: 0,
+						toolResults: 0,
+					};
 				},
 			},
 		});
@@ -193,6 +207,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				response: "prepared",
 				success: true,
 				toolUses: 0,
+				outboundToolUses: 0,
 				toolResults: 0,
 			};
 		});
@@ -250,6 +265,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			response: "  תשובה מהירה  ",
 			success: true,
 			toolUses: 0,
+			outboundToolUses: 0,
 			toolResults: 0,
 		}));
 		const event = whatsappEvent({ messageId: "wa-message-reply-fallback" });
@@ -301,6 +317,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			response: "already sent through a tool",
 			success: true,
 			toolUses: 1,
+			outboundToolUses: 1,
 			toolResults: 1,
 		}));
 		const replySender = vi.fn();
@@ -326,6 +343,53 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		expect(replySender).not.toHaveBeenCalled();
 	});
 
+	it("sends a fallback reply when Hermes used a non-outbound tool", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const replyInputs: unknown[] = [];
+		const replySender = vi.fn(async (input) => {
+			replyInputs.push(input);
+			return sentReceipt("wa-reply-memory-tool");
+		});
+		const event = whatsappEvent({ messageId: "wa-message-memory-tool" });
+
+		await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profile,
+				config,
+				conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+				quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+				nowMs: () => NOW,
+				dispatch: async () => ({
+					ok: true,
+					response: "שלום",
+					success: true,
+					toolUses: 1,
+					outboundToolUses: 0,
+					toolResults: 1,
+				}),
+				replySender,
+			},
+		});
+
+		await vi.waitFor(() => expect(replySender).toHaveBeenCalledTimes(1));
+		expect(replyInputs[0]).toMatchObject({ body: "שלום", recipientAddressRef: OPERATOR_PHONE });
+	});
+
 	it("skips the fallback reply when Hermes returns no text", async () => {
 		const { createAttachmentQuarantineStore } = await import(
 			"../../src/relay/attachment-quarantine-store.js"
@@ -344,6 +408,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			response: " \n\t",
 			success: true,
 			toolUses: 0,
+			outboundToolUses: 0,
 			toolResults: 0,
 		}));
 		const replySender = vi.fn();
@@ -400,6 +465,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					response: "unexpected",
 					success: true,
 					toolUses: 0,
+					outboundToolUses: 0,
 					toolResults: 0,
 				};
 			},
@@ -535,6 +601,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			response: "Gabriel received emergency",
 			success: true,
 			toolUses: 0,
+			outboundToolUses: 0,
 			toolResults: 0,
 		}));
 		const event = whatsappEvent({
@@ -680,6 +747,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 								response: "prepared",
 								success: true,
 								toolUses: 1,
+								outboundToolUses: 0,
 								toolResults: 1,
 							};
 						},
@@ -728,7 +796,14 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				nowMs: () => NOW,
 				dispatch: async (input) => {
 					dispatched.push(input);
-					return { ok: true, response: "prepared", success: true, toolUses: 1, toolResults: 1 };
+					return {
+						ok: true,
+						response: "prepared",
+						success: true,
+						toolUses: 1,
+						outboundToolUses: 0,
+						toolResults: 1,
+					};
 				},
 			},
 		});
@@ -819,6 +894,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					response: "prepared",
 					success: true,
 					toolUses: 1,
+					outboundToolUses: 0,
 					toolResults: 1,
 				};
 			},
@@ -1173,6 +1249,7 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 			ok: true,
 			response: "Prepared WhatsApp reply.",
 			toolUses: 1,
+			outboundToolUses: 1,
 			toolResults: 1,
 		});
 		expect(seenPrompt).toContain("[FORWARDED CONTENT (WHATSAPP) - UNTRUSTED]");
@@ -1191,6 +1268,40 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 			},
 		});
 		expect(JSON.stringify(seenOptions)).toContain(cl1.conversation.token);
+	});
+
+	it("counts only outbound MCP tools as outboundToolUses", async () => {
+		const { dispatchWhatsAppInboundToHermes } = await import(
+			"../../src/relay/whatsapp-inbound-dispatcher.js"
+		);
+		const cl1 = await mintCl1Event({ text: "remember this" });
+		const result = await dispatchWhatsAppInboundToHermes({
+			...cl1,
+			config,
+			profile,
+			executeHermes: async function* (): AsyncIterable<StreamChunk> {
+				yield { type: "tool_use", toolName: "tc_memory_search", input: { query: "x" } };
+				yield { type: "tool_result", toolName: "tc_memory_search", output: { ok: true } };
+				yield {
+					type: "done",
+					result: {
+						response: "Got it.",
+						success: true,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 5,
+						sessionId: "hermes-session-memory",
+					},
+				};
+			},
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			response: "Got it.",
+			toolUses: 1,
+			outboundToolUses: 0,
+			toolResults: 1,
+		});
 	});
 
 	it("aborts an in-flight Hermes stream when the relay arms a challenge for its turn", async () => {

@@ -46,6 +46,7 @@ export type WhatsAppInboundDispatchResult =
 			readonly sessionId?: string;
 			readonly toolUses: number;
 			readonly toolResults: number;
+			readonly outboundToolUses: number;
 	  }
 	| {
 			readonly ok: false;
@@ -55,6 +56,11 @@ export type WhatsAppInboundDispatchResult =
 	  };
 
 const DEFAULT_WHATSAPP_INBOUND_TIMEOUT_MS = 120_000;
+
+export function isWhatsAppInboundOutboundTool(toolName: string): boolean {
+	const name = toolName.trim().toLowerCase();
+	return name.includes("tc_outbound_prepare") || name.includes("tc_outbound_execute");
+}
 
 export async function dispatchWhatsAppInboundToHermes(
 	input: WhatsAppInboundDispatchInput,
@@ -69,11 +75,15 @@ export async function dispatchWhatsAppInboundToHermes(
 	const runtimeOptions = { ...buildWhatsAppInboundHermesOptions(input), signal: controller.signal };
 	let toolUses = 0;
 	let toolResults = 0;
+	let outboundToolUses = 0;
 	let lastDone: Extract<StreamChunk, { type: "done" }>["result"] | null = null;
 
 	try {
 		for await (const chunk of executeHermes(prompt, runtimeOptions)) {
-			if (chunk.type === "tool_use") toolUses += 1;
+			if (chunk.type === "tool_use") {
+				toolUses += 1;
+				if (isWhatsAppInboundOutboundTool(chunk.toolName)) outboundToolUses += 1;
+			}
 			if (chunk.type === "tool_result") toolResults += 1;
 			if (chunk.type === "done") lastDone = chunk.result;
 		}
@@ -113,6 +123,7 @@ export async function dispatchWhatsAppInboundToHermes(
 		...(lastDone.sessionId ? { sessionId: lastDone.sessionId } : {}),
 		toolUses,
 		toolResults,
+		outboundToolUses,
 	};
 }
 
