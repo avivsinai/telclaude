@@ -111,9 +111,9 @@ export function createRecentInboundMessageStore(maxEntries = 64): RecentInboundM
 			const remoteJid = typeof key.remoteJid === "string" ? key.remoteJid : undefined;
 			const id = typeof key.id === "string" ? key.id : undefined;
 			if (!remoteJid || !id || content === undefined) return;
-			const cacheKey = `${remoteJid}:${id}`;
-			if (cache.has(cacheKey)) cache.delete(cacheKey);
-			cache.set(cacheKey, content);
+			const cacheId = `${remoteJid}:${id}`;
+			if (cache.has(cacheId)) cache.delete(cacheId);
+			cache.set(cacheId, content);
 			while (cache.size > maxEntries) {
 				const oldest = cache.keys().next().value;
 				if (typeof oldest !== "string") break;
