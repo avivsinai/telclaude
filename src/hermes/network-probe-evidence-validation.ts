@@ -12,7 +12,10 @@ import {
 	networkProbeAttestationSignatureFailure,
 } from "./network-probe-attestation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
-import { networkProbeSemanticProofFailures } from "./network-probe-semantic-proof.js";
+import {
+	DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES,
+	networkProbeSemanticProofFailures,
+} from "./network-probe-semantic-proof.js";
 
 export const NETWORK_PROBE_IDS = [
 	"network.relay-control-allowed",
@@ -250,7 +253,11 @@ function validateRequiredNetworkDenialAttempt(
 }
 
 function isPassingHttpDenialAttempt(attempt: NetworkProbeAttempt): boolean {
-	return attempt.observed === "policy_denied" && attempt.httpStatus === 403;
+	return (
+		attempt.observed === "denied" &&
+		attempt.errorCode !== undefined &&
+		DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES.has(attempt.errorCode)
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

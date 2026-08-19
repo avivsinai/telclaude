@@ -36,6 +36,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Security
 
+- **Unauthenticated network-policy denials** — Hermes `network-probes` no longer treats HTTP 403 plus `x-telclaude-network-policy: denied` as proof. Only OS-level `DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES` count, and contained-internal still needs firewall-sentinel attribution.
 - **undici 8.9.0 (#236)** — Bumped undici to 8.9.0 (later grouped minors continue from that floor).
 - **brace-expansion 5.0.9 and postcss 8.5.26** — Overrode production-transitive brace-expansion and Vite's development postcss so GHSA-rgw5-rvv9-x895, GHSA-mh99-v99m-4gvg, GHSA-r28c-9q8g-f849, and GHSA-fxqj-rqcc-2cmp are patched. playwright-core stays 1.62.1.
 - **Update-deploy token scope (#202)** — `/update` uses repo-scoped `contents: read`; `/update deploy` uses repo-scoped `actions: write`.

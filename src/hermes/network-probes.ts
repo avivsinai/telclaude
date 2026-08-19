@@ -297,10 +297,7 @@ async function runDirectProviderDenied(
 							target.name,
 							target.url,
 							options.timeoutMs,
-							containedInternalDirectDenialOptions(
-								options,
-								"direct provider egress was blocked by containment",
-							),
+							directHttpDenialOptions("direct provider egress was blocked by containment"),
 						),
 					),
 				);
@@ -387,10 +384,7 @@ async function runDirectVaultDenied(
 					"vault-url",
 					options.vaultUrl,
 					options.timeoutMs,
-					containedInternalDirectDenialOptions(
-						options,
-						"direct vault egress was blocked by containment",
-					),
+					directHttpDenialOptions("direct vault egress was blocked by containment"),
 				),
 			]
 		: [];
@@ -410,10 +404,7 @@ async function runDirectModelProviderDenied(
 		"model-provider",
 		options.modelProviderUrl,
 		options.timeoutMs,
-		containedInternalDirectDenialOptions(
-			options,
-			"direct model-provider egress was blocked by containment",
-		),
+		directHttpDenialOptions("direct model-provider egress was blocked by containment"),
 	);
 	const attempts = [
 		...boundaryProofAttempts(options),
@@ -444,11 +435,7 @@ function boundaryProofAttempts(options: NetworkProbeRunnerOptions): NetworkProbe
 	return [firewallSentinelAttempt(options.firewallSentinelPath)];
 }
 
-function containedInternalDirectDenialOptions(
-	options: NetworkProbeRunnerOptions,
-	positiveErrorDetail: string,
-): HttpDeniedAttemptOptions {
-	if ((options.posture ?? "agent-iptables") !== "contained-internal") return {};
+function directHttpDenialOptions(positiveErrorDetail: string): HttpDeniedAttemptOptions {
 	return {
 		positiveErrorCodes: DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES,
 		positiveErrorDetail,
@@ -518,19 +505,8 @@ async function attemptHttpDenied(
 			redirect: "manual",
 			signal: controller.signal,
 		});
-		if (response.status === 403 && response.headers.get(POLICY_DENIAL_HEADER) === "denied") {
-			return {
-				name,
-				kind: "http",
-				target: redactSecrets(target),
-				expectation: "deny",
-				status: "pass",
-				observed: "policy_denied",
-				detail: "target was denied by the Telclaude network policy proxy",
-				durationMs: Date.now() - startedAt,
-				httpStatus: response.status,
-			};
-		}
+		const spoofedPolicyDenial =
+			response.status === 403 && response.headers.get(POLICY_DENIAL_HEADER) === "denied";
 		return {
 			name,
 			kind: "http",
@@ -538,7 +514,9 @@ async function attemptHttpDenied(
 			expectation: "deny",
 			status: "fail",
 			observed: "reachable",
-			detail: `target was reachable with HTTP status ${response.status}`,
+			detail: spoofedPolicyDenial
+				? "HTTP 403 x-telclaude-network-policy is not authenticated denial evidence; treating target as reachable"
+				: `target was reachable with HTTP status ${response.status}`,
 			durationMs: Date.now() - startedAt,
 			httpStatus: response.status,
 		};
