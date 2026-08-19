@@ -116,6 +116,7 @@ The `hermes` group runs the steady-state no-fork and containment proofs. Most su
 | `pnpm dev hermes prove --upstream-clean` | No-fork proof of the pinned upstream checkout |
 | `pnpm dev hermes probes` / `probe <surface> [--allow-run]` | Feature-probe matrix / single-surface probe |
 | `pnpm dev hermes network-probes [--allow-run] [--posture <p>]` | Egress isolation probes (deny direct provider/model/vault/DNS) |
+| `pnpm dev hermes network-egress-broker-report [--allow-run]` | Machine-observed contained-runtime egress-broker run report |
 | `pnpm dev hermes compat-lock --dry-run [--out <path>]` | Compatibility lockfile draft bound to the pin + matrix |
 | `pnpm dev hermes verify-live` | Live canary across contained runtime, live MCP, and providers |
 | `pnpm dev hermes private-runtime status` | Relay-observed private-runtime state |
