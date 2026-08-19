@@ -1,6 +1,7 @@
 import { type ExternalProviderConfig, loadConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
+import { buildRequiredProviderSidecarRelayAuthHeaders } from "../relay/provider-sidecar-auth.js";
 import { validateProviderBaseUrl } from "./provider-validation.js";
 
 const logger = getChildLogger({ module: "external-provider" });
@@ -65,22 +66,32 @@ export async function sendProviderOtp(request: ProviderOtpRequest): Promise<Prov
 
 	const { url } = await validateProviderBaseUrl(provider.baseUrl);
 	const endpoint = new URL("/v1/challenge/respond", url);
+	const rawBody = JSON.stringify({
+		service: request.service,
+		challengeId: request.challengeId,
+		code: request.code,
+	});
+	const relayAuthHeaders = await buildRequiredProviderSidecarRelayAuthHeaders({
+		provider,
+		method: "POST",
+		path: `${endpoint.pathname}${endpoint.search}`,
+		rawBody,
+		actorUserId: request.actorUserId,
+	});
 
 	const response = await fetchWithTimeout(
 		endpoint.toString(),
 		{
 			method: "POST",
 			headers: {
+				Accept: "application/json",
 				"content-type": "application/json",
+				"x-relay-proxy": "true",
 				"x-actor-user-id": request.actorUserId,
 				"x-request-id": request.requestId ?? "",
+				...relayAuthHeaders,
 			},
-			body: JSON.stringify({
-				service: request.service,
-				code: request.code,
-				challengeId: request.challengeId,
-				actorUserId: request.actorUserId,
-			}),
+			body: rawBody,
 		},
 		15_000,
 	);

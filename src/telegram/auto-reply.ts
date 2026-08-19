@@ -664,6 +664,13 @@ function resolveSessionKeyForMessage(msg: TelegramInboundMessage, cfg: Telclaude
 	return deriveSessionKey(scope, { From: msg.from });
 }
 
+function resolveTelegramRuntimeActorId(input: {
+	readonly senderId?: number;
+	readonly chatId: number;
+}): number {
+	return input.senderId ?? input.chatId;
+}
+
 function resetSessionKey(sessionKey: string): number {
 	deleteSession(sessionKey);
 	clearHermesSessionMapping(sessionKey);
@@ -1366,7 +1373,7 @@ async function dispatchTelegramControlCommand(
 					service,
 					code,
 					challengeId,
-					actorUserId: link.localUserId,
+					actorUserId: String(resolveTelegramRuntimeActorId(msg)),
 					requestId,
 				});
 
@@ -1749,7 +1756,7 @@ async function executeWithSession(
 			timeoutMs: timeoutSeconds * 1000,
 			userId,
 			chatId: msg.chatId,
-			actorId: msg.senderId ?? msg.chatId,
+			actorId: resolveTelegramRuntimeActorId(msg),
 			threadId: msg.messageThreadId,
 			systemPromptAppend,
 			compiledMemoryMd: memoryBundle.compiledMemoryMd,

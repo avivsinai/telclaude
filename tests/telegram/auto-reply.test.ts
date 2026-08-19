@@ -13,6 +13,7 @@ const sentMedia: Array<{ type: string; source: string }> = [];
 const sessionStore: Array<{ key: string; entry: unknown }> = [];
 
 const executeHermesQueryImpl = vi.hoisted(() => vi.fn());
+const sendProviderOtpImpl = vi.hoisted(() => vi.fn());
 const clearHermesSessionMappingImpl = vi.hoisted(() => vi.fn(() => 0));
 const getChatModelPreferenceImpl = vi.hoisted(() => vi.fn(() => null));
 const getSessionImpl = vi.hoisted(() => vi.fn(() => null));
@@ -43,6 +44,10 @@ const loggerImpl = vi.hoisted(() => ({
 
 vi.mock("../../src/hermes/private-execute.js", () => ({
 	executeHermesQuery: (...args: unknown[]) => executeHermesQueryImpl(...args),
+}));
+
+vi.mock("../../src/providers/external-provider.js", () => ({
+	sendProviderOtp: (...args: unknown[]) => sendProviderOtpImpl(...args),
 }));
 
 vi.mock("../../src/hermes/session-map.js", () => ({
@@ -859,6 +864,8 @@ describe("auto-reply control commands", () => {
 			workflowUrl: "https://github.com/avivsinai/telclaude/actions/workflows/ci.yml",
 			runUrl: "https://github.com/avivsinai/telclaude/actions/runs/123",
 		});
+		sendProviderOtpImpl.mockReset();
+		sendProviderOtpImpl.mockResolvedValue({ status: "ok" });
 	});
 
 	afterEach(() => {
@@ -871,6 +878,7 @@ describe("auto-reply control commands", () => {
 		isTOTPDaemonAvailableImpl.mockReset();
 		collectUpdateStatusImpl.mockReset();
 		dispatchMainDeployImpl.mockReset();
+		sendProviderOtpImpl.mockReset();
 		loggerImpl.info.mockReset();
 		loggerImpl.warn.mockReset();
 		loggerImpl.error.mockReset();
@@ -913,6 +921,38 @@ describe("auto-reply control commands", () => {
 
 		expect(autoReplyTest.resolveCommandBody(msg)).toBe("/approve\u200B 123456");
 		expect(autoReplyTest.resolveProcessingBody(msg)).toBe("/approve 123456");
+	});
+
+	it("uses the Telegram runtime actor for /otp while requiring a linked chat", async () => {
+		seedAdmin();
+		const msg = {
+			...makeMsg(),
+			body: "/otp clalit challenge-1 123456",
+			senderId: 555,
+		};
+		const match = matchTelegramControlCommand(msg.body);
+		if (!match) throw new Error("expected /otp command match");
+
+		await autoReplyTest.dispatchTelegramControlCommand(
+			match as never,
+			{
+				bot: { api: { sendMessage: vi.fn(async () => ({ message_id: 1 })) } },
+				msg,
+				cfg: { security: {} },
+				auditLogger: { log: vi.fn(async () => {}) },
+				recentlySent: new Set<string>(),
+				requestId: "req-otp",
+			} as never,
+		);
+
+		expect(sendProviderOtpImpl).toHaveBeenCalledWith({
+			service: "clalit",
+			code: "123456",
+			challengeId: "challenge-1",
+			actorUserId: "555",
+			requestId: "req-otp",
+		});
+		expect(replies.at(-1)).toBe("OTP accepted. Continuing authentication.");
 	});
 
 	it("routes active wizard text before the TOTP auth gate can persist it", async () => {
