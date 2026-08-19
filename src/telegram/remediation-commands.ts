@@ -126,7 +126,7 @@ const REMEDIATION_CATALOG: Record<RemediationKey, RemediationEntry> = {
 	heartbeat_disabled: {
 		key: "heartbeat_disabled",
 		title: "Heartbeat disabled",
-		command: "telclaude maintenance cron add --name private-heartbeat --every 6h",
+		command: "telclaude maintenance cron add --name private-heartbeat --every 6h --private",
 		explanation: "No private heartbeat cron is scheduled. Add one to enable autonomous activity.",
 	},
 	pending_approvals: {

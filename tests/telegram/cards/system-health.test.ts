@@ -176,6 +176,13 @@ describe("system health card", () => {
 		}
 	});
 
+	it("heartbeat_disabled copy-paste includes --private so cron add accepts it", () => {
+		const entry = getRemediation("heartbeat_disabled");
+		expect(entry?.command).toBe(
+			"telclaude maintenance cron add --name private-heartbeat --every 6h --private",
+		);
+	});
+
 	it("view-list reducer returns to the list view and clears selection", () => {
 		const base = makeBaseCard();
 		const card = {
