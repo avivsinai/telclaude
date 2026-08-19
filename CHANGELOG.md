@@ -33,7 +33,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - **Provider degradation handling (#213)** — Relay startup now stays available when provider health checks fail; `TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS=1` retains strict fail-fast behavior.
 - **Reminder confirmation UX (#214)** — Streamlined household reminder confirmation and aligned the scheduled outbound authorization path.
 - **Hermes compatibility lock in CI (#211)** — CI now runs `hermes doctor --probes --compat-lock` so the household reminder/media probe surfaces stay coherent.
-- **CI apt-get ffmpeg retries** — `scripts/ci-install-ffmpeg.sh` retries `apt-get update` so Azure archive timeouts (exit 124) do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
+- **CI apt-get ffmpeg retries** — `scripts/ci-install-ffmpeg.sh` rewrites `azure.archive.ubuntu.com` to `archive.ubuntu.com`, then retries `apt-get update` so Azure archive hangs do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
 
 ### Security
 
