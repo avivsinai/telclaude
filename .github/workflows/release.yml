@@ -137,23 +137,8 @@ jobs:
           cache: pnpm
 
       - name: Install system dependencies
-        timeout-minutes: 16
-        run: |
-          set -euo pipefail
-
-          sudo timeout 180s apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=20 \
-            -o Acquire::https::Timeout=20 \
-            -o DPkg::Lock::Timeout=30 \
-            update
-
-          sudo env DEBIAN_FRONTEND=noninteractive timeout 900s apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=20 \
-            -o Acquire::https::Timeout=20 \
-            -o DPkg::Lock::Timeout=30 \
-            install -y --no-install-recommends ffmpeg
+        timeout-minutes: 25
+        run: bash scripts/ci-install-ffmpeg.sh
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

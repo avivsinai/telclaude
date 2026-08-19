@@ -11,7 +11,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Added
 
-- **Hermes `network-egress-broker-report` CLI** — Generate a machine-observed contained-runtime egress-broker run report (`--allow-run`) for later promotion by `hermes probe --from-report`. Does not change `network-probes --run-report-out`.
+- **Hermes `network-egress-broker-report` CLI (#245)** — Generate a machine-observed contained-runtime egress-broker run report (`--allow-run`) for later promotion by `hermes probe --from-report`. Does not change `network-probes --run-report-out`.
 - **Recovered extra outbound sinks, still gated off (#243)** — Restored email MIME/Gmail send and extra channel dispatcher paths from the hermes-delivery scout; extra sinks remain gated off. The dispatcher claims executing then releases on delivery failure.
 - **Telegram `/learn` and slash-command guard (#199)** — Profile-scoped `/learn` write/list/forget, and unknown slash commands stay out of Hermes with rate-limited unmatched replies.
 - **Telegram `/update` deploy command (#200)** — Operator can check running revision against GitHub main and dispatch the verify-gated deploy workflow.
@@ -33,13 +33,14 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - **Provider degradation handling (#213)** — Relay startup now stays available when provider health checks fail; `TELCLAUDE_REQUIRE_HEALTHY_PROVIDERS=1` retains strict fail-fast behavior.
 - **Reminder confirmation UX (#214)** — Streamlined household reminder confirmation and aligned the scheduled outbound authorization path.
 - **Hermes compatibility lock in CI (#211)** — CI now runs `hermes doctor --probes --compat-lock` so the household reminder/media probe surfaces stay coherent.
+- **CI apt-get ffmpeg retries** — `scripts/ci-install-ffmpeg.sh` retries `apt-get update` so Azure archive timeouts (exit 124) do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
 
 ### Security
 
-- **Unauthenticated network-policy denials** — Hermes `network-probes` no longer treats HTTP 403 plus `x-telclaude-network-policy: denied` as proof. Only OS-level `DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES` count, and contained-internal still needs firewall-sentinel attribution.
-- **protobufjs 7.6.5** — Overrode production-transitive protobufjs (Baileys / libsignal) to 7.6.5 so GHSA-j3f2-48v5-ccww is patched. playwright-core stays 1.62.1.
+- **Unauthenticated network-policy denials (#247)** — Hermes `network-probes` no longer treats HTTP 403 plus `x-telclaude-network-policy: denied` as proof. Only OS-level `DIRECT_EGRESS_NETWORK_DENIAL_ERROR_CODES` count, and contained-internal still needs firewall-sentinel attribution.
+- **protobufjs 7.6.5 (#248)** — Overrode production-transitive protobufjs (Baileys / libsignal) to 7.6.5 so GHSA-j3f2-48v5-ccww is patched. playwright-core stays 1.62.1.
 - **undici 8.9.0 (#236)** — Bumped undici to 8.9.0 (later grouped minors continue from that floor).
-- **brace-expansion 5.0.9 and postcss 8.5.26** — Overrode production-transitive brace-expansion and Vite's development postcss so GHSA-rgw5-rvv9-x895, GHSA-mh99-v99m-4gvg, GHSA-r28c-9q8g-f849, and GHSA-fxqj-rqcc-2cmp are patched. playwright-core stays 1.62.1.
+- **brace-expansion 5.0.9 and postcss 8.5.26 (#246)** — Overrode production-transitive brace-expansion and Vite's development postcss so GHSA-rgw5-rvv9-x895, GHSA-mh99-v99m-4gvg, GHSA-r28c-9q8g-f849, and GHSA-fxqj-rqcc-2cmp are patched. playwright-core stays 1.62.1.
 - **Update-deploy token scope (#202)** — `/update` uses repo-scoped `contents: read`; `/update deploy` uses repo-scoped `actions: write`.
 - **undici security floor (#215)** — Updated undici to pick up security fixes.
 - **Household kill-switch revocation (#218)** — Enforced reminder switches, reconciled and purged durable state when bindings are removed, and revoked persisted conversations and turns.
