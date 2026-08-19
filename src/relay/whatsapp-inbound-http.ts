@@ -32,6 +32,11 @@ import {
 	type WhatsAppInboundDispatchInput,
 	type WhatsAppInboundDispatchResult,
 } from "./whatsapp-inbound-dispatcher.js";
+import {
+	logWhatsAppInboundReplyOutcome,
+	WhatsAppInboundReplyError,
+	type WhatsAppInboundReplySender,
+} from "./whatsapp-inbound-reply.js";
 import type { WhatsAppMediaActionConfirmationInterceptor } from "./whatsapp-media-action-confirmation-interceptor.js";
 import type { WhatsAppProviderChallengeInterceptor } from "./whatsapp-provider-challenge-interceptor.js";
 import type { WhatsAppReminderConfirmationInterceptor } from "./whatsapp-reminder-confirmation-interceptor.js";
@@ -69,6 +74,7 @@ export type WhatsAppInboundBridgeHttpOptions = {
 	readonly conversationStore?: RelayConversationStore;
 	readonly quarantineStore?: AttachmentQuarantineStore;
 	readonly dispatch?: WhatsAppInboundDispatch;
+	readonly replySender?: WhatsAppInboundReplySender;
 	readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
 	readonly nowMs?: () => number;
 	readonly cwd?: string;
@@ -129,7 +135,15 @@ export type WhatsAppInboundRelayOutcome =
 			readonly kind: "accepted";
 			readonly duplicate: boolean;
 			readonly intercepted: boolean;
-			readonly dispatched: boolean;
+			readonly dispatched: false;
+	  }
+	| {
+			readonly kind: "accepted";
+			readonly duplicate: false;
+			readonly intercepted: false;
+			readonly dispatched: true;
+			readonly toolUses: number;
+			readonly toolResults: number;
 	  }
 	| { readonly kind: "failed"; readonly code: string };
 
@@ -143,15 +157,17 @@ export function logWhatsAppInboundRelayOutcome(
 	outcome: WhatsAppInboundRelayOutcome,
 ): void {
 	if (outcome.kind === "accepted") {
-		sink.info(
-			{
-				outcome: "accepted",
-				duplicate: outcome.duplicate,
-				intercepted: outcome.intercepted,
-				dispatched: outcome.dispatched,
-			},
-			"WhatsApp inbound POST",
-		);
+		const bindings: Record<string, unknown> = {
+			outcome: "accepted",
+			duplicate: outcome.duplicate,
+			intercepted: outcome.intercepted,
+			dispatched: outcome.dispatched,
+		};
+		if (outcome.dispatched) {
+			bindings.toolUses = outcome.toolUses;
+			bindings.toolResults = outcome.toolResults;
+		}
+		sink.info(bindings, "WhatsApp inbound POST");
 		return;
 	}
 	sink.warn({ outcome: "failed", code: outcome.code }, "WhatsApp inbound POST");
@@ -261,6 +277,9 @@ export async function handleWhatsAppInboundBridgePost(input: {
 		config: resolved.config,
 		profile: dispatchProfile,
 		identity: cl1.identity,
+		replyAddressRef:
+			cl1.identity.domain === "household" ? cl1.identity.replyAddressRef : cl1.identity.principalId,
+		...(resolved.replySender ? { replySender: resolved.replySender } : {}),
 		...(resolved.processInboundMedia ? { processInboundMedia: resolved.processInboundMedia } : {}),
 		...(resolved.cwd ? { cwd: resolved.cwd } : {}),
 		...(resolved.timeoutMs !== undefined ? { timeoutMs: resolved.timeoutMs } : {}),
@@ -284,6 +303,8 @@ function scheduleWhatsAppInboundDispatch(
 	input: WhatsAppInboundDispatchInput & {
 		readonly dispatch: WhatsAppInboundDispatch;
 		readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
+		readonly replyAddressRef: string;
+		readonly replySender?: WhatsAppInboundReplySender;
 	},
 ): void {
 	void Promise.resolve()
@@ -326,7 +347,49 @@ function scheduleWhatsAppInboundDispatch(
 				duplicate: false,
 				intercepted: false,
 				dispatched: true,
+				toolUses: dispatch.toolUses,
+				toolResults: dispatch.toolResults,
 			});
+			if (dispatch.toolUses > 0) {
+				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_tools" });
+				return;
+			}
+			const response = dispatch.response.trim();
+			if (!response) {
+				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_empty" });
+				return;
+			}
+			if (!input.replySender) {
+				logWhatsAppInboundReplyOutcome(logger, {
+					kind: "reply_failed",
+					code: "whatsapp_inbound_reply_sender_missing",
+				});
+				return;
+			}
+			try {
+				const receipt = await input.replySender({
+					conversation: input.conversation,
+					recipientAddressRef: input.replyAddressRef,
+					body: response,
+					turnRef: input.turn.ref,
+				});
+				if (receipt.deliveryStatus === "failed" || receipt.deliveryStatus === "dead_lettered") {
+					logWhatsAppInboundReplyOutcome(logger, {
+						kind: "reply_failed",
+						code: "whatsapp_inbound_reply_delivery_failed",
+					});
+					return;
+				}
+				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_sent" });
+			} catch (error) {
+				logWhatsAppInboundReplyOutcome(logger, {
+					kind: "reply_failed",
+					code:
+						error instanceof WhatsAppInboundReplyError
+							? error.code
+							: "whatsapp_inbound_reply_exception",
+				});
+			}
 		})
 		.catch(() => {
 			logWhatsAppInboundRelayOutcome(logger, {
@@ -348,6 +411,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 			readonly conversationStore: RelayConversationStore;
 			readonly quarantineStore: AttachmentQuarantineStore;
 			readonly dispatch: WhatsAppInboundDispatch;
+			readonly replySender?: WhatsAppInboundReplySender;
 			readonly processInboundMedia?: (input: InboundMediaProcessingInput) => Promise<InboundEvent>;
 			readonly nowMs?: () => number;
 			readonly cwd?: string;
@@ -448,6 +512,7 @@ function resolveOptions(options: WhatsAppInboundBridgeHttpOptions | undefined):
 		conversationStore: options?.conversationStore ?? createRelayConversationStore(),
 		quarantineStore: options?.quarantineStore ?? createAttachmentQuarantineStore(),
 		dispatch: options?.dispatch ?? dispatchWhatsAppInboundToHermes,
+		...(options?.replySender ? { replySender: options.replySender } : {}),
 		...(options?.processInboundMedia ? { processInboundMedia: options.processInboundMedia } : {}),
 		...(composedInterceptor ? { interceptBeforePersistence: composedInterceptor } : {}),
 		...(options?.handleHouseholdEmergency

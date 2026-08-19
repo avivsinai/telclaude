@@ -151,6 +151,10 @@ import { initTokenManager } from "../relay/token-manager.js";
 import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
 import { dispatchWhatsAppInboundToHermes } from "../relay/whatsapp-inbound-dispatcher.js";
 import { setDefaultWhatsAppInboundBridgeOptions } from "../relay/whatsapp-inbound-http.js";
+import {
+	createWhatsAppInboundReplyPolicyStore,
+	createWhatsAppInboundReplySender,
+} from "../relay/whatsapp-inbound-reply.js";
 import { createWhatsAppMediaActionConfirmationInterceptor } from "../relay/whatsapp-media-action-confirmation-interceptor.js";
 import { createWhatsAppProviderChallengeInterceptor } from "../relay/whatsapp-provider-challenge-interceptor.js";
 import { createWhatsAppReminderConfirmationInterceptor } from "../relay/whatsapp-reminder-confirmation-interceptor.js";
@@ -449,6 +453,9 @@ export function registerRelayCommand(program: Command): void {
 						conversationStore: liveMcpConversationStore,
 					},
 				);
+				const whatsAppInboundReplyPolicyStore = createWhatsAppInboundReplyPolicyStore({
+					conversationStore: liveMcpConversationStore,
+				});
 				const mediaActionConfirmationControlPolicyStore = mediaActionConfirmationStore
 					? createMediaActionConfirmationControlPolicyStore({
 							conversationStore: liveMcpConversationStore,
@@ -671,6 +678,9 @@ export function registerRelayCommand(program: Command): void {
 						const reminderControl =
 							await reminderConfirmationControlPolicyStore.resolveConversation(prepared);
 						if (reminderControl) return reminderControl;
+						const inboundReply =
+							await whatsAppInboundReplyPolicyStore.resolveConversation(prepared);
+						if (inboundReply) return inboundReply;
 						const record = liveMcpLedger.get(prepared.sideEffectLedgerRef);
 						if (
 							!record ||
@@ -870,6 +880,11 @@ export function registerRelayCommand(program: Command): void {
 					config: cfg,
 					conversationStore: liveMcpConversationStore,
 					quarantineStore: liveMcpAttachmentQuarantineStore,
+					replySender: createWhatsAppInboundReplySender({
+						edgeRuntime: liveMcpEdgeRuntime,
+						dispatch: liveMcpOutboundDeliveryDispatcher,
+						policyStore: whatsAppInboundReplyPolicyStore,
+					}),
 					providerChallengeInterceptor,
 					reminderConfirmationInterceptor,
 					...(householdEmergencyNotifier
