@@ -94,6 +94,17 @@ import {
 	writeHermesModelRelayEvidence,
 } from "../hermes/model-relay.js";
 import {
+	DEFAULT_NETWORK_EGRESS_BROKER_DOH_URL,
+	DEFAULT_NETWORK_EGRESS_BROKER_METADATA_URL,
+	DEFAULT_NETWORK_EGRESS_BROKER_PRIVATE_NETWORK_URL,
+	DEFAULT_NETWORK_EGRESS_BROKER_PUBLIC_RESEARCH_URL,
+	DEFAULT_NETWORK_EGRESS_BROKER_RUN_REPORT_PATH,
+	DEFAULT_NETWORK_EGRESS_BROKER_VAULT_URL,
+	defaultNetworkEgressBrokerTargets,
+	parseNetworkEgressBrokerMcpAuthHeader,
+	runNetworkEgressBrokerRunReport,
+} from "../hermes/network-egress-broker-run-report.js";
+import {
 	NETWORK_PROBE_ATTESTATION_PATH,
 	NETWORK_PROBE_ATTESTATION_SCOPE,
 	NETWORK_PROBE_RUNNER_RELAY_PRIVATE_KEY_ENV,
@@ -607,6 +618,23 @@ type NetworkProbeOption = JsonOption & {
 	firewallSentinel: string;
 	posture?: string;
 	timeoutMs?: string;
+} & TrackedSeedWriteOption;
+
+type NetworkEgressBrokerReportOption = JsonOption & {
+	allowRun?: boolean;
+	out?: string;
+	dockerBin?: string;
+	containerName?: string;
+	timeoutMs?: string;
+	mcpUrl?: string;
+	mcpAuth?: string;
+	publicUrl?: string;
+	providerUrl?: string;
+	modelUrl?: string;
+	vaultUrl?: string;
+	metadataUrl?: string;
+	privateNetworkUrl?: string;
+	dohUrl?: string;
 } & TrackedSeedWriteOption;
 
 type FeatureProbeMatrixOption = JsonOption &
@@ -3919,6 +3947,126 @@ export function registerHermesCommand(program: Command): void {
 				console.log(`- FAIL surface: ${report.detail}`);
 			}
 			process.exitCode = 2;
+		});
+
+	hermes
+		.command("network-egress-broker-report")
+		.description(
+			"Generate the machine-observed network egress-broker run report consumed by probe --from-report",
+		)
+		.option("--json", "Emit structured JSON")
+		.option("--allow-run", "Permit real docker exec probes against the contained runtime")
+		.option(
+			"--out <path>",
+			"Write the run report JSON",
+			DEFAULT_NETWORK_EGRESS_BROKER_RUN_REPORT_PATH,
+		)
+		.option("--docker-bin <path>", "Docker binary to use")
+		.option("--container-name <name>", "Contained Hermes runtime container name")
+		.option("--timeout-ms <ms>", "Maximum time per contained probe in milliseconds")
+		.option("--mcp-url <url>", "Served MCP endpoint for the tc_web_fetch broker allow proof")
+		.option("--mcp-auth <header>", "Served MCP auth header as 'Name: value'")
+		.option(
+			"--public-url <url>",
+			"Public URL fetched through tc_web_fetch for broker allow proof",
+			DEFAULT_NETWORK_EGRESS_BROKER_PUBLIC_RESEARCH_URL,
+		)
+		.option(
+			"--provider-url <url>",
+			"Direct provider URL that must be denied; defaults to TELCLAUDE_HERMES_NETWORK_PROVIDER_URL first entry",
+		)
+		.option(
+			"--model-url <url>",
+			"Direct model-provider URL that must be denied",
+			DEFAULT_MODEL_PROVIDER_PROBE_URL,
+		)
+		.option(
+			"--vault-url <url>",
+			"Direct vault HTTP URL that must be denied",
+			DEFAULT_NETWORK_EGRESS_BROKER_VAULT_URL,
+		)
+		.option(
+			"--metadata-url <url>",
+			"Metadata URL that must be denied",
+			DEFAULT_NETWORK_EGRESS_BROKER_METADATA_URL,
+		)
+		.option(
+			"--private-network-url <url>",
+			"Private-network URL that must be denied",
+			DEFAULT_NETWORK_EGRESS_BROKER_PRIVATE_NETWORK_URL,
+		)
+		.option(
+			"--doh-url <url>",
+			"Direct DNS-over-HTTPS URL that must be denied",
+			DEFAULT_NETWORK_EGRESS_BROKER_DOH_URL,
+		)
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
+		.action(async (options: NetworkEgressBrokerReportOption) => {
+			try {
+				const mcpUrl =
+					options.mcpUrl?.trim() || process.env.TELCLAUDE_HERMES_SERVED_MCP_URL?.trim();
+				const mcpHeaders = parseNetworkEgressBrokerMcpAuthHeader(
+					options.mcpAuth?.trim() || process.env.TELCLAUDE_HERMES_SERVED_MCP_AUTH?.trim(),
+				);
+				const report = await runNetworkEgressBrokerRunReport({
+					allowRun: options.allowRun === true,
+					dockerBin: options.dockerBin,
+					containerName: options.containerName,
+					timeoutMs: parseTimeoutMs(options.timeoutMs),
+					...(mcpUrl && mcpHeaders
+						? {
+								mcp: {
+									url: mcpUrl,
+									headers: mcpHeaders,
+									publicResearchUrl: options.publicUrl,
+								},
+							}
+						: {}),
+					targets: defaultNetworkEgressBrokerTargets({
+						provider:
+							options.providerUrl?.trim() ||
+							parseCsvOption(process.env.TELCLAUDE_HERMES_NETWORK_PROVIDER_URL)[0],
+						model: options.modelUrl,
+						vault: options.vaultUrl,
+						metadata: options.metadataUrl,
+						"private-network": options.privateNetworkUrl,
+						doh: options.dohUrl,
+					}),
+				});
+				const outPath = resolveHermesArtifactPath(
+					options.out || DEFAULT_NETWORK_EGRESS_BROKER_RUN_REPORT_PATH,
+				);
+				writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				const promoted = buildNetworkEgressBrokerProbeEvidenceFromReport(report);
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes network-egress-broker-report: ${promoted.status}`);
+					console.log(`- ${promoted.status.toUpperCase()}: ${report.summary}`);
+					for (const attempt of report.attempts) {
+						console.log(`- ${attempt.status.toUpperCase()} ${attempt.kind}: ${attempt.detail}`);
+					}
+					console.log(`- report: ${outPath}`);
+				}
+				process.exitCode = promoted.status === "pass" ? 0 : 1;
+			} catch (error) {
+				const report = {
+					schemaVersion: "telclaude.hermes.network-egress-broker-run.v1",
+					surfaceId: "network.egress-broker",
+					ran: false,
+					observedAt: new Date().toISOString(),
+					source: "machine-observed-network-egress-broker-report",
+					summary: String(error instanceof Error ? error.message : error),
+					attempts: [],
+				};
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log("Hermes network-egress-broker-report: fail");
+					console.log(`- FAIL: ${report.summary}`);
+				}
+				process.exitCode = 1;
+			}
 		});
 
 	hermes

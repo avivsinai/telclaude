@@ -71,7 +71,8 @@ const NetworkEgressAttemptKindSchema = z.enum([
 	"browser-provider-bypass",
 	"computer-covert-egress",
 ]);
-type NetworkEgressAttemptKind = z.infer<typeof NetworkEgressAttemptKindSchema>;
+export const NETWORK_EGRESS_BROKER_ATTEMPT_KINDS = NetworkEgressAttemptKindSchema.options;
+export type NetworkEgressAttemptKind = z.infer<typeof NetworkEgressAttemptKindSchema>;
 
 const BrowserComputerBrokerProbeCheckSchema = z
 	.object({
@@ -175,6 +176,7 @@ const NetworkEgressBrokerRunAttemptSchema = z
 		durationMs: z.number().nonnegative().optional(),
 	})
 	.strict();
+export type NetworkEgressBrokerRunAttempt = z.infer<typeof NetworkEgressBrokerRunAttemptSchema>;
 
 const NetworkEgressBrokerRunReportSchema = z
 	.object({
@@ -187,6 +189,7 @@ const NetworkEgressBrokerRunReportSchema = z
 		attempts: z.array(NetworkEgressBrokerRunAttemptSchema).min(1),
 	})
 	.strict();
+export type NetworkEgressBrokerRunReport = z.infer<typeof NetworkEgressBrokerRunReportSchema>;
 
 const NETWORK_EGRESS_DENIAL_TARGETS = [
 	{ kind: "provider", target: "https://bank.example.invalid/login" },
@@ -214,6 +217,7 @@ const NETWORK_EGRESS_DENIAL_TARGETS = [
 	{ kind: "browser-provider-bypass", target: "https://clalit.example.invalid/session" },
 	{ kind: "computer-covert-egress", target: "app://terminal/curl-exfil" },
 ] as const satisfies readonly { kind: NetworkEgressAttemptKind; target: string }[];
+export const NETWORK_EGRESS_BROKER_DENIAL_TARGETS = NETWORK_EGRESS_DENIAL_TARGETS;
 
 const NETWORK_EGRESS_CHECK_REQUIREMENTS = [
 	{

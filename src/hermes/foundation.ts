@@ -602,6 +602,7 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"network.egress-broker": [
 		"src/hermes/browser-computer-broker-attestation.ts",
 		"src/hermes/browser-computer-broker-probes.ts",
+		"src/hermes/network-egress-broker-run-report.ts",
 		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/private-runtime.ts",

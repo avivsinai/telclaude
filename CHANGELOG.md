@@ -11,6 +11,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Added
 
+- **Hermes `network-egress-broker-report` CLI** — Generate a machine-observed contained-runtime egress-broker run report (`--allow-run`) for later promotion by `hermes probe --from-report`. Does not change `network-probes --run-report-out`.
 - **Recovered extra outbound sinks, still gated off (#243)** — Restored email MIME/Gmail send and extra channel dispatcher paths from the hermes-delivery scout; extra sinks remain gated off. The dispatcher claims executing then releases on delivery failure.
 - **Telegram `/learn` and slash-command guard (#199)** — Profile-scoped `/learn` write/list/forget, and unknown slash commands stay out of Hermes with rate-limited unmatched replies.
 - **Telegram `/update` deploy command (#200)** — Operator can check running revision against GitHub main and dispatch the verify-gated deploy workflow.
