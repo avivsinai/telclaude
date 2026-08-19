@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-19 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), Beads/OSS hygiene and Unreleased tracking (#244), the egress-broker report CLI (#245), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), dependency overrides (#246, #248), network-probe spoof-denial hardening (#247), CI ffmpeg apt retries and Ubuntu archive rewrite (#249, #251), served-MCP tool-count docs (#252), Bash always-grant exec-policy tests (#253), and vitest coverage-v8 4.1.10 (#196). Live household activation is still dark. Version stays 0.8.0 until an explicit 0.9.0 cut.
+The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-19 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), Beads/OSS hygiene and Unreleased tracking (#244), the egress-broker report CLI (#245), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), dependency overrides (#246, #248), network-probe spoof-denial hardening (#247), CI ffmpeg apt retries and Ubuntu archive rewrite (#249, #251), served-MCP tool-count docs (#252), Bash always-grant exec-policy tests (#253), cron copy-paste fixes (#254, #255), and vitest coverage-v8 4.1.10 (#196). Live household activation is still dark. Version stays 0.8.0 until an explicit 0.9.0 cut.
 
 ### Added
 
@@ -34,7 +34,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - **Reminder confirmation UX (#214)** — Streamlined household reminder confirmation and aligned the scheduled outbound authorization path.
 - **Hermes compatibility lock in CI (#211)** — CI now runs `hermes doctor --probes --compat-lock` so the household reminder/media probe surfaces stay coherent.
 - **CI apt-get ffmpeg retries (#249, #251)** — `scripts/ci-install-ffmpeg.sh` rewrites `azure.archive.ubuntu.com` to `archive.ubuntu.com`, then retries `apt-get update` so Azure archive hangs do not fail Verify. The system-dependency step timeout is 25 minutes so a third update plus ffmpeg install can finish.
-- **Operator cron workflow recipes** — `docs/operator-playbook.md` replaces TODO stubs with copy-paste daily-brief, meeting-prep, and weekly-business-report jobs. Cron expressions stay UTC.
+- **Operator cron workflow recipes (#254)** — `docs/operator-playbook.md` replaces TODO stubs with copy-paste daily-brief, meeting-prep, and weekly-business-report jobs. Cron expressions stay UTC.
 - **Bash `always` grant → exec-policy glob (#253)** — Document that `grantAllowlist` already persists the glob, and test the live path (safe command records `npm test*`; destructive and non-Bash grants do not).
 
 ### Security
@@ -53,8 +53,8 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Fixed
 
-- **daily-brief cron example** — The skill preset used `--private` and `--prompt` together; `cron add` allows exactly one action. The example now uses `--prompt` plus `--skill daily-brief`.
-- **Past-dated cron `--at` examples** — Weekly-business-report and operator-playbook one-shots used May 2026 timestamps that `cron add` rejects. They now use a one-minute-ahead ISO timestamp, with a docs regression test.
+- **daily-brief cron example (#254)** — The skill preset used `--private` and `--prompt` together; `cron add` allows exactly one action. The example now uses `--prompt` plus `--skill daily-brief`.
+- **Past-dated cron `--at` examples (#255)** — Weekly-business-report and operator-playbook one-shots used May 2026 timestamps that `cron add` rejects. They now use a one-minute-ahead ISO timestamp, with a docs regression test.
 - **Provider session error copy (#237)** — Sidecar 401s map to `credentials_missing` / `session_expired` / `auth_required`, and the external-provider skill points operators at `/providers enroll`.
 - **Persistent Docker volumes (#201)** — Named persistent volumes are `external: true` so a missing volume fails closed instead of creating an empty replacement.
 - **Household confirmation voice and gendered copy (#221)** — Corrected Gabriel's recurring-reminder decline voice and locked cross-surface gendered copy coverage.
