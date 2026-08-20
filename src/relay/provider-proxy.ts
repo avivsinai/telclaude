@@ -21,7 +21,9 @@ import { buildProviderSidecarRelayAuthHeaders } from "./provider-sidecar-auth.js
 const logger = getChildLogger({ module: "provider-proxy" });
 
 const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024; // 20MB
-const DEFAULT_PROXY_TIMEOUT_MS = 30_000;
+/** Vault re-login is Playwright in-request until challenge_pending; 30s always lost to Clalit. */
+export const PROVIDER_PROXY_TIMEOUT_MS = 120_000;
+const PROVIDER_TIMEOUT_ERROR = "Provider request timed out";
 const PROVIDER_CHALLENGE_PENDING_ERROR =
 	"Provider challenge pending; check the relay-rendered operator prompt.";
 const MODEL_VISIBLE_SECRET_RESPONSE_FIELDS = new Set([
@@ -306,7 +308,7 @@ export async function proxyProviderRequest(
 
 	// Make request
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
+	const timeout = setTimeout(() => controller.abort(), PROVIDER_PROXY_TIMEOUT_MS);
 
 	let response: Response;
 	try {
@@ -319,6 +321,9 @@ export async function proxyProviderRequest(
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		logger.warn({ providerId, path: normalizedPath, error: reason }, "provider request failed");
+		if (isProviderProxyAbortError(err)) {
+			return { status: "error", errorCode: "provider_timeout", error: PROVIDER_TIMEOUT_ERROR };
+		}
 		return { status: "error", error: "Provider request failed" };
 	} finally {
 		clearTimeout(timeout);
@@ -526,6 +531,14 @@ function isModelVisibleSecretProviderField(key: string, value: unknown): boolean
 		return true;
 	}
 	return isPotentialVisualPayloadField(key) && isLargeOpaqueBase64(value);
+}
+
+function isProviderProxyAbortError(err: unknown): boolean {
+	if (typeof err === "object" && err !== null && "name" in err) {
+		const name = (err as { name?: unknown }).name;
+		if (name === "AbortError") return true;
+	}
+	return err instanceof Error && /aborted/i.test(err.message);
 }
 
 function sanitizeProviderVisibleError(value: unknown, fallback: string): string {

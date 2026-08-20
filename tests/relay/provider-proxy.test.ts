@@ -122,6 +122,30 @@ describe("provider proxy approval interception", () => {
 		).resolves.toMatchObject({ status: "error", errorCode: "auth_required" });
 	});
 
+	it("maps aborted sidecar fetches to provider_timeout", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				const err = new Error("This operation was aborted");
+				err.name = "AbortError";
+				throw err;
+			}),
+		);
+
+		await expect(
+			proxyProviderRequest({
+				providerId: "google",
+				path: "/v1/fetch",
+				body: JSON.stringify({ service: "clalit", action: "prescriptions", params: {} }),
+				userId: "household:whatsapp:parent-a",
+			}),
+		).resolves.toMatchObject({
+			status: "error",
+			errorCode: "provider_timeout",
+			error: "Provider request timed out",
+		});
+	});
+
 	it.each([
 		["Credentials not found.", "credentials_missing"],
 		["Credentials missing.", "credentials_missing"],

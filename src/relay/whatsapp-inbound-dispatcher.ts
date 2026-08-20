@@ -55,7 +55,7 @@ export type WhatsAppInboundDispatchResult =
 			readonly retryable: boolean;
 	  };
 
-const DEFAULT_WHATSAPP_INBOUND_TIMEOUT_MS = 120_000;
+const DEFAULT_WHATSAPP_INBOUND_TIMEOUT_MS = 180_000;
 
 export function isWhatsAppInboundOutboundTool(toolName: string): boolean {
 	const name = toolName.trim().toLowerCase();

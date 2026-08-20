@@ -53,6 +53,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 
 ### Fixed
 
+- **Provider fetch aborted mid vault re-login** — Hosted Clalit/Poalim `/v1/fetch` can spend more than 30s in Playwright before `challenge_pending`. The relay now waits 120s, maps abort to `provider_timeout`, and gives WhatsApp inbound 180s so the OTP challenge can surface instead of a generic provider failure.
 - **WhatsApp bridge send tearing down the live socket** — Outbound send no longer calls `connect()` when the companion is already open. The previous start-on-every-send path ended the live socket and wrote to a socket that was not open yet, which surfaced as `Connection Closed` ~2s after a successful inbound Hermes turn.
 - **WhatsApp bridge 440 reconnect storm** — Companion `connectionReplaced` closes no longer spawn a new Baileys socket every 5s. Stale socket events are ignored, the old socket is ended, and replaced sessions back off from 30s (capped at 2 minutes) so inbound reply send can keep a single live connection.
 - **WhatsApp inbound replies from Hermes final text** — Successful inbound Hermes text is always delivered through the authorized reply sender, including after memory or outbound MCP tools. Empty text skips with `reply_skipped_empty`. Inbound turns omit MCP `outboundChannels` so Hermes cannot double-send; interceptors before Hermes still skip the chat send.
