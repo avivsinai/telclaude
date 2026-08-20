@@ -33,6 +33,7 @@ import {
 	logWhatsAppInboundForwardOutcome,
 	summarizeWhatsAppUpsert,
 } from "./inbound-observe.js";
+import { isStaleWhatsAppBridgeGeneration, whatsappBridgeReconnectDelayMs } from "./reconnect.js";
 
 const logger = pino({
 	level: process.env.LOG_LEVEL ?? process.env.TELCLAUDE_LOG_LEVEL ?? "info",
@@ -65,6 +66,7 @@ type BaileysSocket = WhatsAppBridgeBaileysSender & {
 			getPNForLID(lid: string): Promise<string | null>;
 		};
 	};
+	end?(error: Error | undefined): void;
 };
 
 type BaileysApi = {
@@ -104,6 +106,9 @@ type BridgeStatus = {
 class WhatsAppBridgeRuntime {
 	private socket: BaileysSocket | null = null;
 	private starting: Promise<void> | null = null;
+	private generation = 0;
+	private reconnectAttempt = 0;
+	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly authDir: string;
 	private readonly idempotencyJournal: WhatsAppBridgeIdempotencyJournal;
 	private readonly recentMessages = createRecentInboundMessageStore();
@@ -136,6 +141,14 @@ class WhatsAppBridgeRuntime {
 		request: WhatsAppBridgeSendRequest,
 		requestDigest: `sha256:${string}`,
 	): Promise<Record<string, unknown>> {
+		if (this.reconnectTimer && !this.status.connected) {
+			return {
+				ok: false,
+				code: "whatsapp_bridge_not_connected",
+				reason: "WhatsApp bridge is not paired or not connected.",
+				retryable: true,
+			};
+		}
 		await this.start();
 		if (!this.socket || !this.status.connected) {
 			return {
@@ -164,6 +177,12 @@ class WhatsAppBridgeRuntime {
 	}
 
 	private async connect(): Promise<void> {
+		this.clearReconnectTimer();
+		this.generation += 1;
+		const generation = this.generation;
+		this.endSocket(this.socket);
+		this.socket = null;
+
 		fs.mkdirSync(this.authDir, { recursive: true });
 		const api = (await import("@whiskeysockets/baileys")) as unknown as BaileysApi;
 		const { state, saveCreds } = await api.useMultiFileAuthState(this.authDir);
@@ -187,10 +206,15 @@ class WhatsAppBridgeRuntime {
 
 		this.socket = socket;
 		socket.ev.on("creds.update", () => {
+			if (isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
 			void saveCreds().catch((err) => logger.warn({ err: errorMessage(err) }, "save creds failed"));
 		});
-		socket.ev.on("connection.update", (update) => this.handleConnectionUpdate(api, update));
+		socket.ev.on("connection.update", (update) => {
+			if (isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
+			this.handleConnectionUpdate(api, socket, generation, update);
+		});
 		socket.ev.on("messages.upsert", (event) => {
+			if (isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
 			void this.handleMessages(api, socket, event).catch((err) =>
 				logWhatsAppInboundForwardOutcome(logger, {
 					kind: "failed",
@@ -200,7 +224,13 @@ class WhatsAppBridgeRuntime {
 		});
 	}
 
-	private handleConnectionUpdate(api: BaileysApi, update: unknown): void {
+	private handleConnectionUpdate(
+		api: BaileysApi,
+		socket: BaileysSocket,
+		generation: number,
+		update: unknown,
+	): void {
+		if (isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
 		const record = isRecord(update) ? update : {};
 		const qr = typeof record.qr === "string" ? record.qr : undefined;
 		if (qr) {
@@ -216,6 +246,8 @@ class WhatsAppBridgeRuntime {
 
 		const connection = typeof record.connection === "string" ? record.connection : undefined;
 		if (connection === "open") {
+			this.reconnectAttempt = 0;
+			this.clearReconnectTimer();
 			this.status = {
 				...this.status,
 				connected: true,
@@ -230,6 +262,9 @@ class WhatsAppBridgeRuntime {
 
 		const statusCode = readDisconnectStatusCode(record.lastDisconnect);
 		const loggedOut = statusCode === api.DisconnectReason.loggedOut;
+		this.generation += 1;
+		this.endSocket(socket);
+		if (this.socket === socket) this.socket = null;
 		this.status = {
 			...this.status,
 			connected: false,
@@ -237,17 +272,47 @@ class WhatsAppBridgeRuntime {
 			lastDisconnectAtMs: Date.now(),
 			lastDisconnectReason: statusCode ? `status=${statusCode}` : "unknown",
 		};
-		this.socket = null;
 		logger.warn(
 			{ statusCode, loggedOut },
 			loggedOut ? "WhatsApp bridge logged out." : "WhatsApp bridge disconnected.",
 		);
-		if (!loggedOut) {
-			setTimeout(() => {
-				void this.start().catch((err) =>
-					logger.warn({ err: errorMessage(err) }, "WhatsApp bridge reconnect failed"),
-				);
-			}, 5_000).unref();
+		this.scheduleReconnect(statusCode, loggedOut);
+	}
+
+	private scheduleReconnect(statusCode: number | null, loggedOut: boolean): void {
+		this.clearReconnectTimer();
+		const delayMs = whatsappBridgeReconnectDelayMs({
+			loggedOut,
+			statusCode,
+			attempt: this.reconnectAttempt,
+		});
+		if (delayMs === null) return;
+		this.reconnectAttempt += 1;
+		logger.info(
+			{ delayMs, statusCode, attempt: this.reconnectAttempt },
+			"WhatsApp bridge reconnect scheduled",
+		);
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = null;
+			void this.start().catch((err) =>
+				logger.warn({ err: errorMessage(err) }, "WhatsApp bridge reconnect failed"),
+			);
+		}, delayMs);
+		this.reconnectTimer.unref();
+	}
+
+	private clearReconnectTimer(): void {
+		if (!this.reconnectTimer) return;
+		clearTimeout(this.reconnectTimer);
+		this.reconnectTimer = null;
+	}
+
+	private endSocket(socket: BaileysSocket | null): void {
+		if (!socket) return;
+		try {
+			socket.end?.(undefined);
+		} catch {
+			// already closed
 		}
 	}
 
