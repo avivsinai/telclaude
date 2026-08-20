@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	isStaleWhatsAppBridgeGeneration,
+	shouldCreateWhatsAppBridgeSocket,
 	WHATSAPP_BRIDGE_CONNECTION_REPLACED,
 	whatsappBridgeReconnectDelayMs,
 } from "../../src/whatsapp-bridge/reconnect.js";
@@ -60,5 +61,12 @@ describe("WhatsApp bridge reconnect policy", () => {
 	it("ignores events from a replaced socket generation", () => {
 		expect(isStaleWhatsAppBridgeGeneration(1, 2)).toBe(true);
 		expect(isStaleWhatsAppBridgeGeneration(2, 2)).toBe(false);
+	});
+
+	it("reuses a live connected socket instead of opening another", () => {
+		expect(shouldCreateWhatsAppBridgeSocket({ connected: true, hasSocket: true })).toBe(false);
+		expect(shouldCreateWhatsAppBridgeSocket({ connected: true, hasSocket: false })).toBe(true);
+		expect(shouldCreateWhatsAppBridgeSocket({ connected: false, hasSocket: true })).toBe(true);
+		expect(shouldCreateWhatsAppBridgeSocket({ connected: false, hasSocket: false })).toBe(true);
 	});
 });

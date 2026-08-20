@@ -33,7 +33,11 @@ import {
 	logWhatsAppInboundForwardOutcome,
 	summarizeWhatsAppUpsert,
 } from "./inbound-observe.js";
-import { isStaleWhatsAppBridgeGeneration, whatsappBridgeReconnectDelayMs } from "./reconnect.js";
+import {
+	isStaleWhatsAppBridgeGeneration,
+	shouldCreateWhatsAppBridgeSocket,
+	whatsappBridgeReconnectDelayMs,
+} from "./reconnect.js";
 
 const logger = pino({
 	level: process.env.LOG_LEVEL ?? process.env.TELCLAUDE_LOG_LEVEL ?? "info",
@@ -130,6 +134,14 @@ class WhatsAppBridgeRuntime {
 	}
 
 	start(): Promise<void> {
+		if (
+			!shouldCreateWhatsAppBridgeSocket({
+				connected: this.status.connected,
+				hasSocket: this.socket !== null,
+			})
+		) {
+			return Promise.resolve();
+		}
 		if (this.starting) return this.starting;
 		this.starting = this.connect().finally(() => {
 			this.starting = null;
