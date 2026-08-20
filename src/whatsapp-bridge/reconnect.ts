@@ -14,6 +14,13 @@ export function isStaleWhatsAppBridgeGeneration(
 	return eventGeneration !== currentGeneration;
 }
 
+export function shouldCreateWhatsAppBridgeSocket(input: {
+	readonly connected: boolean;
+	readonly hasSocket: boolean;
+}): boolean {
+	return !(input.connected && input.hasSocket);
+}
+
 export function whatsappBridgeReconnectDelayMs(input: {
 	readonly loggedOut: boolean;
 	readonly statusCode: number | null;
