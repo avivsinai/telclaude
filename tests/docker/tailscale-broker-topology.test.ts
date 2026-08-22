@@ -32,6 +32,7 @@ describe("Tailscale broker Serve overlay", () => {
 			"${TELCLAUDE_TAILSCALED_SOCKET_HOST:-/var/run/tailscale/tailscaled.sock}:/run/tailscale/tailscaled.sock:ro",
 		);
 		expect(overlay).toContain("set-path=/v1/broker");
+		expect(overlay).toContain("http://127.0.0.1:8790/v1/broker");
 		expect(overlay).not.toContain("docker.sock");
 	});
 

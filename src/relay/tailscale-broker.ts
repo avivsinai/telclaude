@@ -22,6 +22,8 @@ import {
 const logger = getChildLogger({ module: "tailscale-broker" });
 
 export const BROKER_PROVIDER_READ_PATH = "/v1/broker/provider/read";
+/** Tailscale Serve `--set-path=/v1/broker` strips that prefix before proxying. */
+export const BROKER_SERVE_STRIPPED_READ_PATH = "/provider/read";
 export const BROKER_DENIED_PATHS = [
 	"/v1/broker/docker",
 	"/v1/broker/compose",
@@ -57,8 +59,14 @@ export type TailscaleBrokerOptions = {
 	readonly providerProxy?: (request: ProviderProxyRequest) => Promise<ProviderProxyResponse>;
 };
 
+export function isBrokerProviderReadPath(requestPath: string): boolean {
+	return (
+		requestPath === BROKER_PROVIDER_READ_PATH || requestPath === BROKER_SERVE_STRIPPED_READ_PATH
+	);
+}
+
 export function isBrokerRequestPath(requestPath: string): boolean {
-	return requestPath === BROKER_PROVIDER_READ_PATH || requestPath.startsWith("/v1/broker/");
+	return isBrokerProviderReadPath(requestPath) || requestPath.startsWith("/v1/broker/");
 }
 
 export { normalizeBrokerRemoteAddress };
@@ -185,7 +193,7 @@ export async function handleTailscaleBrokerRequest(input: {
 	body: string;
 	options?: TailscaleBrokerOptions;
 }): Promise<{ status: number; payload: unknown }> {
-	if (input.requestPath !== BROKER_PROVIDER_READ_PATH) {
+	if (!isBrokerProviderReadPath(input.requestPath)) {
 		return { status: 403, payload: { error: "Forbidden." } };
 	}
 
