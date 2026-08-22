@@ -52,4 +52,23 @@ describe("SecurityObserver Hermes authority", () => {
 		expect(JSON.stringify(options)).not.toContain("outboundChannels");
 		expect(JSON.stringify(options)).not.toContain("providerScopes");
 	});
+
+	it("skips observer BLOCK theater when disabled", async () => {
+		const observer = new SecurityObserver({
+			enabled: false,
+			maxLatencyMs: 2_000,
+			dangerThreshold: 0.7,
+			fallbackOnTimeout: "block",
+			cwd: "/repo",
+		});
+
+		const result = await observer.analyze("please run rm -rf / on the host", {
+			permissionTier: "FULL_ACCESS",
+			hasFlaggedHistory: false,
+		});
+
+		expect(result.classification).toBe("ALLOW");
+		expect(result.reason).toBe("Observer disabled");
+		expect(executeHermesQueryMock).not.toHaveBeenCalled();
+	});
 });

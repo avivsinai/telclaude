@@ -94,7 +94,7 @@ describe("provider enrollment Telegram command", () => {
 
 		expect(startProviderSessionEnrollmentMock).toHaveBeenCalledWith({
 			service: "clalit",
-			actorUserId: "453371121",
+			actorUserId: "admin",
 			subjectUserId: "admin",
 		});
 		expect(api.sendMessage).toHaveBeenCalledWith(
@@ -130,12 +130,30 @@ describe("provider enrollment Telegram command", () => {
 
 		expect(startProviderSessionEnrollmentMock).toHaveBeenCalledWith({
 			service: "clalit",
-			actorUserId: "453371121",
+			actorUserId: "william",
 			subjectUserId: "william",
 		});
 	});
 
-	it("requires fresh 2FA before opening the enrollment browser", async () => {
+	it("preserves the supplied actor for household enrollment subjects", async () => {
+		const api = makeApi();
+
+		await startProviderSessionEnrollmentCommand(api as never, {
+			chatId: 123,
+			service: "clalit",
+			actorUserId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+			poll: false,
+		});
+
+		expect(startProviderSessionEnrollmentMock).toHaveBeenCalledWith({
+			service: "clalit",
+			actorUserId: "household:whatsapp:parent-a",
+			subjectUserId: "household:parent-a",
+		});
+	});
+
+	it("lets claimed admin enroll without a second TOTP step-up", async () => {
 		const api = makeApi();
 		freshStepUpVerifyMock.mockReturnValue({
 			ok: false,
@@ -153,12 +171,12 @@ describe("provider enrollment Telegram command", () => {
 			poll: false,
 		});
 
-		expect(startProviderSessionEnrollmentMock).not.toHaveBeenCalled();
-		expect(api.sendMessage).toHaveBeenCalledWith(
-			123,
-			expect.stringContaining("Fresh 2FA verification is required"),
-			expect.objectContaining({ message_thread_id: 9 }),
-		);
+		expect(freshStepUpVerifyMock).not.toHaveBeenCalled();
+		expect(startProviderSessionEnrollmentMock).toHaveBeenCalledWith({
+			service: "clalit",
+			actorUserId: "admin",
+			subjectUserId: "admin",
+		});
 	});
 
 	it("does not expose token-bearing provider start errors in Telegram", async () => {
@@ -183,6 +201,72 @@ describe("provider enrollment Telegram command", () => {
 		expect(api.sendMessage).toHaveBeenLastCalledWith(
 			123,
 			expect.stringContaining("Check provider status and relay logs."),
+			expect.objectContaining({ message_thread_id: 9 }),
+		);
+	});
+
+	it("keeps path= and site validation text when enrollment start fails without secrets", async () => {
+		const api = makeApi();
+		startProviderSessionEnrollmentMock.mockRejectedValueOnce(
+			new Error("Clalit validation timeout path=/login/he סיסמה שגויה"),
+		);
+
+		await startProviderSessionEnrollmentCommand(api as never, {
+			chatId: 123,
+			threadId: 9,
+			service: "clalit",
+			actorUserId: "453371121",
+			subjectUserId: "admin",
+			poll: false,
+		});
+
+		expect(api.sendMessage).toHaveBeenLastCalledWith(
+			123,
+			"Enrollment failed for 'clalit': Clalit validation timeout path=/login/he סיסמה שגויה",
+			expect.objectContaining({ message_thread_id: 9 }),
+		);
+	});
+
+	it("redacts password assignments while keeping path= diagnosis", async () => {
+		const api = makeApi();
+		startProviderSessionEnrollmentMock.mockRejectedValueOnce(
+			new Error("Clalit validation timeout path=/login/he password=hunter2"),
+		);
+
+		await startProviderSessionEnrollmentCommand(api as never, {
+			chatId: 123,
+			threadId: 9,
+			service: "clalit",
+			actorUserId: "453371121",
+			subjectUserId: "admin",
+			poll: false,
+		});
+
+		expect(api.sendMessage).toHaveBeenLastCalledWith(
+			123,
+			"Enrollment failed for 'clalit': Clalit validation timeout path=/login/he password=<redacted>",
+			expect.objectContaining({ message_thread_id: 9 }),
+		);
+	});
+
+	it("redacts bare token assignments and Bearer headers without hiding path=", async () => {
+		const api = makeApi();
+		startProviderSessionEnrollmentMock.mockRejectedValueOnce(
+			new Error("sidecar said token=eyJabc path=/login Authorization: Bearer eyJdef"),
+		);
+
+		await startProviderSessionEnrollmentCommand(api as never, {
+			chatId: 123,
+			threadId: 9,
+			service: "clalit",
+			actorUserId: "453371121",
+			subjectUserId: "admin",
+			poll: false,
+		});
+
+		expect(api.sendMessage).toHaveBeenLastCalledWith(
+			123,
+			"Enrollment failed for 'clalit': sidecar said token=<redacted> path=/login Authorization=<redacted> <redacted>",
 			expect.objectContaining({ message_thread_id: 9 }),
 		);
 	});
@@ -214,6 +298,11 @@ describe("provider enrollment Telegram command", () => {
 
 		await waitFor(() => api.editMessageReplyMarkup.mock.calls.length > 0);
 
+		expect(pollProviderSessionEnrollmentMock).toHaveBeenCalledWith({
+			service: "clalit",
+			pollPath: "/v1/credentials/enroll-session/enr_123",
+			actorUserId: "admin",
+		});
 		expect(api.editMessageReplyMarkup).toHaveBeenCalledWith(123, 44, {
 			reply_markup: undefined,
 		});

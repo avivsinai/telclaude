@@ -81,6 +81,11 @@ import {
 } from "./openai-codex-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
 import {
+	handleTailscaleBrokerRequest,
+	isBrokerRequestPath,
+	type TailscaleBrokerOptions,
+} from "./tailscale-broker.js";
+import {
 	handleTokenExchange,
 	handleTokenRefresh,
 	isScopeAutoStrict,
@@ -359,6 +364,7 @@ type CapabilityServerOptions = {
 	host?: string;
 	telegramApi?: Api;
 	whatsappInbound?: WhatsAppInboundBridgeHttpOptions | false;
+	broker?: TailscaleBrokerOptions;
 };
 
 type ImageRequest = {
@@ -1064,6 +1070,17 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					body,
 					signatureHeader: req.headers[WHATSAPP_INBOUND_SIGNATURE_HEADER],
 					options: options.whatsappInbound,
+				});
+				writeJson(res, result.status, result.payload);
+				return;
+			}
+
+			if (req.method === "POST" && isBrokerRequestPath(requestPath)) {
+				const result = await handleTailscaleBrokerRequest({
+					req,
+					requestPath,
+					body,
+					options: options.broker,
 				});
 				writeJson(res, result.status, result.payload);
 				return;

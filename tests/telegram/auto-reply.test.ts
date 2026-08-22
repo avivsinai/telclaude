@@ -452,6 +452,46 @@ describe("auto-reply executeAndReply", () => {
 		expect(replies).toEqual(["hermes ok"]);
 	});
 
+	it("separates linked private provider actor from the Telegram runtime actor", async () => {
+		getDb()
+			.prepare(
+				`INSERT INTO identity_links (chat_id, local_user_id, linked_at, linked_by)
+				 VALUES (?, ?, ?, ?)`,
+			)
+			.run(123, "admin", Date.now(), "test");
+		executeHermesQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "hermes ok",
+						success: true,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		await autoReplyTest.executeAndReply({
+			...baseCtx(),
+			msg: { ...makeMsg(), senderId: 456 },
+		} as never);
+
+		expect(executeHermesQueryImpl).toHaveBeenCalledWith(
+			"please respond",
+			expect.objectContaining({
+				userId: "admin",
+				actorId: 456,
+				mcpAuthority: expect.objectContaining({
+					providerActorId: "admin",
+					providerScopes: [],
+				}),
+			}),
+		);
+	});
+
 	it("passes configured provider scopes and MCP-only provider instructions to Hermes", async () => {
 		executeHermesQueryImpl.mockReturnValueOnce(
 			(async function* () {
@@ -923,7 +963,7 @@ describe("auto-reply control commands", () => {
 		expect(autoReplyTest.resolveProcessingBody(msg)).toBe("/approve 123456");
 	});
 
-	it("uses the Telegram runtime actor for /otp while requiring a linked chat", async () => {
+	it("uses the linked local user as the /otp sidecar actor", async () => {
 		seedAdmin();
 		const msg = {
 			...makeMsg(),
@@ -949,7 +989,7 @@ describe("auto-reply control commands", () => {
 			service: "clalit",
 			code: "123456",
 			challengeId: "challenge-1",
-			actorUserId: "555",
+			actorUserId: "admin",
 			requestId: "req-otp",
 		});
 		expect(replies.at(-1)).toBe("OTP accepted. Continuing authentication.");

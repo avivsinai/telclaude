@@ -1253,6 +1253,7 @@ async function executeProviderSidecar(
 		return terminalFailureForRecord("effect_kind_mismatch", "side effect kind mismatch", record);
 	}
 	const body = providerFetchBody(record);
+	const providerActorId = record.providerActorId ?? record.actorId;
 	if (!approvalTokenIssuer) {
 		return terminalFailureForRecord(
 			"provider_approval_token_issuer_missing",
@@ -1269,7 +1270,7 @@ async function executeProviderSidecar(
 			action: body.action,
 			params: body.params,
 			subjectUserId: body.subjectUserId,
-			actorUserId: record.actorId,
+			actorUserId: providerActorId,
 			approvalNonce: record.approvalRequestId,
 		});
 	} catch (error) {
@@ -1286,7 +1287,7 @@ async function executeProviderSidecar(
 			path: PROVIDER_PATH,
 			method: "POST",
 			body: JSON.stringify(body),
-			userId: record.actorId,
+			userId: providerActorId,
 			approvalToken: sidecarApprovalToken,
 			approvalMode: "preapproved-ledger",
 		});
@@ -1312,12 +1313,14 @@ function providerFetchBody(record: TelclaudeMcpProviderSideEffectRecord): {
 	action: string;
 	params: Record<string, unknown>;
 	subjectUserId?: string;
+	authPolicy: "session_only";
 } {
 	return {
 		service: record.service,
 		action: record.action,
 		params: record.params,
 		...(record.subjectUserId ? { subjectUserId: record.subjectUserId } : {}),
+		authPolicy: "session_only",
 	};
 }
 

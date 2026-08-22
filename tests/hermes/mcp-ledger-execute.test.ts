@@ -1299,6 +1299,8 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const harness = createLedgerHarness();
 		const provider = harness.ledger.prepare(
 			providerPrepareInput({
+				actorId: "telegram:555",
+				providerActorId: "admin",
 				providerId: "google",
 				service: "gmail",
 				action: "create_draft",
@@ -1334,7 +1336,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 					vaultClient: vault,
 				}),
 			},
-			{ providerScopes: ["google"] },
+			{ providerScopes: ["google"], actorId: "telegram:555", providerActorId: "admin" },
 		);
 
 		try {
@@ -1352,7 +1354,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			});
 			expect(providerCalls).toEqual([
 				expect.objectContaining({
-					providerId: "google",
+				providerId: "google",
 					path: "/v1/fetch",
 					method: "POST",
 					body: JSON.stringify({
@@ -1360,12 +1362,20 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 						action: "create_draft",
 						params: { to: "a@example.com", subject: "hello", body: "hello" },
 						subjectUserId: "admin",
+						authPolicy: "session_only",
 					}),
-					userId: "operator",
+					userId: "admin",
 					approvalToken: expect.stringMatching(/^v1\./),
 					approvalMode: "preapproved-ledger",
 				}),
 			]);
+			expect(providerCalls[0]).toMatchObject({
+				userId: "admin",
+			});
+			expect(provider).toMatchObject({
+				actorId: "telegram:555",
+				providerActorId: "admin",
+			});
 			expect(JSON.stringify(providerCalls)).not.toContain("provider-token");
 		} finally {
 			jtiStore.close();
@@ -1430,6 +1440,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 					action: "prescription_renewal",
 					params: { prescriptionId: "synthetic-rx" },
 					subjectUserId: "household:parent-b",
+					authPolicy: "session_only",
 				}),
 				userId: "household:whatsapp:parent-b",
 				approvalToken: expect.stringMatching(/^v1\./),

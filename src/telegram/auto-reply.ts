@@ -1266,6 +1266,7 @@ async function dispatchTelegramControlCommand(
 			}
 			const bindingId = match.args[1]?.trim();
 			let subjectUserId: string;
+			let actorUserId = String(msg.senderId ?? msg.chatId);
 			if (bindingId) {
 				const householdSubject = resolveHouseholdProviderEnrollmentSubject({
 					service,
@@ -1286,12 +1287,13 @@ async function dispatchTelegramControlCommand(
 					return true;
 				}
 				subjectUserId = link.localUserId;
+				actorUserId = link.localUserId;
 			}
 			await startProviderSessionEnrollmentCommand(bot.api, {
 				chatId: msg.chatId,
 				threadId: msg.messageThreadId,
 				service,
-				actorUserId: String(msg.senderId ?? msg.chatId),
+				actorUserId,
 				subjectUserId,
 			});
 			return true;
@@ -1373,7 +1375,7 @@ async function dispatchTelegramControlCommand(
 					service,
 					code,
 					challengeId,
-					actorUserId: String(resolveTelegramRuntimeActorId(msg)),
+					actorUserId: link.localUserId,
 					requestId,
 				});
 
@@ -1539,6 +1541,7 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 		async () => {
 			await executeWithSession(ctx, sessionKey, {
 				userId,
+				providerActorId: identityLink?.localUserId,
 				startTime,
 				idleMinutes,
 				resetTriggers,
@@ -1558,6 +1561,7 @@ async function executeWithSession(
 	sessionKey: string,
 	opts: {
 		userId: string;
+		providerActorId?: string;
 		startTime: number;
 		idleMinutes: number;
 		resetTriggers: string[];
@@ -1574,7 +1578,15 @@ async function executeWithSession(
 		recentlySent,
 		auditLogger,
 	} = ctx;
-	const { userId, startTime, idleMinutes, resetTriggers, timeoutSeconds, activeProfile } = opts;
+	const {
+		userId,
+		providerActorId,
+		startTime,
+		idleMinutes,
+		resetTriggers,
+		timeoutSeconds,
+		activeProfile,
+	} = opts;
 	const existingSession = getSession(sessionKey);
 	const now = Date.now();
 
@@ -1761,6 +1773,7 @@ async function executeWithSession(
 			systemPromptAppend,
 			compiledMemoryMd: memoryBundle.compiledMemoryMd,
 			mcpAuthority: {
+				...(providerActorId ? { providerActorId } : {}),
 				providerScopes: hermesProviderContext.providerScopes,
 				...(hermesProviderContext.capabilityScopes.length
 					? { capabilityScopes: hermesProviderContext.capabilityScopes }
@@ -3330,6 +3343,7 @@ async function executePlanPhase(
 				systemPromptAppend: planningPromptAppend,
 				compiledMemoryMd: memoryBundle.compiledMemoryMd,
 				mcpAuthority: {
+					...(identityLink?.localUserId ? { providerActorId: identityLink.localUserId } : {}),
 					providerScopes: hermesProviderContext.providerScopes,
 					...(hermesProviderContext.capabilityScopes.length
 						? { capabilityScopes: hermesProviderContext.capabilityScopes }

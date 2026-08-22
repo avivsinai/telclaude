@@ -97,6 +97,8 @@ export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly ref: string;
 	readonly kind: "provider";
 	readonly actorId: string;
+	/** Provider-sidecar identity; distinct from the runtime/HITL actor. */
+	readonly providerActorId?: string;
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
@@ -255,6 +257,8 @@ export type TelclaudeMcpSideEffectRecord =
 export type TelclaudeMcpProviderSideEffectPrepareInput = {
 	readonly kind: "provider";
 	readonly actorId: string;
+	/** Provider-sidecar identity; distinct from the runtime/HITL actor. */
+	readonly providerActorId?: string;
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
@@ -378,6 +382,7 @@ export type TelclaudeMcpProviderApprovalBinding = {
 	readonly ref: string;
 	readonly kind: "provider";
 	readonly actorId: string;
+	readonly providerActorId?: string;
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
@@ -1038,6 +1043,9 @@ function prepareProviderRecord(
 		ref: requiredTrimmed(makeRef(), "ref"),
 		kind: "provider" as const,
 		actorId: requiredTrimmed(input.actorId, "actorId"),
+		...(input.providerActorId
+			? { providerActorId: requiredTrimmed(input.providerActorId, "providerActorId") }
+			: {}),
 		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),
 		profileId: requiredTrimmed(input.profileId, "profileId"),
 		domain: input.domain,
@@ -1128,6 +1136,7 @@ function hashProviderParams(record: ProviderBindingFields): string {
 	return canonicalDigest({
 		domainSeparator: PROVIDER_PARAMS_HASH_DOMAIN,
 		actorId: record.actorId,
+		...(record.providerActorId ? { providerActorId: record.providerActorId } : {}),
 		profileId: record.profileId,
 		domain: record.domain,
 		providerId: record.providerId,
@@ -1148,6 +1157,7 @@ function hashProviderBody(record: ProviderBindingFields): string {
 	return canonicalDigest({
 		domainSeparator: PROVIDER_BODY_HASH_DOMAIN,
 		actorId: record.actorId,
+		...(record.providerActorId ? { providerActorId: record.providerActorId } : {}),
 		profileId: record.profileId,
 		domain: record.domain,
 		providerId: record.providerId,
@@ -1263,6 +1273,7 @@ function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecor
 	return canonicalDigest({
 		domainSeparator: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 		actorId: record.actorId,
+		...(record.providerActorId ? { providerActorId: record.providerActorId } : {}),
 		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
@@ -1420,6 +1431,7 @@ function approvalBinding(
 			ref: record.ref,
 			kind: "provider",
 			actorId: record.actorId,
+			...(record.providerActorId ? { providerActorId: record.providerActorId } : {}),
 			approverActorId: record.approverActorId,
 			profileId: record.profileId,
 			domain: record.domain,
@@ -1977,6 +1989,7 @@ function errorMessage(error: unknown): string {
 type ProviderBindingFields = Pick<
 	TelclaudeMcpProviderSideEffectRecord,
 	| "actorId"
+	| "providerActorId"
 	| "profileId"
 	| "domain"
 	| "providerId"

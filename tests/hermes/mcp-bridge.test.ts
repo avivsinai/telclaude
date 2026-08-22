@@ -253,7 +253,11 @@ describe("Telclaude MCP bridge foundation", () => {
 	it("stamps relay-owned provider subject and rejects model-supplied subject identity", async () => {
 		const calls: unknown[] = [];
 		const bridge = createTelclaudeMcpBridge(
-			baseAuthority({ providerScopes: ["clalit"], subjectUserId: "admin" }),
+			baseAuthority({
+				providerScopes: ["clalit"],
+				subjectUserId: "parent-clalit",
+				providerActorId: "admin",
+			}),
 			{
 				...baseDependencies(),
 				providerRead: async (request) => {
@@ -274,7 +278,8 @@ describe("Telclaude MCP bridge foundation", () => {
 		expect(calls).toEqual([
 			expect.objectContaining({
 				actorId: "operator",
-				subjectUserId: "admin",
+				providerActorId: "admin",
+				subjectUserId: "parent-clalit",
 				providerId: "clalit",
 				service: "clalit",
 				action: "prescriptions",
@@ -288,6 +293,14 @@ describe("Telclaude MCP bridge foundation", () => {
 				subjectUserId: "spoofed",
 			}),
 		).rejects.toThrow("MCP clients may not supply MCP authority field: subjectUserId");
+		await expect(
+			bridge.tc_provider_read({
+				service: "clalit",
+				action: "prescriptions",
+				params: {},
+				providerActorId: "spoofed",
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field: providerActorId");
 	});
 
 	it("keeps provider and outbound execute immutable", async () => {

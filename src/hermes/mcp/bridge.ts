@@ -27,6 +27,8 @@ export type TelclaudeMcpDomain = "private" | "social" | "household" | "public" |
 
 export type TelclaudeMcpAuthority = {
 	actorId: string;
+	/** Identity used for provider-sidecar authentication, separate from runtime/audit actorId. */
+	providerActorId?: string;
 	subjectUserId?: string;
 	profileId: string;
 	domain: TelclaudeMcpDomain;
@@ -46,6 +48,7 @@ export type TelclaudeMcpAuthority = {
 
 export type TelclaudeMcpAuthorityStamp = {
 	actorId: string;
+	providerActorId?: string;
 	subjectUserId?: string;
 	profileId: string;
 	domain: TelclaudeMcpDomain;
@@ -557,6 +560,7 @@ const GithubReadFileInputSchema = z
 
 const AUTHORITY_PROVENANCE_KEYS = new Set([
 	"actorId",
+	"providerActorId",
 	"subjectUserId",
 	"profileId",
 	"domain",
@@ -959,8 +963,10 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 		throw new Error(memorySourceError);
 	}
 	const subjectUserId = optionalTrimmed(authority.subjectUserId);
+	const providerActorId = optionalTrimmed(authority.providerActorId);
 	return {
 		actorId: requiredTrimmed(authority.actorId, "actorId"),
+		...(providerActorId ? { providerActorId } : {}),
 		...(subjectUserId ? { subjectUserId } : {}),
 		profileId: requiredTrimmed(authority.profileId, "profileId"),
 		domain: authority.domain,
@@ -982,6 +988,7 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 function authorityStamp(authority: TelclaudeMcpAuthority): TelclaudeMcpAuthorityStamp {
 	return {
 		actorId: authority.actorId,
+		...(authority.providerActorId ? { providerActorId: authority.providerActorId } : {}),
 		...(authority.subjectUserId ? { subjectUserId: authority.subjectUserId } : {}),
 		profileId: authority.profileId,
 		domain: authority.domain,

@@ -570,7 +570,7 @@ export function createTelclaudeLiveMcpRelayClients(
 				path: PROVIDER_PATH,
 				method: "POST",
 				body: JSON.stringify(body),
-				userId: request.actorId,
+				userId: request.providerActorId ?? request.actorId,
 			});
 			if (response.status === "error") {
 				const errorCode = providerErrorCode(response);
@@ -606,6 +606,7 @@ export function createTelclaudeLiveMcpRelayClients(
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
+				...(request.providerActorId ? { providerActorId: request.providerActorId } : {}),
 				approverActorId: providerWriteApproverFor(providerWriteApproverActorId, request.actorId),
 				profileId: request.profileId,
 				domain: request.domain,
@@ -1686,12 +1687,19 @@ function providerFetchBody(
 		TelclaudeMcpProviderReadRequest | TelclaudeMcpProviderPrepareWriteRequest,
 		"service" | "action" | "params" | "subjectUserId"
 	>,
-): { service: string; action: string; params: Record<string, unknown>; subjectUserId?: string } {
+): {
+	service: string;
+	action: string;
+	params: Record<string, unknown>;
+	subjectUserId?: string;
+	authPolicy: "session_only";
+} {
 	return {
 		service: request.service,
 		action: request.action,
 		params: request.params,
 		...(request.subjectUserId ? { subjectUserId: request.subjectUserId } : {}),
+		authPolicy: "session_only",
 	};
 }
 
