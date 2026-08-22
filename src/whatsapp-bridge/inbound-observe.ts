@@ -50,6 +50,12 @@ export type WhatsAppInboundForwardOutcome =
 				| "missing_id"
 				| "inbound_unconfigured";
 	  }
+	| {
+			readonly kind: "retrying";
+			readonly attempt: number;
+			readonly delayMs: number;
+			readonly status?: number;
+	  }
 	| { readonly kind: "forwarded"; readonly status: number }
 	| { readonly kind: "rejected"; readonly status: number }
 	| { readonly kind: "failed"; readonly error: unknown };
@@ -67,6 +73,16 @@ export function logWhatsAppInboundForwardOutcome(
 		case "skipped":
 			sink.info({ outcome: "skipped", reason: outcome.reason }, "WhatsApp inbound forward");
 			return;
+		case "retrying": {
+			const bindings: Record<string, unknown> = {
+				outcome: "retrying",
+				attempt: outcome.attempt,
+				delayMs: outcome.delayMs,
+			};
+			if (outcome.status !== undefined) bindings.status = outcome.status;
+			sink.warn(bindings, "WhatsApp inbound forward");
+			return;
+		}
 		case "forwarded":
 			sink.info({ outcome: "forwarded", status: outcome.status }, "WhatsApp inbound forward");
 			return;
