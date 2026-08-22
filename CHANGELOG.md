@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tailscale broker Serve WhoIs** — Overlay `docker-compose.tailscale-broker.yml` publishes localhost `:8790` and mounts `tailscaled.sock` so `POST /v1/broker/provider/read` works on the MagicDNS Serve path. WhoIs uses the unix socket, then LocalAPI HTTP. Docker-proxy SNAT is unwrapped only from trusted proxies (loopback, default IPv4 gateway, `TELCLAUDE_BROKER_TRUSTED_PROXIES`); Hermes IPs cannot spoof `X-Forwarded-For`. Serve `/` and `/novnc` stay untouched.
+
 ### Fixed
 
 - **WhatsApp inbound boot-race drops** — The bridge retries the same signed inbound POST on transport failures and relay 502/503/504 until the relay accepts it, and compose starts `whatsapp-bridge` only after `telclaude` is healthy. A half-dead Baileys companion still needs an operator bounce; retry does not revive it.

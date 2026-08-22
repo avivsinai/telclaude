@@ -56,6 +56,9 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   # Vault socket needs rw: connect() requires write on Unix sockets.
   # Docker volume is mounted :ro so relay cannot create/delete files in /run/vault.
   /run/vault/** rw,
+  # Host tailscaled LocalAPI (WhoIs for the Tailscale broker). connect() needs
+  # write on the socket inode; the compose overlay mounts the sock :ro.
+  /run/tailscale/** rw,
 
   # Media volumes
   /media/inbox/** rwklix,

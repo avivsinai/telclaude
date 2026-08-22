@@ -318,7 +318,7 @@ jobs:
           fi
 
           cd "$docker_dir"
-          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml)
+          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml -f docker-compose.tailscale-broker.yml)
           compose_profiles=(--profile whatsapp)
           containers=(
             telclaude
@@ -450,7 +450,7 @@ jobs:
             TELCLAUDE_BUILD_BROWSER=1 ./docker/build.sh
           fi
           cd docker
-          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml)
+          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.browser.yml -f docker-compose.tailscale-broker.yml)
           compose_profiles=(--profile whatsapp)
           whatsapp_bridge_build_ref="$(
             docker compose "${compose_files[@]}" "${compose_profiles[@]}" config --format json |
