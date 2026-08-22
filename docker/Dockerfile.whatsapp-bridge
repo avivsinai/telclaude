@@ -28,9 +28,10 @@ RUN pnpm install --ignore-scripts
 
 COPY . .
 RUN pnpm run build
-RUN mkdir -p /bridge-dist/crypto /bridge-dist/whatsapp-bridge \
+RUN mkdir -p /bridge-dist/crypto /bridge-dist/whatsapp-bridge /bridge-dist/infra \
     && cp dist/crypto/canonical-hash.js /bridge-dist/crypto/ \
-    && cp dist/whatsapp-bridge/*.js /bridge-dist/whatsapp-bridge/
+    && cp dist/whatsapp-bridge/*.js /bridge-dist/whatsapp-bridge/ \
+    && cp dist/infra/network-errors.js /bridge-dist/infra/
 
 RUN node -e "const fs=require('node:fs'); const root=JSON.parse(fs.readFileSync('package.json','utf8')); const wanted=['@whiskeysockets/baileys','pino','qrcode-terminal']; const dependencies=Object.fromEntries(wanted.map((name)=>[name,root.dependencies[name]])); console.log(JSON.stringify({type:root.type,packageManager:root.packageManager,dependencies},null,2));" > /tmp/whatsapp-bridge-package.json
 
@@ -42,7 +43,7 @@ RUN mkdir -p /bridge-runtime \
 
 RUN cd /bridge-runtime \
     && pnpm rebuild \
-    && node -e "await import('@whiskeysockets/baileys'); await import('pino'); await import('qrcode-terminal'); await import('/bridge-dist/whatsapp-bridge/contract.js');"
+    && node -e "await import('@whiskeysockets/baileys'); await import('pino'); await import('qrcode-terminal'); await import('/bridge-dist/whatsapp-bridge/contract.js'); await import('/bridge-dist/whatsapp-bridge/relay-forward.js');"
 
 FROM node:22-bookworm-slim AS runtime
 

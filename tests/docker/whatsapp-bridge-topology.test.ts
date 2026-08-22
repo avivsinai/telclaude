@@ -59,7 +59,10 @@ describe("WhatsApp bridge Docker topology", () => {
 		expect(dockerfile).toContain("/bridge-runtime/package.json");
 		expect(dockerfile).toContain("/bridge-dist/whatsapp-bridge");
 		expect(dockerfile).toContain("/bridge-dist/crypto");
+		expect(dockerfile).toContain("/bridge-dist/infra");
+		expect(dockerfile).toContain("network-errors.js");
 		expect(dockerfile).toContain("await import('@whiskeysockets/baileys')");
+		expect(dockerfile).toContain("await import('/bridge-dist/whatsapp-bridge/relay-forward.js')");
 		expect(dockerfile).not.toContain("COPY --from=builder --chown=node:node /build/dist ./dist");
 		expect(dockerfile).not.toContain(
 			"COPY --from=builder --chown=node:node /build/node_modules ./node_modules",
