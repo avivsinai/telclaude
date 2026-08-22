@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { startCapabilityServer } from "../../src/relay/capabilities.js";
 import {
-	authenticateTailscaleBrokerPeer,
 	BROKER_PROVIDER_READ_PATH,
+	BROKER_SERVE_STRIPPED_READ_PATH,
+	authenticateTailscaleBrokerPeer,
 	buildBrokerProviderReadBody,
 	isBrokerWriteAction,
 } from "../../src/relay/tailscale-broker.js";
@@ -262,5 +263,31 @@ describe("Tailscale broker", () => {
 			},
 		);
 		expect(auth).toEqual({ ok: false, status: 401, error: "Unauthorized." });
+	});
+
+	it("treats Serve-stripped /provider/read as the broker read path", async () => {
+		server = startCapabilityServer({
+			port: 0,
+			host: "127.0.0.1",
+			broker: {
+				whois: async () => ({ loginName: "aviv@example" }),
+				operatorUserId: "admin",
+				providerProxy: async () => ({ status: "ok", data: { home: true } }),
+			},
+		});
+		await once(server, "listening");
+		const { port } = server.address() as AddressInfo;
+
+		const response = await fetch(`http://127.0.0.1:${port}${BROKER_SERVE_STRIPPED_READ_PATH}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				providerId: "clalit",
+				service: "clalit",
+				action: "home",
+			}),
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ status: "ok", data: { home: true } });
 	});
 });

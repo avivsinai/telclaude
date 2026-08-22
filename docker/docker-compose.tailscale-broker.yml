@@ -6,8 +6,9 @@
 # Do not use this overlay on GitHub-hosted Verify (no tailscaled.sock).
 # William Deploy and william-restore include it.
 #
-# After recreate, add the Serve path without resetting / or /novnc:
-#   tailscale serve --bg --https=443 --set-path=/v1/broker http://127.0.0.1:8790
+# After recreate, add the Serve path without resetting / or /novnc.
+# Serve strips the mount, so the target must include /v1/broker:
+#   tailscale serve --bg --https=443 --set-path=/v1/broker http://127.0.0.1:8790/v1/broker
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.hermes.yml \
