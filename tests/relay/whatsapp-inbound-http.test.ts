@@ -122,6 +122,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 						success: true,
 						toolUses: 1,
 						outboundToolUses: 0,
+						outboundExecuteSucceeded: false,
 						toolResults: 1,
 					};
 				},
@@ -171,6 +172,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 						success: true,
 						toolUses: 0,
 						outboundToolUses: 0,
+						outboundExecuteSucceeded: false,
 						toolResults: 0,
 					};
 				},
@@ -208,6 +210,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				success: true,
 				toolUses: 0,
 				outboundToolUses: 0,
+				outboundExecuteSucceeded: false,
 				toolResults: 0,
 			};
 		});
@@ -266,6 +269,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			success: true,
 			toolUses: 0,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 0,
 		}));
 		const event = whatsappEvent({ messageId: "wa-message-reply-fallback" });
@@ -336,6 +340,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					success: true,
 					toolUses: 1,
 					outboundToolUses: 1,
+					outboundExecuteSucceeded: false,
 					toolResults: 1,
 				}),
 				replySender,
@@ -349,7 +354,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		});
 	});
 
-	it("sends Hermes final text after outbound execute", async () => {
+	it("sends Hermes final text after a failed outbound execute", async () => {
 		const { createAttachmentQuarantineStore } = await import(
 			"../../src/relay/attachment-quarantine-store.js"
 		);
@@ -365,9 +370,9 @@ describe("WhatsApp inbound HTTP bridge", () => {
 		const replyInputs: unknown[] = [];
 		const replySender = vi.fn(async (input) => {
 			replyInputs.push(input);
-			return sentReceipt("wa-reply-execute");
+			return sentReceipt("wa-reply-failed-execute");
 		});
-		const event = whatsappEvent({ messageId: "wa-message-execute-reply" });
+		const event = whatsappEvent({ messageId: "wa-message-failed-execute-reply" });
 
 		await handleWhatsAppInboundBridgePost({
 			body: whatsappInboundBridgeBody(event),
@@ -382,10 +387,11 @@ describe("WhatsApp inbound HTTP bridge", () => {
 				nowMs: () => NOW,
 				dispatch: async () => ({
 					ok: true,
-					response: "sent through execute, still reply",
+					response: "failed execute, send fallback",
 					success: true,
 					toolUses: 2,
 					outboundToolUses: 2,
+					outboundExecuteSucceeded: false,
 					toolResults: 2,
 				}),
 				replySender,
@@ -394,9 +400,54 @@ describe("WhatsApp inbound HTTP bridge", () => {
 
 		await vi.waitFor(() => expect(replySender).toHaveBeenCalledTimes(1));
 		expect(replyInputs[0]).toMatchObject({
-			body: "sent through execute, still reply",
+			body: "failed execute, send fallback",
 			recipientAddressRef: OPERATOR_PHONE,
 		});
+	});
+
+	it("skips the fallback reply after a successful outbound execute", async () => {
+		const { createAttachmentQuarantineStore } = await import(
+			"../../src/relay/attachment-quarantine-store.js"
+		);
+		const { createRelayConversationStore } = await import(
+			"../../src/hermes/relay-conversation-store.js"
+		);
+		const { handleWhatsAppInboundBridgePost, whatsappInboundBridgeBody } = await import(
+			"../../src/relay/whatsapp-inbound-http.js"
+		);
+		const { signWhatsAppInboundBridgeEvent } = await import(
+			"../../src/relay/whatsapp-inbound-cl1.js"
+		);
+		const dispatch = vi.fn(async () => ({
+			ok: true as const,
+			response: "already sent by execute",
+			success: true,
+			toolUses: 2,
+			outboundToolUses: 2,
+			outboundExecuteSucceeded: true,
+			toolResults: 2,
+		}));
+		const replySender = vi.fn();
+		const event = whatsappEvent({ messageId: "wa-message-successful-execute" });
+
+		await handleWhatsAppInboundBridgePost({
+			body: whatsappInboundBridgeBody(event),
+			signatureHeader: signWhatsAppInboundBridgeEvent(event, SECRET),
+			options: {
+				signatureSecret: SECRET,
+				operatorAddressRefs: [OPERATOR_PHONE],
+				profile,
+				config,
+				conversationStore: createRelayConversationStore({ nowMs: () => NOW }),
+				quarantineStore: createAttachmentQuarantineStore({ now: () => NOW }),
+				nowMs: () => NOW,
+				dispatch,
+				replySender,
+			},
+		});
+
+		await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+		expect(replySender).not.toHaveBeenCalled();
 	});
 
 	it("sends Hermes final text after a memory tool", async () => {
@@ -436,6 +487,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					success: true,
 					toolUses: 1,
 					outboundToolUses: 0,
+					outboundExecuteSucceeded: false,
 					toolResults: 1,
 				}),
 				replySender,
@@ -465,6 +517,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			success: true,
 			toolUses: 0,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 0,
 		}));
 		const replySender = vi.fn();
@@ -522,6 +575,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					success: true,
 					toolUses: 0,
 					outboundToolUses: 0,
+					outboundExecuteSucceeded: false,
 					toolResults: 0,
 				};
 			},
@@ -658,6 +712,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 			success: true,
 			toolUses: 0,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 0,
 		}));
 		const event = whatsappEvent({
@@ -804,6 +859,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 								success: true,
 								toolUses: 1,
 								outboundToolUses: 0,
+								outboundExecuteSucceeded: false,
 								toolResults: 1,
 							};
 						},
@@ -858,6 +914,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 						success: true,
 						toolUses: 1,
 						outboundToolUses: 0,
+						outboundExecuteSucceeded: false,
 						toolResults: 1,
 					};
 				},
@@ -951,6 +1008,7 @@ describe("WhatsApp inbound HTTP bridge", () => {
 					success: true,
 					toolUses: 1,
 					outboundToolUses: 0,
+					outboundExecuteSucceeded: false,
 					toolResults: 1,
 				};
 			},
@@ -1306,6 +1364,7 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 			response: "Prepared WhatsApp reply.",
 			toolUses: 1,
 			outboundToolUses: 1,
+			outboundExecuteSucceeded: false,
 			toolResults: 1,
 		});
 		expect(seenPrompt).toContain("[FORWARDED CONTENT (WHATSAPP) - UNTRUSTED]");
@@ -1364,11 +1423,12 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 			response: "Got it.",
 			toolUses: 1,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 1,
 		});
 	});
 
-	it("counts execute as outbound but still returns Hermes final text", async () => {
+	it("marks a successful outbound execute and still returns Hermes final text", async () => {
 		const { dispatchWhatsAppInboundToHermes } = await import(
 			"../../src/relay/whatsapp-inbound-dispatcher.js"
 		);
@@ -1383,7 +1443,11 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 				yield { type: "tool_use", toolName: "tc_outbound_prepare", input: { body: "hi" } };
 				yield { type: "tool_result", toolName: "tc_outbound_prepare", output: { ok: true } };
 				yield { type: "tool_use", toolName: "tc_outbound_execute", input: { effectId: "x" } };
-				yield { type: "tool_result", toolName: "tc_outbound_execute", output: { ok: true } };
+				yield {
+					type: "tool_result",
+					toolName: "mcp__telclaude__tc_outbound_execute",
+					output: { error: false },
+				};
 				yield {
 					type: "done",
 					result: {
@@ -1402,12 +1466,56 @@ describe("WhatsApp inbound Hermes dispatcher", () => {
 			response: "Done.",
 			toolUses: 2,
 			outboundToolUses: 2,
+			outboundExecuteSucceeded: true,
 			toolResults: 2,
 		});
 		expect(
 			(seenOptions as { mcpAuthority: { outboundChannels?: unknown } }).mcpAuthority
 				.outboundChannels ?? [],
 		).toEqual([]);
+	});
+
+	it.each([
+		["ok false", { ok: false }],
+		["error true", { error: true }],
+		["success false", { success: false }],
+	])("does not mark an outbound execute failed by %s as successful", async (_label, output) => {
+		const { dispatchWhatsAppInboundToHermes } = await import(
+			"../../src/relay/whatsapp-inbound-dispatcher.js"
+		);
+		const cl1 = await mintCl1Event({ text: "please send it" });
+		const result = await dispatchWhatsAppInboundToHermes({
+			...cl1,
+			config,
+			profile,
+			executeHermes: async function* (): AsyncIterable<StreamChunk> {
+				yield {
+					type: "tool_use",
+					toolName: "mcp__telclaude__tc_outbound_execute",
+					input: { effectId: "x" },
+				};
+				yield {
+					type: "tool_result",
+					toolName: "mcp__telclaude__tc_outbound_execute",
+					output,
+				};
+				yield {
+					type: "done",
+					result: {
+						response: "Execute failed.",
+						success: true,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 5,
+					},
+				};
+			},
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			outboundToolUses: 1,
+			outboundExecuteSucceeded: false,
+		});
 	});
 
 	it("aborts an in-flight Hermes stream when the relay arms a challenge for its turn", async () => {

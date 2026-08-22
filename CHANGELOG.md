@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tailscale Serve strips `/v1/broker`** — `--set-path=/v1/broker` forwards `/provider/read`. The relay treats that as the broker read, and the documented Serve target is `http://127.0.0.1:8790/v1/broker` so the full path is restored. Serve `/` and `/novnc` stay untouched.
 - **WhatsApp bridge image missing `network-errors.js`** — Inbound retry imports `dist/infra/network-errors.js`, but the bridge image only copied `whatsapp-bridge` and `crypto`. The closure now includes that file and smoke-imports `relay-forward.js` at build time.
+- **WhatsApp inbound fallback after outbound execution** — The authorized fallback reply is skipped only after a successful `tc_outbound_execute` result; prepare-only and failed executions still deliver Hermes text.
 - **WhatsApp inbound boot-race drops** — The bridge retries the same signed inbound POST on transport failures and relay 502/503/504 until the relay accepts it, and compose starts `whatsapp-bridge` only after `telclaude` is healthy. A half-dead Baileys companion still needs an operator bounce; retry does not revive it.
 - **WhatsApp bridge shutdown drains auth writes** — SIGTERM/SIGINT now stop reconnects, refuse new sends, end the live socket, and wait for serialized Baileys creds writes to finish. Health stays content-free (counters/timestamps only). Gabriel avatar is not applied from the bridge (would require a second socket).
 

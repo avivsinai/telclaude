@@ -56,6 +56,7 @@ describe("media action confirmation dispatcher", () => {
 			success: true,
 			toolUses: 1,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 1,
 		}));
 		const dispatcher = createMediaActionConfirmationDispatcher({

@@ -358,6 +358,10 @@ function scheduleWhatsAppInboundDispatch(
 				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_empty" });
 				return;
 			}
+			if (dispatch.outboundExecuteSucceeded) {
+				logWhatsAppInboundReplyOutcome(logger, { kind: "reply_skipped_execute" });
+				return;
+			}
 			if (!input.replySender) {
 				logWhatsAppInboundReplyOutcome(logger, {
 					kind: "reply_failed",

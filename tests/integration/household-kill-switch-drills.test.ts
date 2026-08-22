@@ -451,6 +451,7 @@ function configuredMediaInterceptor(config: TelclaudeConfig) {
 			success: true,
 			toolUses: 1,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 1,
 		})),
 	} satisfies MediaActionConfirmationDispatcher;

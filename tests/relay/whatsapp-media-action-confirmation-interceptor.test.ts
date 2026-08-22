@@ -166,6 +166,7 @@ function armedFixture(options: { confirmationTtlMs?: number; interceptNowMs?: nu
 			success: true,
 			toolUses: 1,
 			outboundToolUses: 0,
+			outboundExecuteSucceeded: false,
 			toolResults: 1,
 		})),
 	} satisfies MediaActionConfirmationDispatcher;
