@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { startCapabilityServer } from "../../src/relay/capabilities.js";
 import {
+	authenticateTailscaleBrokerPeer,
 	BROKER_PROVIDER_READ_PATH,
 	buildBrokerProviderReadBody,
 	isBrokerWriteAction,
@@ -186,5 +187,80 @@ describe("Tailscale broker", () => {
 			}),
 		});
 		expect(response.status).toBe(401);
+	});
+
+	it("accepts a Serve client when WhoIs of the TCP peer fails but X-Forwarded-For WhoIs succeeds", async () => {
+		const clientAddr = "100.64.1.10";
+		server = startCapabilityServer({
+			port: 0,
+			host: "127.0.0.1",
+			broker: {
+				whois: async (addr) => (addr === clientAddr ? { loginName: "aviv@example" } : null),
+				trustedProxies: ["127.0.0.1"],
+				operatorUserId: "admin",
+				providerProxy: async () => ({ status: "ok", data: { balance: [] } }),
+			},
+		});
+		await once(server, "listening");
+		const { port } = server.address() as AddressInfo;
+
+		const response = await fetch(`http://127.0.0.1:${port}${BROKER_PROVIDER_READ_PATH}`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"x-forwarded-for": clientAddr,
+			},
+			body: JSON.stringify({
+				providerId: "poalim",
+				service: "poalim",
+				action: "balance",
+			}),
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ status: "ok", data: { balance: [] } });
+	});
+
+	it("rejects a Serve login header that does not match WhoIs", async () => {
+		const clientAddr = "100.64.1.10";
+		server = startCapabilityServer({
+			port: 0,
+			host: "127.0.0.1",
+			broker: {
+				whois: async (addr) => (addr === clientAddr ? { loginName: "aviv@example" } : null),
+				trustedProxies: ["127.0.0.1"],
+				providerProxy: async () => ({ status: "ok", data: {} }),
+			},
+		});
+		await once(server, "listening");
+		const { port } = server.address() as AddressInfo;
+
+		const response = await fetch(`http://127.0.0.1:${port}${BROKER_PROVIDER_READ_PATH}`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"x-forwarded-for": clientAddr,
+				"tailscale-user-login": "other@example",
+			},
+			body: JSON.stringify({
+				providerId: "poalim",
+				service: "poalim",
+				action: "balance",
+			}),
+		});
+		expect(response.status).toBe(401);
+	});
+
+	it("does not honor X-Forwarded-For from the contained Hermes address", async () => {
+		const auth = await authenticateTailscaleBrokerPeer(
+			{
+				socket: { remoteAddress: "172.30.92.11" },
+				headers: { "x-forwarded-for": "100.64.1.10" },
+			} as http.IncomingMessage,
+			{
+				whois: async (addr) => (addr === "100.64.1.10" ? { loginName: "aviv@example" } : null),
+				trustedProxies: ["127.0.0.1"],
+			},
+		);
+		expect(auth).toEqual({ ok: false, status: 401, error: "Unauthorized." });
 	});
 });

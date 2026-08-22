@@ -8,6 +8,16 @@ import {
 	type ProviderProxyResponse,
 	proxyProviderRequest,
 } from "./provider-proxy.js";
+import {
+	defaultTrustedBrokerProxies,
+	isTrustedBrokerProxy,
+	lookupTailscaleWhois,
+	normalizeBrokerRemoteAddress,
+	parseForwardedClientAddress,
+	parseSingleClientAddress,
+	type TailscaleWhois,
+	tailscaleLoginsMatch,
+} from "./tailscale-whois.js";
 
 const logger = getChildLogger({ module: "tailscale-broker" });
 
@@ -37,14 +47,13 @@ const BROKER_ALLOWED_READ_ACTIONS = new Set<string>([
 	"statements",
 ]);
 
-export type TailscaleBrokerWhois = {
-	readonly loginName: string;
-};
+export type TailscaleBrokerWhois = TailscaleWhois;
 
 export type TailscaleBrokerOptions = {
 	readonly whois?: (addr: string) => Promise<TailscaleBrokerWhois | null>;
 	readonly nodeToken?: string;
 	readonly operatorUserId?: string;
+	readonly trustedProxies?: readonly string[];
 	readonly providerProxy?: (request: ProviderProxyRequest) => Promise<ProviderProxyResponse>;
 };
 
@@ -52,13 +61,7 @@ export function isBrokerRequestPath(requestPath: string): boolean {
 	return requestPath === BROKER_PROVIDER_READ_PATH || requestPath.startsWith("/v1/broker/");
 }
 
-export function normalizeBrokerRemoteAddress(remoteAddress?: string | null): string | null {
-	if (!remoteAddress) return null;
-	if (remoteAddress.startsWith("::ffff:")) {
-		return remoteAddress.slice("::ffff:".length);
-	}
-	return remoteAddress;
-}
+export { normalizeBrokerRemoteAddress };
 
 export function isBrokerWriteAction(service: string, action: string): boolean {
 	if (!BROKER_ALLOWED_SERVICES.has(service) || !BROKER_ALLOWED_READ_ACTIONS.has(action)) {
@@ -81,19 +84,19 @@ function timingSafeEqual(left: string, right: string): boolean {
 	return crypto.timingSafeEqual(a, b);
 }
 
-async function defaultWhois(addr: string): Promise<TailscaleBrokerWhois | null> {
-	try {
-		const response = await fetch(
-			`http://100.100.100.100/localapi/v0/whois?addr=${encodeURIComponent(addr)}`,
-			{ signal: AbortSignal.timeout(1_500) },
-		);
-		if (!response.ok) return null;
-		const data = (await response.json()) as { UserProfile?: { LoginName?: string } };
-		const loginName = data.UserProfile?.LoginName?.trim();
-		return loginName ? { loginName } : null;
-	} catch {
-		return null;
-	}
+function serveLoginHeader(header: string | string[] | undefined): string | undefined {
+	const raw = Array.isArray(header) ? header[0] : header;
+	const login = raw?.trim();
+	return login || undefined;
+}
+
+function forwardedClientAddress(req: http.IncomingMessage): string | null {
+	return (
+		parseForwardedClientAddress(req.headers["x-forwarded-for"]) ??
+		parseSingleClientAddress(
+			typeof req.headers["x-real-ip"] === "string" ? req.headers["x-real-ip"] : "",
+		)
+	);
 }
 
 export async function authenticateTailscaleBrokerPeer(
@@ -109,11 +112,30 @@ export async function authenticateTailscaleBrokerPeer(
 		}
 	}
 
-	const addr = normalizeBrokerRemoteAddress(req.socket.remoteAddress);
-	const whois = options.whois ?? defaultWhois;
-	const peer = addr ? await whois(addr) : null;
-	if (!peer) {
-		logger.warn({ addr }, "broker whois failed");
+	const whois = options.whois ?? lookupTailscaleWhois;
+	const trustedProxies = options.trustedProxies ?? defaultTrustedBrokerProxies();
+	const peer = normalizeBrokerRemoteAddress(req.socket.remoteAddress);
+	const direct = peer ? await whois(peer) : null;
+	if (direct) return { ok: true, operatorUserId };
+
+	if (!peer || !isTrustedBrokerProxy(peer, trustedProxies)) {
+		logger.warn({ addr: peer }, "broker whois failed");
+		return { ok: false, status: 401, error: "Unauthorized." };
+	}
+
+	const client = forwardedClientAddress(req);
+	if (!client) {
+		logger.warn({ addr: peer }, "broker proxy missing client address");
+		return { ok: false, status: 401, error: "Unauthorized." };
+	}
+	const proxied = await whois(client);
+	if (!proxied) {
+		logger.warn({ addr: peer, client }, "broker proxy whois failed");
+		return { ok: false, status: 401, error: "Unauthorized." };
+	}
+	const serveLogin = serveLoginHeader(req.headers["tailscale-user-login"]);
+	if (serveLogin && !tailscaleLoginsMatch(serveLogin, proxied.loginName)) {
+		logger.warn({ addr: peer, client }, "broker serve login mismatch");
 		return { ok: false, status: 401, error: "Unauthorized." };
 	}
 	return { ok: true, operatorUserId };

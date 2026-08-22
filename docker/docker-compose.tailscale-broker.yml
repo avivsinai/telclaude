@@ -1,0 +1,24 @@
+# Tailscale Serve broker overlay.
+#
+# Publishes the capability server on host localhost and mounts the host
+# tailscaled socket so WhoIs can identify Serve clients after docker-proxy SNAT.
+#
+# Do not use this overlay on GitHub-hosted Verify (no tailscaled.sock).
+# William Deploy and william-restore include it.
+#
+# After recreate, add the Serve path without resetting / or /novnc:
+#   tailscale serve --bg --https=443 --set-path=/v1/broker http://127.0.0.1:8790
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.hermes.yml \
+#     -f docker-compose.browser.yml -f docker-compose.tailscale-broker.yml \
+#     up -d --no-deps telclaude
+
+services:
+  telclaude:
+    ports:
+      - "127.0.0.1:8790:8790"
+    environment:
+      - TELCLAUDE_TAILSCALED_SOCKET=/run/tailscale/tailscaled.sock
+    volumes:
+      - ${TELCLAUDE_TAILSCALED_SOCKET_HOST:-/var/run/tailscale/tailscaled.sock}:/run/tailscale/tailscaled.sock:ro
