@@ -47,6 +47,7 @@ export type WhatsAppInboundDispatchResult =
 			readonly toolUses: number;
 			readonly toolResults: number;
 			readonly outboundToolUses: number;
+			readonly outboundExecuteSucceeded: boolean;
 	  }
 	| {
 			readonly ok: false;
@@ -76,6 +77,7 @@ export async function dispatchWhatsAppInboundToHermes(
 	let toolUses = 0;
 	let toolResults = 0;
 	let outboundToolUses = 0;
+	let outboundExecuteSucceeded = false;
 	let lastDone: Extract<StreamChunk, { type: "done" }>["result"] | null = null;
 
 	try {
@@ -84,7 +86,15 @@ export async function dispatchWhatsAppInboundToHermes(
 				toolUses += 1;
 				if (isWhatsAppInboundOutboundTool(chunk.toolName)) outboundToolUses += 1;
 			}
-			if (chunk.type === "tool_result") toolResults += 1;
+			if (chunk.type === "tool_result") {
+				toolResults += 1;
+				if (
+					isWhatsAppInboundOutboundExecute(chunk.toolName) &&
+					isSuccessfulWhatsAppInboundToolResult(chunk.output)
+				) {
+					outboundExecuteSucceeded = true;
+				}
+			}
 			if (chunk.type === "done") lastDone = chunk.result;
 		}
 	} catch (error) {
@@ -124,7 +134,20 @@ export async function dispatchWhatsAppInboundToHermes(
 		toolUses,
 		toolResults,
 		outboundToolUses,
+		outboundExecuteSucceeded,
 	};
+}
+
+function isWhatsAppInboundOutboundExecute(toolName: string): boolean {
+	return toolName.trim().toLowerCase().includes("tc_outbound_execute");
+}
+
+function isSuccessfulWhatsAppInboundToolResult(output: unknown): boolean {
+	if (typeof output !== "object" || output === null || Array.isArray(output)) return false;
+	const result = output as Record<string, unknown>;
+	if (result.ok === false || result.error === true || result.success === false) return false;
+	if (result.ok === true) return true;
+	return !Object.hasOwn(result, "ok") && result.error !== true && result.success !== false;
 }
 
 export function buildWhatsAppInboundHermesPrompt(
