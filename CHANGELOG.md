@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **WhatsApp bridge shutdown drains auth writes** — SIGTERM/SIGINT now stop reconnects, refuse new sends, end the live socket, and wait for serialized Baileys creds writes to finish. Health stays content-free (counters/timestamps only). Gabriel avatar is not applied from the bridge (would require a second socket).
+
 ## [0.9.0] - 2026-08-22
 
 The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-22 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), Beads/OSS hygiene and Unreleased tracking (#244), the egress-broker report CLI (#245), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), dependency overrides (#246, #248), network-probe spoof-denial hardening (#247), CI ffmpeg apt retries and Ubuntu archive rewrite (#249, #251), served-MCP tool-count docs (#252), Bash always-grant exec-policy tests (#253), cron copy-paste fixes (#254, #255), heartbeat `/system` remediation `--private` (#257), WhatsApp inbound upsert observability (#258), WhatsApp inbound forwarding outcomes (#259), WhatsApp inbound dispatch ack-before-Hermes (#260), WhatsApp inbound no-tool reply delivery (#261), WhatsApp inbound replies after non-outbound tools (#262), WhatsApp inbound replies from Hermes final text (#263), Telegram `/otp` HMAC (#264), WhatsApp 440 reconnect backoff (#265), live-socket reuse on send (#266), Clalit fetch wait (#267), one-operator sidecar HMAC plus the Tailscale read broker (#268), and vitest coverage-v8 4.1.10 (#196). Operator-confirmed inbound Gabriel conversation works. Household rollout still needs stored bindings and consent, Clalit re-enroll, and rung climb.

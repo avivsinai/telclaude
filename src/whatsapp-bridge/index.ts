@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import {
+	createWhatsAppAuthWriteTracker,
+	type WhatsAppAuthWriteSnapshot,
+} from "./auth-observe.js";
+import {
 	digestWhatsAppBridgeSendRequest,
 	isWhatsAppGroupJid,
 	jidToWhatsAppAddressRef,
@@ -28,6 +32,7 @@ import {
 	type WhatsAppBridgeJournalResponse,
 } from "./idempotency-journal.js";
 import {
+	contentFreeWhatsAppErrorClass,
 	createContentFreeBaileysLogger,
 	createRecentInboundMessageStore,
 	logWhatsAppInboundForwardOutcome,
@@ -99,6 +104,7 @@ type BaileysApi = {
 type BridgeStatus = {
 	connected: boolean;
 	state: "starting" | "waiting_for_pairing" | "connected" | "disconnected" | "logged_out";
+	stopping: boolean;
 	lastQrAtMs?: number;
 	lastConnectionAtMs?: number;
 	lastDisconnectAtMs?: number;
@@ -110,16 +116,20 @@ type BridgeStatus = {
 class WhatsAppBridgeRuntime {
 	private socket: BaileysSocket | null = null;
 	private starting: Promise<void> | null = null;
+	private shutdownPromise: Promise<void> | null = null;
+	private stopping = false;
 	private generation = 0;
 	private reconnectAttempt = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly authDir: string;
+	private readonly authWriteTracker = createWhatsAppAuthWriteTracker();
 	private readonly idempotencyJournal: WhatsAppBridgeIdempotencyJournal;
 	private readonly recentMessages = createRecentInboundMessageStore();
 	private readonly sequenceByConversation = new Map<string, number>();
 	private status: BridgeStatus = {
 		connected: false,
 		state: "starting",
+		stopping: false,
 		outboundAuthConfigured: Boolean(BRIDGE_SECRET),
 		inboundForwardingConfigured: Boolean(INBOUND_SECRET),
 	};
@@ -129,11 +139,16 @@ class WhatsAppBridgeRuntime {
 		this.idempotencyJournal = new WhatsAppBridgeIdempotencyJournal({ dataDir });
 	}
 
-	snapshot(): BridgeStatus {
-		return { ...this.status };
+	snapshot(): BridgeStatus & WhatsAppAuthWriteSnapshot {
+		return {
+			...this.status,
+			stopping: this.stopping,
+			...this.authWriteTracker.snapshot(),
+		};
 	}
 
 	start(): Promise<void> {
+		if (this.stopping) return Promise.resolve();
 		if (
 			!shouldCreateWhatsAppBridgeSocket({
 				connected: this.status.connected,
@@ -153,6 +168,14 @@ class WhatsAppBridgeRuntime {
 		request: WhatsAppBridgeSendRequest,
 		requestDigest: `sha256:${string}`,
 	): Promise<Record<string, unknown>> {
+		if (this.stopping) {
+			return {
+				ok: false,
+				code: "whatsapp_bridge_shutting_down",
+				reason: "WhatsApp bridge is shutting down.",
+				retryable: true,
+			};
+		}
 		if (this.reconnectTimer && !this.status.connected) {
 			return {
 				ok: false,
@@ -197,11 +220,14 @@ class WhatsAppBridgeRuntime {
 
 		fs.mkdirSync(this.authDir, { recursive: true });
 		const api = (await import("@whiskeysockets/baileys")) as unknown as BaileysApi;
+		if (this.stopping || isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
 		const { state, saveCreds } = await api.useMultiFileAuthState(this.authDir);
+		if (this.stopping || isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
 		if (!isRecord(state) || !("creds" in state) || !("keys" in state)) {
 			throw new Error("WhatsApp auth state is missing creds or keys");
 		}
 		const { version } = await api.fetchLatestBaileysVersion();
+		if (this.stopping || isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
 		const baileysLogger = createContentFreeBaileysLogger(logger);
 		const socket = api.default({
 			auth: {
@@ -218,8 +244,15 @@ class WhatsAppBridgeRuntime {
 
 		this.socket = socket;
 		socket.ev.on("creds.update", () => {
-			if (isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
-			void saveCreds().catch((err) => logger.warn({ err: errorMessage(err) }, "save creds failed"));
+			if (this.stopping || isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
+			void this.authWriteTracker
+				.enqueue(saveCreds)
+				.catch((err) =>
+					logger.warn(
+						{ errorClass: contentFreeWhatsAppErrorClass(err) },
+						"WhatsApp auth write failed",
+					),
+				);
 		});
 		socket.ev.on("connection.update", (update) => {
 			if (isStaleWhatsAppBridgeGeneration(generation, this.generation)) return;
@@ -234,6 +267,30 @@ class WhatsAppBridgeRuntime {
 				}),
 			);
 		});
+	}
+
+	stop(): Promise<void> {
+		if (this.shutdownPromise) return this.shutdownPromise;
+		this.stopping = true;
+		this.clearReconnectTimer();
+		this.generation += 1;
+		const socket = this.socket;
+		this.socket = null;
+		this.status = {
+			...this.status,
+			connected: false,
+			state: "disconnected",
+			lastDisconnectAtMs: Date.now(),
+			lastDisconnectReason: "shutdown",
+		};
+		this.endSocket(socket);
+
+		const starting = this.starting;
+		this.shutdownPromise = (async () => {
+			await starting?.catch(() => undefined);
+			await this.authWriteTracker.drain();
+		})();
+		return this.shutdownPromise;
 	}
 
 	private handleConnectionUpdate(
@@ -560,8 +617,35 @@ async function main(): Promise<void> {
 		logger.info({ port: PORT, dataDir: DATA_DIR }, "WhatsApp bridge listening");
 	});
 
-	process.on("SIGTERM", () => server.close(() => process.exit(0)));
-	process.on("SIGINT", () => server.close(() => process.exit(0)));
+	let shutdownPromise: Promise<void> | null = null;
+	const requestShutdown = (signal: string): void => {
+		if (shutdownPromise) return;
+		shutdownPromise = (async () => {
+			logger.info({ signal }, "WhatsApp bridge shutting down");
+			await runtime.stop();
+			await new Promise<void>((resolve) => {
+				server.close((error) => {
+					if (error) {
+						logger.warn(
+							{ errorClass: contentFreeWhatsAppErrorClass(error) },
+							"WhatsApp bridge HTTP server close failed",
+						);
+					}
+					resolve();
+				});
+			});
+			process.exit(0);
+		})();
+		void shutdownPromise.catch((error) => {
+			logger.error(
+				{ errorClass: contentFreeWhatsAppErrorClass(error) },
+				"WhatsApp bridge shutdown failed",
+			);
+			process.exit(1);
+		});
+	};
+	process.on("SIGTERM", () => requestShutdown("SIGTERM"));
+	process.on("SIGINT", () => requestShutdown("SIGINT"));
 }
 
 async function handleRequest(
