@@ -4,10 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
-import {
-	createWhatsAppAuthWriteTracker,
-	type WhatsAppAuthWriteSnapshot,
-} from "./auth-observe.js";
+import { createWhatsAppAuthWriteTracker, type WhatsAppAuthWriteSnapshot } from "./auth-observe.js";
 import {
 	digestWhatsAppBridgeSendRequest,
 	isWhatsAppGroupJid,
