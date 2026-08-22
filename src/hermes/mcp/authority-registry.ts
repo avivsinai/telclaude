@@ -207,8 +207,10 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 		throw new Error(memorySourceError);
 	}
 	const subjectUserId = optionalTrimmed(authority.subjectUserId);
+	const providerActorId = optionalTrimmed(authority.providerActorId);
 	return {
 		actorId: requiredTrimmed(authority.actorId, "actorId"),
+		...(providerActorId ? { providerActorId } : {}),
 		...(subjectUserId ? { subjectUserId } : {}),
 		profileId: requiredTrimmed(authority.profileId, "profileId"),
 		domain: authority.domain,

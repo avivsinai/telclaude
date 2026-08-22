@@ -24,6 +24,7 @@ type ActionDoc = {
 	description?: string;
 	method?: string;
 	mode?: string;
+	effect?: string;
 	type?: string;
 	requiresAuth?: boolean;
 	params?: Record<
@@ -108,6 +109,7 @@ function normalizeActions(value: unknown): ActionDoc[] {
 							coerceDescription(record.label),
 						method: coerceDescription(record.method) ?? coerceDescription(record.httpMethod),
 						mode: coerceDescription(record.mode),
+						effect: coerceDescription(record.effect),
 						type: coerceDescription(record.type),
 						requiresAuth:
 							typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
@@ -137,6 +139,7 @@ function normalizeActions(value: unknown): ActionDoc[] {
 					? (coerceDescription(record.method) ?? coerceDescription(record.httpMethod))
 					: undefined,
 				mode: record ? coerceDescription(record.mode) : undefined,
+				effect: record ? coerceDescription(record.effect) : undefined,
 				type: record ? coerceDescription(record.type) : undefined,
 				requiresAuth:
 					record && typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
@@ -443,7 +446,11 @@ export function getCachedProviderActionCatalog(): ProviderActionCatalog | null {
 // google tags writes `type: "action"` (reads are `type: "read"`); the israeli
 // sidecar tags writes `mode: "write"` (reads are `mode: "read"` or `"api"`).
 function isWriteAction(action: ActionDoc): boolean {
-	return action.type?.toLowerCase() === "action" || action.mode?.toLowerCase() === "write";
+	return (
+		action.type?.toLowerCase() === "action" ||
+		action.mode?.toLowerCase() === "write" ||
+		action.effect?.toLowerCase() === "write"
+	);
 }
 
 export function buildProviderActionCatalog(results: ProviderSchemaResult[]): ProviderActionCatalog {

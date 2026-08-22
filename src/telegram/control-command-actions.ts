@@ -64,11 +64,6 @@ import { revokeSessionAllowlist } from "../security/approvals.js";
 import { getIdentityLink, isAdmin } from "../security/linking.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import {
-	freshTotpStepUpVerification,
-	getTOTPSessionForChat,
-	stepUpMetadataForTOTPSession,
-} from "../security/totp-session.js";
-import {
 	collectUpdateStatus,
 	dispatchMainDeploy,
 	type UpdateStatusResult,
@@ -111,6 +106,8 @@ import { createWizardPrompter, WizardCancelledError, WizardTimeoutError } from "
 
 const logger = getChildLogger({ module: "telegram-control-command-actions" });
 const PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL = "Check provider status and relay logs.";
+const PROVIDER_ENROLLMENT_SECRET_ASSIGNMENT_PATTERN =
+	/\b(password|passwd|cookie|otp|totp|secret|token|jwt|apikey|api[_-]?key|authorization|bearer)\b\s*[:=]\s*\S+/gi;
 const PROVIDER_ENROLLMENT_TOKEN_BEARING_URL_PARAM_PATTERN =
 	/(^|[_-])(access|auth|bearer|challenge|session|singleuse|single_use|one[_-]?time)?[_-]?(token|jwt|signature|sig|secret|code)$/i;
 const PROVIDER_ENROLLMENT_INTERACTIVE_URL_PATH_PATTERN =
@@ -485,10 +482,10 @@ export async function startProviderSessionEnrollmentCommand(
 	}
 
 	const service = opts.service.trim();
-	const actorUserId = opts.actorUserId.trim();
-	const subjectUserId =
-		opts.subjectUserId?.trim() || getIdentityLink(opts.chatId)?.localUserId || "";
-	if (!service || !actorUserId) {
+	const requestedActorUserId = opts.actorUserId.trim();
+	const identityLink = getIdentityLink(opts.chatId);
+	const subjectUserId = opts.subjectUserId?.trim() || identityLink?.localUserId || "";
+	if (!service || !requestedActorUserId) {
 		const message = "Usage: /providers enroll <service>";
 		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
 		return { callbackText: message, callbackAlert: true };
@@ -499,11 +496,11 @@ export async function startProviderSessionEnrollmentCommand(
 		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
 		return { callbackText: message, callbackAlert: true };
 	}
-
-	const stepUp = await resolveFreshProviderEnrollmentStepUp(opts.chatId, actorUserId);
-	if (!stepUp.ok) {
+	const householdSubject = subjectUserId.startsWith("household:");
+	const actorUserId = householdSubject ? requestedActorUserId : identityLink?.localUserId?.trim();
+	if (!actorUserId) {
 		const message =
-			"Fresh 2FA verification is required before provider enrollment. Send /auth verify <code>, then retry the enrollment.";
+			"This chat is not linked to a local user. Use `telclaude identity deep-link <user-id>` first.";
 		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
 		return { callbackText: message, callbackAlert: true };
 	}
@@ -516,11 +513,9 @@ export async function startProviderSessionEnrollmentCommand(
 			subjectUserId,
 		});
 	} catch (err) {
-		logger.warn(
-			{ error: sanitizeProviderEnrollmentVisibleError(err), service },
-			"provider enrollment start failed",
-		);
-		const message = `Enrollment failed for '${service}'. Check provider status and relay HMAC configuration.`;
+		const detail = sanitizeProviderEnrollmentVisibleError(err);
+		logger.warn({ error: detail, service }, "provider enrollment start failed");
+		const message = `Enrollment failed for '${service}': ${detail}`;
 		await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
 		return { callbackText: message, callbackAlert: true };
 	}
@@ -553,30 +548,15 @@ export async function startProviderSessionEnrollmentCommand(
 	);
 
 	if (opts.poll !== false) {
-		void pollProviderEnrollmentUntilTerminal(api, opts, result, enrollmentMessage.message_id);
+		void pollProviderEnrollmentUntilTerminal(
+			api,
+			{ ...opts, actorUserId },
+			result,
+			enrollmentMessage.message_id,
+		);
 	}
 
 	return { callbackText: `Enrollment started for ${service}.` };
-}
-
-async function resolveFreshProviderEnrollmentStepUp(
-	chatId: number,
-	actorUserId: string,
-): Promise<{ ok: true } | { ok: false }> {
-	const session = getTOTPSessionForChat(chatId);
-	if (!session) {
-		return { ok: false };
-	}
-	// The current metadata source makes this primarily a freshness gate today;
-	// keep requiredActorId wired so a future persisted actor binding cannot drift open.
-	const result = await freshTotpStepUpVerification.verify({
-		metadata: stepUpMetadataForTOTPSession({
-			actorId: actorUserId,
-			session,
-		}),
-		requiredActorId: actorUserId,
-	});
-	return result.ok ? { ok: true } : { ok: false };
 }
 
 async function pollProviderEnrollmentUntilTerminal(
@@ -681,9 +661,17 @@ function sanitizeProviderEnrollmentVisibleError(value: unknown): string {
 	if (!text.trim()) {
 		return PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL;
 	}
-	return containsTokenBearingProviderEnrollmentUrl(text)
-		? PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL
-		: text.trim();
+	if (containsTokenBearingProviderEnrollmentUrl(text)) {
+		return PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL;
+	}
+	const redacted = redactProviderEnrollmentSecrets(text.trim());
+	return redacted || PROVIDER_ENROLLMENT_SAFE_ERROR_DETAIL;
+}
+
+function redactProviderEnrollmentSecrets(text: string): string {
+	return text
+		.replace(/\bBearer\s+\S+/gi, "Bearer <redacted>")
+		.replace(PROVIDER_ENROLLMENT_SECRET_ASSIGNMENT_PATTERN, "$1=<redacted>");
 }
 
 function getProviderEnrollmentErrorText(value: unknown): string {

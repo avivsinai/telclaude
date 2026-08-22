@@ -291,7 +291,17 @@ pnpm dev hermes network-probes --allow-run
 pnpm dev hermes verify-live
 ```
 
-Treat `doctor` + `probes` + `verify-live` as the readiness gate: doctor fails closed unless the pinned feature-probe matrix and compatibility lockfile are present and green, `prove --upstream-clean` proves the checkout is unmodified upstream, and `verify-live` exercises the live contained runtime end to end.
+Treat `doctor` + `probes` + `verify-live` as the **Hermes runtime** readiness gate: doctor fails closed unless the pinned feature-probe matrix and compatibility lockfile are present and green, `prove --upstream-clean` proves the checkout is unmodified upstream, and `verify-live` exercises the live contained runtime end to end. These commands are not a prerequisite for Clalit pills or secretless Grok reads.
+
+### Clalit / Grok product canaries
+
+Product canaries live on the relay + israel-services hop, not the Hermes pin:
+
+- Unattended Clalit/Grok reads are `session_only` `/v1/fetch` (dead session → `auth_required`, no SMS login).
+- Health writes stay on the existing HITL ledger (`tc_provider_prepare_write` → approve → execute).
+- Grok and Host G call the same Tailscale surface on this relay: `POST /v1/broker/provider/read` (WhoIs, optional `TELCLAUDE_BROKER_NODE_TOKEN`). The relay still signs sidecar HMAC. Docker, compose, and vault are not on that surface (`/v1/broker/docker|compose|vault` return 403).
+
+Do not run `pnpm dev hermes prove --upstream-clean` or `pnpm dev hermes verify-live` as a product gate for those reads.
 
 ### Connector readiness
 

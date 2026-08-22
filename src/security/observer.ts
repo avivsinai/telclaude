@@ -46,6 +46,15 @@ export class SecurityObserver {
 	): Promise<ObserverResult> {
 		const startTime = Date.now();
 
+		if (!this.config.enabled) {
+			return {
+				classification: "ALLOW",
+				confidence: 0.5,
+				reason: "Observer disabled",
+				latencyMs: Date.now() - startTime,
+			};
+		}
+
 		// 1. Check for structural issues (prompt injection patterns)
 		const structuralIssues = checkStructuralIssues(message);
 		if (structuralIssues.length > 0) {
@@ -71,23 +80,13 @@ export class SecurityObserver {
 			};
 		}
 
-		// 3. If observer disabled, allow with low confidence
-		if (!this.config.enabled) {
-			return {
-				classification: "ALLOW",
-				confidence: 0.5,
-				reason: "Observer disabled",
-				latencyMs: Date.now() - startTime,
-			};
-		}
-
-		// 4. Check circuit breaker before Hermes call
+		// 3. Check circuit breaker before Hermes call
 		if (!this.circuitBreaker.canExecute()) {
 			logger.warn("circuit breaker open, using fallback");
 			return this.fallbackResult("Circuit breaker open", Date.now() - startTime);
 		}
 
-		// 5. Use Hermes with security-gate skill for LLM analysis
+		// 4. Use Hermes with security-gate skill for LLM analysis
 		try {
 			const result = await this.classifyWithHermes(message, context);
 			this.circuitBreaker.recordSuccess();

@@ -135,6 +135,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 					action: "search",
 					params: { q: "from:clinic" },
 					subjectUserId: "admin",
+					authPolicy: "session_only",
 				}),
 				userId: "operator",
 			},
@@ -149,6 +150,46 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		});
 		await expect(failing.providerRead(providerRead())).rejects.toThrow("provider read failed");
 		await expect(failing.providerRead(providerRead())).rejects.not.toThrow("sk-ant-");
+	});
+
+	it("uses the linked private provider actor while preserving a separate subject", async () => {
+		const calls: unknown[] = [];
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger: testLedger(),
+			providerProxy: async (request) => {
+				calls.push(request);
+				return { status: "ok", data: { appointments: [] } };
+			},
+		});
+
+		await expect(
+			clients.providerRead(
+				providerRead({
+					actorId: "telegram:555",
+					providerActorId: "admin",
+					subjectUserId: "parent-clalit",
+					providerId: "clalit",
+					service: "clalit",
+					action: "appointments.list",
+				}),
+			),
+		).resolves.toEqual({ appointments: [] });
+
+		expect(calls).toEqual([
+			{
+				providerId: "clalit",
+				path: "/v1/fetch",
+				method: "POST",
+				body: JSON.stringify({
+					service: "clalit",
+					action: "appointments.list",
+					params: {},
+					subjectUserId: "parent-clalit",
+					authPolicy: "session_only",
+				}),
+				userId: "admin",
+			},
+		]);
 	});
 
 	it("prepares provider and outbound side effects in the shared ledger without executing them", async () => {
@@ -171,6 +212,8 @@ describe("Telclaude live MCP relay-client adapters", () => {
 
 		const providerPrepared = (await clients.providerPrepareWrite(
 			providerPrepare({
+				actorId: "telegram:555",
+				providerActorId: "admin",
 				service: "bank",
 				action: "transfer.execute",
 				params: { amount: 100, currency: "ILS" },
@@ -183,7 +226,8 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		expect(ledger.get(providerPrepared.actionRef)).toMatchObject({
 			kind: "provider",
 			status: "prepared",
-			actorId: "operator",
+			actorId: "telegram:555",
+			providerActorId: "admin",
 			approverActorId: "operator:provider-approver",
 			providerId: "bank",
 			service: "bank",

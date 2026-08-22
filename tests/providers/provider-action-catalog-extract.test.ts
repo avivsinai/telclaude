@@ -18,6 +18,13 @@ const ISRAEL_SCHEMA = {
 				{ id: "appointments", method: "POST", mode: "read", requiresAuth: true },
 				{ id: "lab_results", method: "POST", mode: "read", requiresAuth: true },
 				{ id: "prescription_renewal", method: "POST", mode: "write", requiresAuth: true },
+				{
+					id: "synthetic_api_write",
+					method: "POST",
+					mode: "api",
+					effect: "write",
+					requiresAuth: true,
+				},
 			],
 		},
 		{
@@ -59,6 +66,7 @@ describe("buildProviderActionCatalog (real schema extraction)", () => {
 		expect(clalit).toContainEqual({ id: "appointments", write: false });
 		expect(clalit).toContainEqual({ id: "lab_results", write: false });
 		expect(clalit).toContainEqual({ id: "prescription_renewal", write: true });
+		expect(clalit).toContainEqual({ id: "synthetic_api_write", write: true });
 	});
 
 	it("classifies bank mode:api actions as reads (not writes)", () => {
@@ -80,7 +88,7 @@ describe("buildProviderActionCatalog (real schema extraction)", () => {
 		const block = formatGrantedProviderActionCatalog(["clalit", "bank", "google"], build());
 		expect(block).toMatch(/Reads[\s\S]*- service "clalit": appointments, lab_results/);
 		expect(block).toMatch(/Reads[\s\S]*- service "bank": balance, transactions/);
-		expect(block).toMatch(/Writes[\s\S]*- service "clalit": prescription_renewal/);
+		expect(block).toMatch(/Writes[\s\S]*- service "clalit": prescription_renewal, synthetic_api_write/);
 		expect(block).toMatch(/Writes[\s\S]*- service "gmail": create_draft/);
 	});
 });

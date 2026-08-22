@@ -250,7 +250,8 @@ describe("Hermes private runtime seam", () => {
 					ok: true,
 					authority: {
 						actorId: "456",
-						subjectUserId: "operator",
+						providerActorId: "admin",
+						subjectUserId: "parent-clalit",
 						profileId: "ops",
 						domain: "private",
 						memorySource: "telegram:ops",
@@ -279,7 +280,15 @@ describe("Hermes private runtime seam", () => {
 				sessions,
 				mcpAuthorityRegistry: registry,
 				request: baseRequest({
+					identity: {
+						userId: "admin",
+						chatId: 123,
+						actorId: 456,
+						threadId: 789,
+					},
 					mcpAuthority: {
+						providerActorId: "admin",
+						subjectUserId: "parent-clalit",
 						providerScopes: ["calendar"],
 						outboundChannels: ["whatsapp"],
 						capabilityScopes: [

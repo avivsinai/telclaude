@@ -116,6 +116,8 @@ export type HermesRuntimeMcpAuthorityActivation = {
 
 export type HermesPrivateMcpAuthorityOptions = {
 	readonly domain?: TelclaudeMcpDomain;
+	/** Server-resolved identity for provider-sidecar authentication. */
+	readonly providerActorId?: string;
 	readonly subjectUserId?: string;
 	readonly memorySource?: MemorySource;
 	readonly writableNamespace?: string;
@@ -504,10 +506,12 @@ function buildPrivateMcpAuthority(
 		return buildHouseholdMcpAuthority(request, options);
 	}
 	const memorySource = options?.memorySource ?? defaultMemorySource(domain, request.profileId);
+	const providerActorId = optionalTrimmed(options?.providerActorId);
 	const subjectUserId =
 		optionalTrimmed(options?.subjectUserId) ?? optionalTrimmed(request.identity.userId);
 	return {
 		actorId: runtimeActorId(request),
+		...(providerActorId ? { providerActorId } : {}),
 		...(subjectUserId ? { subjectUserId } : {}),
 		profileId: request.profileId,
 		domain,

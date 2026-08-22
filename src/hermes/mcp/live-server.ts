@@ -151,6 +151,7 @@ const CLIENT_AUTHORITY_KEYS = new Set([
 	"connection",
 	"sessionKey",
 	"actorId",
+	"providerActorId",
 	"profileId",
 	"domain",
 	"memorySource",
