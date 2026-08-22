@@ -31,7 +31,8 @@ describe("Tailscale WhoIs helpers", () => {
 	});
 
 	it("parses the default IPv4 gateway from a route table", () => {
-		const routeTable = path.join(os.tmpdir(), `telclaude-route-${process.pid}`);
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-route-"));
+		const routeTable = path.join(dir, "route");
 		fs.writeFileSync(
 			routeTable,
 			[
@@ -43,7 +44,7 @@ describe("Tailscale WhoIs helpers", () => {
 		try {
 			expect(readDefaultIpv4Gateway(routeTable)).toBe("172.17.0.1");
 		} finally {
-			fs.unlinkSync(routeTable);
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
