@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-22
+
 The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#228 except #215/#223). Earlier unreleased work after v0.8.0 is listed in the same section. Follow-up OSS through 2026-08-22 includes provider session error codes (#237), recovered gated-off extra channel/email sinks (#243), Beads/OSS hygiene and Unreleased tracking (#244), the egress-broker report CLI (#245), undici 8.9.0 then grouped npm minors (#236, #241, #242), CI action pins (#203, #232, #229, #239), dependency overrides (#246, #248), network-probe spoof-denial hardening (#247), CI ffmpeg apt retries and Ubuntu archive rewrite (#249, #251), served-MCP tool-count docs (#252), Bash always-grant exec-policy tests (#253), cron copy-paste fixes (#254, #255), heartbeat `/system` remediation `--private` (#257), WhatsApp inbound upsert observability (#258), WhatsApp inbound forwarding outcomes (#259), WhatsApp inbound dispatch ack-before-Hermes (#260), WhatsApp inbound no-tool reply delivery (#261), WhatsApp inbound replies after non-outbound tools (#262), WhatsApp inbound replies from Hermes final text (#263), Telegram `/otp` HMAC (#264), WhatsApp 440 reconnect backoff (#265), live-socket reuse on send (#266), Clalit fetch wait (#267), one-operator sidecar HMAC plus the Tailscale read broker (#268), and vitest coverage-v8 4.1.10 (#196). Operator-confirmed inbound Gabriel conversation works. Household rollout still needs stored bindings and consent, Clalit re-enroll, and rung climb.
 
 ### Added
@@ -73,6 +75,7 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - **Hermes evidence scanning and multimedia budgets (#222)** — Excluded verified attestation cryptography from secret scans and separated hourly and daily multimedia rate-limit buckets. Standalone #223 was closed unmerged; the midnight-UTC limiter fix landed here.
 - **Repeated emergency alerts (#226)** — Repeated household emergency alerts now escalate instead of being suppressed.
 - **Baileys v7 inbound identity resolution (#228)** — Resolves LID addresses to phone-number identity for sender and conversation binding, and fails closed when resolution is unavailable.
+
 
 ## [0.8.0] - 2026-07-01
 
@@ -458,7 +461,8 @@ The household and WhatsApp wave landed 2026-07-17 through 2026-07-19 (#208–#22
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/avivsinai/telclaude/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/avivsinai/telclaude/compare/v0.7.2...v0.8.0
 [0.6.2]: https://github.com/avivsinai/telclaude/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/avivsinai/telclaude/compare/v0.6.0...v0.6.1
