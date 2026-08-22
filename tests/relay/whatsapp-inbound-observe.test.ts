@@ -72,6 +72,7 @@ describe("WhatsApp inbound relay observability", () => {
 
 		logWhatsAppInboundReplyOutcome(sink, { kind: "reply_sent" });
 		logWhatsAppInboundReplyOutcome(sink, { kind: "reply_skipped_empty" });
+		logWhatsAppInboundReplyOutcome(sink, { kind: "reply_skipped_execute" });
 		logWhatsAppInboundReplyOutcome(sink, {
 			kind: "reply_failed",
 			code: "whatsapp_inbound_reply_delivery_failed",
@@ -85,6 +86,11 @@ describe("WhatsApp inbound relay observability", () => {
 		expect(sink.info).toHaveBeenNthCalledWith(
 			2,
 			{ outcome: "reply_skipped_empty" },
+			"WhatsApp inbound reply",
+		);
+		expect(sink.info).toHaveBeenNthCalledWith(
+			3,
+			{ outcome: "reply_skipped_execute" },
 			"WhatsApp inbound reply",
 		);
 		expect(sink.warn).toHaveBeenCalledWith(
