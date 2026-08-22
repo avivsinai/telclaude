@@ -100,8 +100,7 @@ export async function authenticateTailscaleBrokerPeer(
 	req: http.IncomingMessage,
 	options: TailscaleBrokerOptions = {},
 ): Promise<{ ok: true; operatorUserId: string } | { ok: false; status: number; error: string }> {
-	const operatorUserId =
-		options.operatorUserId?.trim() || process.env.TELCLAUDE_BROKER_OPERATOR_USER_ID?.trim() || "admin";
+	const operatorUserId = options.operatorUserId?.trim() || "admin";
 	const configuredToken = options.nodeToken ?? process.env.TELCLAUDE_BROKER_NODE_TOKEN;
 	const presented = extractBearer(req.headers.authorization);
 	if (configuredToken) {
