@@ -40,6 +40,7 @@ import {
 	shouldCreateWhatsAppBridgeSocket,
 	whatsappBridgeReconnectDelayMs,
 } from "./reconnect.js";
+import { forwardWhatsAppInboundWithRetry } from "./relay-forward.js";
 
 const logger = pino({
 	level: process.env.LOG_LEVEL ?? process.env.TELCLAUDE_LOG_LEVEL ?? "info",
@@ -123,6 +124,7 @@ class WhatsAppBridgeRuntime {
 	private readonly idempotencyJournal: WhatsAppBridgeIdempotencyJournal;
 	private readonly recentMessages = createRecentInboundMessageStore();
 	private readonly sequenceByConversation = new Map<string, number>();
+	private readonly inboundForwardAbortController = new AbortController();
 	private status: BridgeStatus = {
 		connected: false,
 		state: "starting",
@@ -269,6 +271,7 @@ class WhatsAppBridgeRuntime {
 	stop(): Promise<void> {
 		if (this.shutdownPromise) return this.shutdownPromise;
 		this.stopping = true;
+		this.inboundForwardAbortController.abort();
 		this.clearReconnectTimer();
 		this.generation += 1;
 		const socket = this.socket;
@@ -467,19 +470,32 @@ class WhatsAppBridgeRuntime {
 
 		const body = whatsappInboundBridgeBody(eventPayload);
 		try {
-			const response = await fetch(RELAY_INBOUND_URL, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Accept: "application/json",
-					[WHATSAPP_INBOUND_SIGNATURE_HEADER]: signWhatsAppInboundBridgeEvent(
-						eventPayload,
-						inboundSecret,
-					),
+			const response = await forwardWhatsAppInboundWithRetry(
+				RELAY_INBOUND_URL,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Accept: "application/json",
+						[WHATSAPP_INBOUND_SIGNATURE_HEADER]: signWhatsAppInboundBridgeEvent(
+							eventPayload,
+							inboundSecret,
+						),
+					},
+					body,
 				},
-				body,
-				signal: AbortSignal.timeout(WHATSAPP_INBOUND_FORWARD_TIMEOUT_MS),
-			});
+				{
+					timeoutMs: WHATSAPP_INBOUND_FORWARD_TIMEOUT_MS,
+					signal: this.inboundForwardAbortController.signal,
+					onRetry: ({ attempt, delayMs, status }) =>
+						logWhatsAppInboundForwardOutcome(logger, {
+							kind: "retrying",
+							attempt,
+							delayMs,
+							...(status !== undefined ? { status } : {}),
+						}),
+				},
+			);
 			if (!response.ok) {
 				logWhatsAppInboundForwardOutcome(logger, {
 					kind: "rejected",

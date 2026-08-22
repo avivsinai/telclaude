@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **WhatsApp inbound boot-race drops** — The bridge retries the same signed inbound POST on transport failures and relay 502/503/504 until the relay accepts it, and compose starts `whatsapp-bridge` only after `telclaude` is healthy. A half-dead Baileys companion still needs an operator bounce; retry does not revive it.
 - **WhatsApp bridge shutdown drains auth writes** — SIGTERM/SIGINT now stop reconnects, refuse new sends, end the live socket, and wait for serialized Baileys creds writes to finish. Health stays content-free (counters/timestamps only). Gabriel avatar is not applied from the bridge (would require a second socket).
 
 ## [0.9.0] - 2026-08-22

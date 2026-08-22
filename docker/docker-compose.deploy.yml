@@ -198,6 +198,10 @@ services:
     image: ${TELCLAUDE_WHATSAPP_BRIDGE_IMAGE:-telclaude-whatsapp-bridge:latest}
     container_name: telclaude-whatsapp-bridge
 
+    depends_on:
+      telclaude:
+        condition: service_healthy
+
     environment:
       - WHATSAPP_BRIDGE_PORT=3004
       - WHATSAPP_BRIDGE_DATA_DIR=/data
