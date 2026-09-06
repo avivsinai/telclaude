@@ -16,6 +16,8 @@ const DEFAULT_STDERR_BYTES = 12 * 1024;
 const CODEX_MODEL_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const CODEX_WORKSPACE_WRITE_NETWORK_SETTING = "sandbox_workspace_write.network_access";
 export const CODEX_EXECUTABLE_MODELS = [
+	// Explicit opt-in lane; keep the existing default model selection unchanged.
+	"gpt-6-astra",
 	"gpt-5.5",
 	"gpt-5.4",
 	"gpt-5.4-mini",
