@@ -167,4 +167,9 @@ describe("/codex Telegram command", () => {
 		expect(api.sendMessage.mock.calls[0]?.[1]).toContain("not supported");
 		expect(listJobs()).toHaveLength(0);
 	});
+
+	it("allows explicit Astra selection while preserving the existing defaults", () => {
+		expect(validateCodexModel("gpt-6-astra")).toBe("gpt-6-astra");
+		expect(validateCodexModel("gpt-5.5")).toBe("gpt-5.5");
+	});
 });
