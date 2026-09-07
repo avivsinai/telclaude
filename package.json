@@ -77,7 +77,7 @@
   "packageManager": "pnpm@9.15.0",
   "pnpm": {
     "overrides": {
-      "fastify": "5.11.3",
+      "fastify": "5.12.1",
       "minimatch": "9.0.7",
       "picomatch@<2.3.2": "2.3.2",
       "picomatch@>=4.0.0 <4.0.4": "4.0.4",
@@ -107,14 +107,14 @@
     "commander": "^14.0.3",
     "dotenv": "^17.4.2",
     "fast-glob": "^3.3.3",
-    "fastify": "^5.11.3",
+    "fastify": "^5.12.1",
     "googleapis": "^173.0.0",
-    "grammy": "^1.45.1",
+    "grammy": "^1.46.0",
     "ip-num": "^1.6.2",
     "json5": "^2.2.3",
     "keytar": "^7.9.0",
     "oauth-callback": "^2.2.0",
-    "open": "^11.0.0",
+    "open": "^11.0.2",
     "openai": "^6.48.0",
     "otpauth": "^9.5.1",
     "pino": "^10.3.1",
@@ -124,18 +124,18 @@
     "rate-limiter-flexible": "^11.2.0",
     "shell-quote": "^1.10.0",
     "telegram-markdown-v2": "^0.0.5",
-    "tldts": "^7.4.10",
-    "undici": "^8.10.0",
-    "zod": "^4.4.3"
+    "tldts": "^7.4.11",
+    "undici": "^8.10.1",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.8",
+    "@biomejs/biome": "^2.5.11",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.1",
     "@types/qrcode-terminal": "^0.12.2",
     "@types/shell-quote": "^1.7.5",
-    "@vitest/coverage-v8": "^4.1.10",
-    "tsx": "^4.23.12",
+    "@vitest/coverage-v8": "^4.1.11",
+    "tsx": "^4.23.13",
     "typescript": "^5.8.3",
     "vitest": "^3.2.6"
   }
