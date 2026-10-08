@@ -10,7 +10,11 @@ describe("Drive folderId sanitization", () => {
 		const listFiles = vi.fn();
 		vi.doMock("googleapis", () => ({
 			google: {
-				auth: { OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() })) },
+				auth: {
+					OAuth2: vi.fn().mockImplementation(function () {
+						return { setCredentials: vi.fn() };
+					}),
+				},
 				drive: vi.fn().mockReturnValue({
 					files: {
 						list: listFiles,
@@ -38,7 +42,11 @@ describe("Drive folderId sanitization", () => {
 		const listFiles = vi.fn().mockResolvedValue({ data: { files: [] } });
 		vi.doMock("googleapis", () => ({
 			google: {
-				auth: { OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() })) },
+				auth: {
+					OAuth2: vi.fn().mockImplementation(function () {
+						return { setCredentials: vi.fn() };
+					}),
+				},
 				drive: vi.fn().mockReturnValue({
 					files: {
 						list: listFiles,
@@ -71,7 +79,11 @@ describe("Gmail draft header sanitization", () => {
 		const createDraft = vi.fn().mockResolvedValue({ data: { id: "draft-1" } });
 		vi.doMock("googleapis", () => ({
 			google: {
-				auth: { OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() })) },
+				auth: {
+					OAuth2: vi.fn().mockImplementation(function () {
+						return { setCredentials: vi.fn() };
+					}),
+				},
 				gmail: vi.fn().mockReturnValue({
 					users: {
 						drafts: {
@@ -115,7 +127,11 @@ describe("Gmail draft header sanitization", () => {
 		const createDraft = vi.fn().mockResolvedValue({ data: { id: "draft-1" } });
 		vi.doMock("googleapis", () => ({
 			google: {
-				auth: { OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() })) },
+				auth: {
+					OAuth2: vi.fn().mockImplementation(function () {
+						return { setCredentials: vi.fn() };
+					}),
+				},
 				gmail: vi.fn().mockReturnValue({
 					users: {
 						drafts: {

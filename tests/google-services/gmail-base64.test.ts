@@ -44,7 +44,11 @@ describe("handleGmail download_attachment", () => {
 		const base64urlData = "SGVsbG8td29ybGRfZGF0YQ"; // contains - and _ chars
 		vi.doMock("googleapis", () => ({
 			google: {
-				auth: { OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() })) },
+				auth: {
+					OAuth2: vi.fn().mockImplementation(function () {
+						return { setCredentials: vi.fn() };
+					}),
+				},
 				gmail: vi.fn().mockReturnValue({
 					users: {
 						messages: {
