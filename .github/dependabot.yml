@@ -31,6 +31,10 @@ updates:
     labels:
       - "ci"
       - "dependencies"
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
     ignore:
       - dependency-name: "pnpm/action-setup"
         update-types:
