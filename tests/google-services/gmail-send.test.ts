@@ -20,7 +20,11 @@ function mockGoogleapis(
 	sendSpy = vi.fn(sendImpl);
 	vi.doMock("googleapis", () => ({
 		google: {
-			auth: { OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() })) },
+			auth: {
+				OAuth2: vi.fn().mockImplementation(function () {
+					return { setCredentials: vi.fn() };
+				}),
+			},
 			gmail: vi.fn().mockReturnValue({ users: { messages: { send: sendSpy } } }),
 		},
 	}));

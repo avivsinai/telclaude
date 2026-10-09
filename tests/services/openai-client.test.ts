@@ -6,7 +6,9 @@ const vaultMocks = vi.hoisted(() => {
 	const get = vi.fn();
 	const singletonGet = vi.fn();
 	const isAvailable = vi.fn();
-	const Client = vi.fn().mockImplementation(() => ({ ping, get }));
+	const Client = vi.fn().mockImplementation(function () {
+		return { ping, get };
+	});
 	return { Client, get, isAvailable, ping, singletonGet };
 });
 const loadConfigMock = vi.hoisted(() => vi.fn());

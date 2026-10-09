@@ -14,12 +14,11 @@ function makeApi() {
 }
 
 async function waitFor(condition: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 20; attempt += 1) {
-		if (condition()) {
-			return;
+	await vi.waitFor(() => {
+		if (!condition()) {
+			throw new Error("condition not met");
 		}
-		await Promise.resolve();
-	}
+	});
 }
 
 describe("social ask wizard", () => {

@@ -51,16 +51,18 @@ describe("github-repo-read", () => {
 		listBranchesMock.mockReset();
 		listTagsMock.mockReset();
 		getContentMock.mockReset();
-		octokitCtorMock.mockReset().mockImplementation(() => ({
-			rest: {
-				apps: { listReposAccessibleToInstallation: listReposMock },
-				repos: {
-					listBranches: listBranchesMock,
-					listTags: listTagsMock,
-					getContent: getContentMock,
+		octokitCtorMock.mockReset().mockImplementation(function () {
+			return {
+				rest: {
+					apps: { listReposAccessibleToInstallation: listReposMock },
+					repos: {
+						listBranches: listBranchesMock,
+						listTags: listTagsMock,
+						getContent: getContentMock,
+					},
 				},
-			},
-		}));
+			};
+		});
 	});
 
 	describe("input validation (fails before any GitHub call)", () => {
