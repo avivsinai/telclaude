@@ -49,6 +49,11 @@ ARG GIT_COMMIT=unknown
 RUN if [ ! -s .revision ] || grep -q unknown .revision; then echo "$GIT_COMMIT" > .revision; fi
 
 # Build the project (prebuild script preserves .revision when git is unavailable)
+# tsc needs more than Node's memory-derived default heap (~2 GB on an 8 GB VM),
+# and `pnpm rebuild` below re-runs it via the "prepare" hook. Pin the heap for the
+# builder stage only so the build does not depend on host RAM; the runtime stage
+# is a separate FROM and does not inherit this.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm run build
 
 # Rebuild native modules (they weren't compiled during install due to --ignore-scripts)
