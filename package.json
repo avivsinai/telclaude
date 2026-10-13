@@ -116,7 +116,7 @@
     "ip-num": "^1.6.2",
     "json5": "^2.2.3",
     "keytar": "^7.9.0",
-    "oauth-callback": "^2.2.1",
+    "oauth-callback": "^3.0.0",
     "open": "^11.0.4",
     "openai": "^7.23.0",
     "otpauth": "^9.5.2",
