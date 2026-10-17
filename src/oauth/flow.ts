@@ -6,7 +6,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { getAuthCode, getRedirectUrl } from "oauth-callback";
+import { getAuthCode } from "oauth-callback";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { generatePKCE } from "./pkce.js";
 import type { OAuth2ServiceDefinition } from "./registry.js";
@@ -72,7 +72,7 @@ export async function authorize(options: AuthorizeOptions): Promise<AuthorizeRes
 	// 1. Generate PKCE + state
 	const { codeVerifier, codeChallenge } = generatePKCE();
 	const state = randomBytes(32).toString("base64url");
-	const redirectUri = getRedirectUrl({ port });
+	const redirectUri = getCallbackUrl(port);
 
 	// 2. Build authorization URL
 	const authUrl = buildAuthorizationUrl({
@@ -90,18 +90,16 @@ export async function authorize(options: AuthorizeOptions): Promise<AuthorizeRes
 	// Notify caller of the authorization URL (for --no-browser to print it)
 	options.onAuthUrl?.(authUrl);
 
-	const result = await getAuthCode(
-		launcher ? { authorizationUrl: authUrl, launch: launcher, port, timeout } : { port, timeout },
-	);
-
-	// oauth-callback throws OAuthError for provider errors (access_denied etc.)
-	// so if we get here, result.code should be present
-	if (!result.code) {
-		throw new Error(result.error_description ?? result.error ?? "No authorization code received");
-	}
+	// oauth-callback listens on the URL's redirect_uri and throws
+	// OAuthCallbackError for provider errors (access_denied etc.).
+	const result = await getAuthCode(authUrl, {
+		// --no-browser: the caller already printed the URL via onAuthUrl.
+		launch: launcher ? (url) => launcher(url.href) : () => {},
+		timeout,
+	});
 
 	// 4. Validate state
-	if (result.state !== state) {
+	if (result.params.get("state") !== state) {
 		throw new Error("State mismatch — possible CSRF attack. Aborting.");
 	}
 
@@ -150,7 +148,7 @@ export async function authorize(options: AuthorizeOptions): Promise<AuthorizeRes
  * Get the redirect URL that must be registered with the OAuth provider.
  */
 export function getCallbackUrl(port = 3000): string {
-	return getRedirectUrl({ port });
+	return `http://localhost:${port}/callback`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
