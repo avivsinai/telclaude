@@ -103,8 +103,8 @@ export async function authorize(options: AuthorizeOptions): Promise<AuthorizeRes
 		// v3 keeps error_description out of the message; show it to the operator.
 		// It is untrusted provider text, so strip control characters and cap it.
 		if (err instanceof OAuthCallbackError && err.description) {
-			const description = err.description.replace(/\p{Cc}/gu, " ").slice(0, 300);
-			throw new Error(`Authorization failed: ${err.error}: ${description}`);
+			const clean = (text: string) => text.replace(/\p{Cc}/gu, " ").slice(0, 300);
+			throw new Error(`Authorization failed: ${clean(err.error)}: ${clean(err.description)}`);
 		}
 		throw err;
 	}
