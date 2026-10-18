@@ -133,7 +133,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
-    "@types/better-sqlite3": "^9.6.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.6.2",
     "@types/qrcode-terminal": "^0.12.2",
     "@types/shell-quote": "^1.7.5",
