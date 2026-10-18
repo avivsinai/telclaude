@@ -7,11 +7,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // Mock oauth-callback
-vi.mock("oauth-callback", () => ({
+vi.mock("oauth-callback", async (importOriginal) => ({
+	...(await importOriginal<typeof import("oauth-callback")>()),
 	getAuthCode: vi.fn(),
-	getRedirectUrl: vi.fn(
-		(opts?: { port?: number }) => `http://localhost:${opts?.port ?? 3000}/callback`,
-	),
 }));
 
 // Mock open (browser launcher)
@@ -19,11 +17,20 @@ vi.mock("open", () => ({
 	default: vi.fn(),
 }));
 
-import { getAuthCode } from "oauth-callback";
+import { getAuthCode, OAuthCallbackError } from "oauth-callback";
 import { authorize, getCallbackUrl } from "../../src/oauth/flow.js";
 import type { OAuth2ServiceDefinition } from "../../src/oauth/registry.js";
 
 const mockGetAuthCode = vi.mocked(getAuthCode);
+
+/** Simulate a provider callback that echoes the authorization URL's state. */
+function callbackWithCode(code: string) {
+	return async (authorization: unknown) => {
+		const url = new URL(String(authorization));
+		const params = new URLSearchParams({ code, state: url.searchParams.get("state") ?? "" });
+		return { code, redirectUri: url.searchParams.get("redirect_uri") ?? "", params };
+	};
+}
 
 // Test service definition
 const testService: OAuth2ServiceDefinition = {
@@ -61,16 +68,7 @@ describe("OAuth2 Flow", () => {
 
 	describe("authorize", () => {
 		it("should complete the full flow successfully", async () => {
-			// Mock oauth-callback to return a valid code + matching state
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				// Extract state from the authorization URL
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					const state = url.searchParams.get("state");
-					return { code: "test-auth-code", state: state ?? undefined };
-				}
-				return { code: "test-auth-code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("test-auth-code"));
 
 			// Mock token exchange
 			const fetchMock = mockFetch({
@@ -96,13 +94,7 @@ describe("OAuth2 Flow", () => {
 		});
 
 		it("should send PKCE code_verifier in token exchange", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "auth-code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "auth-code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("auth-code"));
 
 			const fetchMock = mockFetch({
 				access_token: "at",
@@ -134,13 +126,7 @@ describe("OAuth2 Flow", () => {
 		});
 
 		it("should send client_secret in body for confidential clients", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("code"));
 
 			const fetchMock = mockFetch({
 				access_token: "at",
@@ -167,13 +153,7 @@ describe("OAuth2 Flow", () => {
 		});
 
 		it("should not include client_secret for public clients", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("code"));
 
 			const fetchMock = mockFetch({
 				access_token: "at",
@@ -201,7 +181,8 @@ describe("OAuth2 Flow", () => {
 		it("should fail on state mismatch", async () => {
 			mockGetAuthCode.mockResolvedValue({
 				code: "auth-code",
-				state: "wrong-state-value",
+				redirectUri: "http://localhost:3000/callback",
+				params: new URLSearchParams({ code: "auth-code", state: "wrong-state-value" }),
 			});
 
 			await expect(
@@ -214,11 +195,12 @@ describe("OAuth2 Flow", () => {
 			).rejects.toThrow("State mismatch");
 		});
 
-		it("should fail when no authorization code received", async () => {
-			mockGetAuthCode.mockResolvedValue({
-				error: "access_denied",
-				error_description: "User denied access",
-			});
+		it("should show the provider's error description", async () => {
+			mockGetAuthCode.mockRejectedValue(
+				new OAuthCallbackError(
+					new URLSearchParams({ error: "access_denied", error_description: "User denied access" }),
+				),
+			);
 
 			await expect(
 				authorize({
@@ -227,17 +209,11 @@ describe("OAuth2 Flow", () => {
 					clientSecret: "csec",
 					launch: vi.fn(),
 				}),
-			).rejects.toThrow("User denied access");
+			).rejects.toThrow("Authorization failed: access_denied: User denied access");
 		});
 
 		it("should fail when token endpoint returns error", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("code"));
 
 			vi.stubGlobal("fetch", mockFetch({ error: "invalid_grant" }, 400));
 
@@ -252,13 +228,7 @@ describe("OAuth2 Flow", () => {
 		});
 
 		it("should fail when no refresh token is returned", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("code"));
 
 			vi.stubGlobal(
 				"fetch",
@@ -283,13 +253,9 @@ describe("OAuth2 Flow", () => {
 		it("should include PKCE challenge in authorization URL", async () => {
 			let capturedUrl: string | undefined;
 
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					capturedUrl = opts.authorizationUrl;
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
+			mockGetAuthCode.mockImplementation(async (authorization) => {
+				capturedUrl = String(authorization);
+				return callbackWithCode("code")(authorization);
 			});
 
 			vi.stubGlobal(
@@ -319,13 +285,7 @@ describe("OAuth2 Flow", () => {
 		});
 
 		it("should use redirect: error to prevent credential leakage", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("code"));
 
 			const fetchMock = mockFetch({
 				access_token: "at",
@@ -347,13 +307,7 @@ describe("OAuth2 Flow", () => {
 		});
 
 		it("should fetch user ID when userIdEndpoint is configured", async () => {
-			mockGetAuthCode.mockImplementation(async (opts) => {
-				if ("authorizationUrl" in opts && opts.authorizationUrl) {
-					const url = new URL(opts.authorizationUrl);
-					return { code: "code", state: url.searchParams.get("state") ?? undefined };
-				}
-				return { code: "code" };
-			});
+			mockGetAuthCode.mockImplementation(callbackWithCode("code"));
 
 			let callCount = 0;
 			vi.stubGlobal(
