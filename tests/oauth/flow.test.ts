@@ -7,7 +7,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // Mock oauth-callback
-vi.mock("oauth-callback", () => ({
+vi.mock("oauth-callback", async (importOriginal) => ({
+	...(await importOriginal<typeof import("oauth-callback")>()),
 	getAuthCode: vi.fn(),
 }));
 
@@ -16,7 +17,7 @@ vi.mock("open", () => ({
 	default: vi.fn(),
 }));
 
-import { getAuthCode } from "oauth-callback";
+import { getAuthCode, OAuthCallbackError } from "oauth-callback";
 import { authorize, getCallbackUrl } from "../../src/oauth/flow.js";
 import type { OAuth2ServiceDefinition } from "../../src/oauth/registry.js";
 
@@ -192,6 +193,23 @@ describe("OAuth2 Flow", () => {
 					launch: vi.fn(),
 				}),
 			).rejects.toThrow("State mismatch");
+		});
+
+		it("should show the provider's error description", async () => {
+			mockGetAuthCode.mockRejectedValue(
+				new OAuthCallbackError(
+					new URLSearchParams({ error: "access_denied", error_description: "User denied access" }),
+				),
+			);
+
+			await expect(
+				authorize({
+					service: testService,
+					clientId: "cid",
+					clientSecret: "csec",
+					launch: vi.fn(),
+				}),
+			).rejects.toThrow("Authorization failed: access_denied: User denied access");
 		});
 
 		it("should fail when token endpoint returns error", async () => {

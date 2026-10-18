@@ -6,7 +6,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { getAuthCode } from "oauth-callback";
+import { getAuthCode, OAuthCallbackError } from "oauth-callback";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { generatePKCE } from "./pkce.js";
 import type { OAuth2ServiceDefinition } from "./registry.js";
@@ -92,11 +92,22 @@ export async function authorize(options: AuthorizeOptions): Promise<AuthorizeRes
 
 	// oauth-callback listens on the URL's redirect_uri and throws
 	// OAuthCallbackError for provider errors (access_denied etc.).
-	const result = await getAuthCode(authUrl, {
-		// --no-browser: the caller already printed the URL via onAuthUrl.
-		launch: launcher ? (url) => launcher(url.href) : () => {},
-		timeout,
-	});
+	let result: Awaited<ReturnType<typeof getAuthCode>>;
+	try {
+		result = await getAuthCode(authUrl, {
+			// --no-browser: the caller already printed the URL via onAuthUrl.
+			launch: launcher ? (url) => launcher(url.href) : () => {},
+			timeout,
+		});
+	} catch (err) {
+		// v3 keeps error_description out of the message; show it to the operator.
+		// It is untrusted provider text, so strip control characters and cap it.
+		if (err instanceof OAuthCallbackError && err.description) {
+			const description = err.description.replace(/\p{Cc}/gu, " ").slice(0, 300);
+			throw new Error(`Authorization failed: ${err.error}: ${description}`);
+		}
+		throw err;
+	}
 
 	// 4. Validate state
 	if (result.params.get("state") !== state) {
