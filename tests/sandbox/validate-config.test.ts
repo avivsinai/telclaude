@@ -629,7 +629,7 @@ TELCLAUDE_LOG_LEVEL=info
 		const buildStep = workflowStep(workflow, "Build and deploy");
 		const verifyStep = workflowStep(workflow, "Verify live Hermes runtime gates");
 
-		expect(setupStep).toContain("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020");
+		expect(setupStep).toContain("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1");
 		expect(setupStep).toContain("node-version: 22");
 		expect(installStep).toContain("corepack enable");
 		expect(installStep).toContain(
