@@ -35,8 +35,8 @@ importers:
         specifier: ^22.0.1
         version: 22.0.1
       '@steipete/summarize-core':
-        specifier: ^0.25.0
-        version: 0.25.1
+        specifier: ^0.25.2
+        version: 0.25.2
       '@whiskeysockets/baileys':
         specifier: 7.0.0-rc14
         version: 7.0.0-rc14(sharp@0.35.5(@types/node@26.6.5))
@@ -78,7 +78,7 @@ importers:
         version: 11.0.4
       openai:
         specifier: ^7.32.0
-        version: 7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.5)
+        version: 7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.6)
       otpauth:
         specifier: ^9.5.2
         version: 9.5.2
@@ -110,8 +110,8 @@ importers:
         specifier: ^8.11.2
         version: 8.11.2
       zod:
-        specifier: ^4.6.5
-        version: 4.6.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.5.15
@@ -914,8 +914,8 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@steipete/summarize-core@0.25.1':
-    resolution: {integrity: sha512-xlnJKoLyfFrDKVIVHJE45fBLkR1HdWQYnkjhsrSdMkG7UQoZKggYEHBpRcPDpt5BlN0YK84BBwDfifm7eacwog==}
+  '@steipete/summarize-core@0.25.2':
+    resolution: {integrity: sha512-muyQEx3Jn9IDAruuKQSs0TXbILLJAvpP4pw0O5GlW5KL/FkyIyG4iVXPDkg4OvLg44mCFOyXxZ1BGYHz3bZfZg==}
     engines: {node: '>=24'}
 
   '@tokenizer/inflate@0.4.1':
@@ -1194,10 +1194,6 @@ packages:
   deep-extend@0.6.0:
     resolution: {integrity: sha512-LOHxIOaPYdHlJRtCQfDIVZtfw/ufM8+rVj649RIHzcm/vGwQRXFt6OPqIFWsm2XEMrNIEtWR64sY1LEKD2vAOA==}
     engines: {node: '>=4.0.0'}
-
-  deepmerge@4.3.1:
-    resolution: {integrity: sha512-3sUqbMEc77XqpdNO7FRyRog+eW3ph+GYCbj+rK+uYyRMuwsVy0rMiVtPn+QJlKFvWP/1PYpapqYn0Me2knFn+A==}
-    engines: {node: '>=0.10.0'}
 
   default-browser-id@5.0.1:
     resolution: {integrity: sha512-x1VCxdX4t+8wVfd1so/9w+vQ4vx7lKd2Qp5tDRutErwmR85OgmfX7RlLRMWafRMY7hbEiXIbudNrjOAPa/hL8Q==}
@@ -2037,8 +2033,8 @@ packages:
     resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
     engines: {node: '>=10'}
 
-  sanitize-html@2.18.0:
-    resolution: {integrity: sha512-CvY+PV+NBhxe3BnjFI5f//vEDKLULm9OlZArso7gdgVsWvanBuq9PNDx+/2llfL+8XFYa/UNBxvqRBg3TWU2Ug==}
+  sanitize-html@2.18.1:
+    resolution: {integrity: sha512-2X5lC8fYla8YaT8g73Nj+HcLWXan5dLyCWLgVvaOmfw7JI78IRsyNtIDytTHdn7hBQbIkCah7Zbmd5jabzeDig==}
     engines: {node: '>=22.12.0'}
 
   saxes@6.0.0:
@@ -2412,8 +2408,8 @@ packages:
   xmlchars@2.2.0:
     resolution: {integrity: sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==}
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+  zod@4.6.6:
+    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -3026,12 +3022,12 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@steipete/summarize-core@0.25.1':
+  '@steipete/summarize-core@0.25.2':
     dependencies:
       '@mozilla/readability': 0.6.0
       intl-messageformat: 12.1.2
       linkedom: 0.18.13
-      sanitize-html: 2.18.0
+      sanitize-html: 2.18.1
       undici: 8.11.2
     transitivePeerDependencies:
       - canvas
@@ -3318,8 +3314,6 @@ snapshots:
       mimic-response: 3.1.0
 
   deep-extend@0.6.0: {}
-
-  deepmerge@4.3.1: {}
 
   default-browser-id@5.0.1: {}
 
@@ -4201,11 +4195,11 @@ snapshots:
       powershell-utils: 0.2.1
       wsl-utils: 1.0.1
 
-  openai@7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.5):
+  openai@7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.6):
     optionalDependencies:
       undici: 8.11.2
       ws: 8.21.0
-      zod: 4.6.5
+      zod: 4.6.6
 
   otpauth@9.5.2:
     dependencies:
@@ -4458,9 +4452,8 @@ snapshots:
 
   safe-stable-stringify@2.5.0: {}
 
-  sanitize-html@2.18.0:
+  sanitize-html@2.18.1:
     dependencies:
-      deepmerge: 4.3.1
       escape-string-regexp: 4.0.0
       htmlparser2: 12.0.0
       is-plain-object: 5.1.0
@@ -4840,6 +4833,6 @@ snapshots:
   xmlchars@2.2.0:
     optional: true
 
-  zod@4.6.5: {}
+  zod@4.6.6: {}
 
   zwitch@2.0.4: {}
