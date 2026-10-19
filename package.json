@@ -103,14 +103,14 @@
     "@grammyjs/runner": "^2.0.3",
     "@octokit/auth-app": "^8.3.1",
     "@octokit/rest": "^22.0.1",
-    "@steipete/summarize-core": "^0.25.0",
+    "@steipete/summarize-core": "^0.25.2",
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "better-sqlite3": "^13.0.3",
     "chalk": "^6.0.0",
     "commander": "^14.0.3",
     "dotenv": "^18.0.7",
     "fastify": "^5.12.5",
-    "googleapis": "^182.0.0",
+    "googleapis": "^183.0.0",
     "grammy": "^1.46.0",
     "ip-num": "^1.6.2",
     "json5": "^2.2.3",
@@ -128,7 +128,7 @@
     "telegram-markdown-v2": "^0.0.5",
     "tldts": "^7.4.18",
     "undici": "^8.11.2",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
