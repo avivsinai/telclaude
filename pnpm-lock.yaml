@@ -35,8 +35,8 @@ importers:
         specifier: ^22.0.1
         version: 22.0.1
       '@steipete/summarize-core':
-        specifier: ^0.25.0
-        version: 0.25.1
+        specifier: ^0.25.2
+        version: 0.25.2
       '@whiskeysockets/baileys':
         specifier: 7.0.0-rc14
         version: 7.0.0-rc14(sharp@0.35.5(@types/node@26.6.5))
@@ -56,8 +56,8 @@ importers:
         specifier: 5.12.5
         version: 5.12.5
       googleapis:
-        specifier: ^182.0.0
-        version: 182.0.0
+        specifier: ^183.0.0
+        version: 183.0.0
       grammy:
         specifier: ^1.46.0
         version: 1.46.0
@@ -78,7 +78,7 @@ importers:
         version: 11.0.4
       openai:
         specifier: ^7.32.0
-        version: 7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.5)
+        version: 7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.6)
       otpauth:
         specifier: ^9.5.2
         version: 9.5.2
@@ -110,8 +110,8 @@ importers:
         specifier: ^8.11.2
         version: 8.11.2
       zod:
-        specifier: ^4.6.5
-        version: 4.6.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.5.15
@@ -914,8 +914,8 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@steipete/summarize-core@0.25.1':
-    resolution: {integrity: sha512-xlnJKoLyfFrDKVIVHJE45fBLkR1HdWQYnkjhsrSdMkG7UQoZKggYEHBpRcPDpt5BlN0YK84BBwDfifm7eacwog==}
+  '@steipete/summarize-core@0.25.2':
+    resolution: {integrity: sha512-muyQEx3Jn9IDAruuKQSs0TXbILLJAvpP4pw0O5GlW5KL/FkyIyG4iVXPDkg4OvLg44mCFOyXxZ1BGYHz3bZfZg==}
     engines: {node: '>=24'}
 
   '@tokenizer/inflate@0.4.1':
@@ -1390,10 +1390,6 @@ packages:
   function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
 
-  gaxios@7.1.5:
-    resolution: {integrity: sha512-5FZy72Rh8LhtjmvDrKkI+lVhrsQrVKVsItxMoDm5mNQE+xR0WVIIs+jzPSJgBvKVsLi24fZhXJIsNI0bihDzFg==}
-    engines: {node: '>=18'}
-
   gaxios@7.3.1:
     resolution: {integrity: sha512-kB3rzJV7d9juLZh8/56QTXCwQfxyhdOMdyYk1HdQKFtF8TJTDTZQJtixWIwXdE9Jji91mC41DUNpjleo4L4eAQ==}
     engines: {node: '>=18'}
@@ -1425,8 +1421,8 @@ packages:
     resolution: {integrity: sha512-OYCBMfAPDJSB4E1RiQQzrIxCJLGMVrCgeVvuUKzSLBgnSSA+hH3X16/q76UMjS/HCJmOjcVVopwhUUnTo2SHyg==}
     engines: {node: '>=22'}
 
-  googleapis@182.0.0:
-    resolution: {integrity: sha512-W8K/yy5kb1j6TiKEtSj4I4DgjeImVfSzYmdmp8Bdn3dHBamBjmpJUteF0R7QQ9Ym++2Yq+ZYXvIFBC7ywBohAA==}
+  googleapis@183.0.0:
+    resolution: {integrity: sha512-Aa0KKctjSDfRrvKHFU6PtPYP9yBC/aOUmuc1VpIjJUrHtfoHz3n8/apLB7t4e3d8NbhTDF1x6JcZJO1au7VNHQ==}
     engines: {node: '>=22.0.0'}
 
   gopd@1.2.0:
@@ -2412,8 +2408,8 @@ packages:
   xmlchars@2.2.0:
     resolution: {integrity: sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==}
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+  zod@4.6.6:
+    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -3026,7 +3022,7 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@steipete/summarize-core@0.25.1':
+  '@steipete/summarize-core@0.25.2':
     dependencies:
       '@mozilla/readability': 0.6.0
       intl-messageformat: 12.1.2
@@ -3533,14 +3529,6 @@ snapshots:
 
   function-bind@1.1.2: {}
 
-  gaxios@7.1.5:
-    dependencies:
-      extend: 3.0.2
-      https-proxy-agent: 7.0.6
-      node-fetch: 3.3.2
-    transitivePeerDependencies:
-      - supports-color
-
   gaxios@7.3.1:
     dependencies:
       extend: 3.0.2
@@ -3551,7 +3539,7 @@ snapshots:
 
   gcp-metadata@9.1.0:
     dependencies:
-      gaxios: 7.1.5
+      gaxios: 7.3.1
       google-logging-utils: 2.0.1
       json-bigint: 1.0.0
     transitivePeerDependencies:
@@ -3581,7 +3569,7 @@ snapshots:
     dependencies:
       base64-js: 1.5.1
       ecdsa-sig-formatter: 1.0.11
-      gaxios: 7.1.5
+      gaxios: 7.3.1
       gcp-metadata: 9.1.0
       google-logging-utils: 2.0.1
       jws: 4.0.1
@@ -3601,7 +3589,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  googleapis@182.0.0:
+  googleapis@183.0.0:
     dependencies:
       google-auth-library: 11.2.0
       googleapis-common: 9.2.0
@@ -4201,11 +4189,11 @@ snapshots:
       powershell-utils: 0.2.1
       wsl-utils: 1.0.1
 
-  openai@7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.5):
+  openai@7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.6):
     optionalDependencies:
       undici: 8.11.2
       ws: 8.21.0
-      zod: 4.6.5
+      zod: 4.6.6
 
   otpauth@9.5.2:
     dependencies:
@@ -4840,6 +4828,6 @@ snapshots:
   xmlchars@2.2.0:
     optional: true
 
-  zod@4.6.5: {}
+  zod@4.6.6: {}
 
   zwitch@2.0.4: {}
