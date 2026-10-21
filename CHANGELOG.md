@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-21
 ### Added
 
 - **Tailscale broker Serve WhoIs** — Overlay `docker-compose.tailscale-broker.yml` publishes localhost `:8790` and mounts `tailscaled.sock` so `POST /v1/broker/provider/read` works on the MagicDNS Serve path. WhoIs uses the unix socket, then LocalAPI HTTP. Docker-proxy SNAT is unwrapped only from trusted proxies (loopback, default IPv4 gateway, `TELCLAUDE_BROKER_TRUSTED_PROXIES`); Hermes IPs cannot spoof `X-Forwarded-For`. Serve `/` and `/novnc` stay untouched.
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **WhatsApp inbound fallback after outbound execution** — The authorized fallback reply is skipped only after a successful `tc_outbound_execute` result; prepare-only and failed executions still deliver Hermes text.
 - **WhatsApp inbound boot-race drops** — The bridge retries the same signed inbound POST on transport failures and relay 502/503/504 until the relay accepts it, and compose starts `whatsapp-bridge` only after `telclaude` is healthy. A half-dead Baileys companion still needs an operator bounce; retry does not revive it.
 - **WhatsApp bridge shutdown drains auth writes** — SIGTERM/SIGINT now stop reconnects, refuse new sends, end the live socket, and wait for serialized Baileys creds writes to finish. Health stays content-free (counters/timestamps only). Gabriel avatar is not applied from the bridge (would require a second socket).
+
 
 ## [0.9.0] - 2026-08-22
 
