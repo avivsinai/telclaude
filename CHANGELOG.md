@@ -10,15 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.0] - 2026-10-21
 ### Added
 
+- **Explicit Astra Codex model** — Codex work units accept `gpt-6-astra` when you select it.
 - **Tailscale broker Serve WhoIs** — Overlay `docker-compose.tailscale-broker.yml` publishes localhost `:8790` and mounts `tailscaled.sock` so `POST /v1/broker/provider/read` works on the MagicDNS Serve path. WhoIs uses the unix socket, then LocalAPI HTTP. Docker-proxy SNAT is unwrapped only from trusted proxies (loopback, default IPv4 gateway, `TELCLAUDE_BROKER_TRUSTED_PROXIES`); Hermes IPs cannot spoof `X-Forwarded-For`. Serve `/` and `/novnc` stay untouched.
 
 ### Fixed
 
+- **`tc_browse` works again** — `playwright-core` is pinned to the Camoufox server's major.minor (1.59), so the client and server protocols match.
+- **OAuth errors show the provider's reason** — after the `oauth-callback` 3 upgrade, the provider's `error_description` is shown (control and format characters stripped, capped at 300 characters).
 - **Tailscale Serve strips `/v1/broker`** — `--set-path=/v1/broker` forwards `/provider/read`. The relay treats that as the broker read, and the documented Serve target is `http://127.0.0.1:8790/v1/broker` so the full path is restored. Serve `/` and `/novnc` stay untouched.
 - **WhatsApp bridge image missing `network-errors.js`** — Inbound retry imports `dist/infra/network-errors.js`, but the bridge image only copied `whatsapp-bridge` and `crypto`. The closure now includes that file and smoke-imports `relay-forward.js` at build time.
 - **WhatsApp inbound fallback after outbound execution** — The authorized fallback reply is skipped only after a successful `tc_outbound_execute` result; prepare-only and failed executions still deliver Hermes text.
 - **WhatsApp inbound boot-race drops** — The bridge retries the same signed inbound POST on transport failures and relay 502/503/504 until the relay accepts it, and compose starts `whatsapp-bridge` only after `telclaude` is healthy. A half-dead Baileys companion still needs an operator bounce; retry does not revive it.
 - **WhatsApp bridge shutdown drains auth writes** — SIGTERM/SIGINT now stop reconnects, refuse new sends, end the live socket, and wait for serialized Baileys creds writes to finish. Health stays content-free (counters/timestamps only). Gabriel avatar is not applied from the bridge (would require a second socket).
+
+### Changed
+
+- **Toolchain and dependencies** — TypeScript 7 (native compiler; emitted JavaScript is byte-identical), vitest 4, openai 7, googleapis 183, zod 4.6, `better-sqlite3` 13 using bundled prebuilds, and a fixed tsc heap for the Docker image build.
+
+### Security
+
+- **sanitize-html 2.18.1** (GHSA-c9rx-x947-fp3h) — the link-preview path summarizes untrusted web pages, so the fix ships ahead of the dependency cooldown.
 
 
 ## [0.9.0] - 2026-08-22
