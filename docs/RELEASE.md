@@ -25,7 +25,6 @@ This script:
 ## After merge
 
 - `.github/workflows/release.yml` detects the merged `chore(release): vX.Y.Z` commit on `main`.
-- CI validates the merged release commit, creates the tag only after verification, builds the package tarball, and publishes the GitHub release from the committed changelog entry.
-- Optional npm publishing is available through trusted publishing. It stays off by default until the repo variable `TELCLAUDE_PUBLISH_NPM=true` or a manual dispatch with `publish-to-npm=true` is used and npm trusted publishing is configured for the package.
+- CI validates the merged release commit, creates the tag only after verification, builds the package tarball, and publishes the GitHub release from the committed changelog entry. npm is not a release channel for this repo.
 
 `workflow_dispatch` is only for rerunning an existing tag.

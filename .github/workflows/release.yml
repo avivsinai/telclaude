@@ -10,12 +10,6 @@ on:
         description: "Existing tag to (re)release (e.g. v0.6.2)"
         required: true
         type: string
-      publish-to-npm:
-        description: "Publish to npm via trusted publishing after the GitHub release"
-        required: false
-        type: boolean
-        default: false
-
 permissions:
   contents: read
 
@@ -278,38 +272,3 @@ jobs:
             dist-release/*.tgz
             dist-release/SHA256SUMS.txt
 
-  npm-publish:
-    needs: [prepare, release]
-    if: >-
-      needs.release.result == 'success' &&
-      (
-        inputs.publish-to-npm == true ||
-        (github.event_name == 'push' && vars.TELCLAUDE_PUBLISH_NPM == 'true')
-      )
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.prepare.outputs.release_ref }}
-
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm run build
-
-      - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
