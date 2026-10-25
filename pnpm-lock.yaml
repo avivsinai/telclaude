@@ -78,7 +78,7 @@ importers:
         version: 11.0.4
       openai:
         specifier: ^7.32.0
-        version: 7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.6)
+        version: 7.32.0(undici@8.12.2)(ws@8.21.0)(zod@4.6.6)
       otpauth:
         specifier: ^9.5.2
         version: 9.5.2
@@ -107,8 +107,8 @@ importers:
         specifier: ^7.4.18
         version: 7.4.18
       undici:
-        specifier: ^8.11.2
-        version: 8.11.2
+        specifier: ^8.12.2
+        version: 8.12.2
       zod:
         specifier: ^4.6.6
         version: 4.6.6
@@ -2284,8 +2284,15 @@ packages:
   tldts-core@7.4.18:
     resolution: {integrity: sha512-KI2PKvCmvQI/xD6ypPqkU0i7oxNXR/O58RLRaHR4svsgVUQ2JE/XC8BtMbG6PSehD27I8sZJRcC1ASnCy6lp3g==}
 
+  tldts-core@7.4.19:
+    resolution: {integrity: sha512-goNXV6Ho9TIOfpJZanTd6CKG5DyYgYAL+k+22T0SLh8l6+KHIfBUPFuePuSZv05UttIaaLmI9tb7TmGIdK5AkQ==}
+
   tldts@7.4.18:
     resolution: {integrity: sha512-somxA8xKAUzlAxl0TX/jMSYIbRNFIVGnI96pVGJPeMc5BsHmfVXn6mOJT6U++ELnl04eGfzpfcEuZe8WiASkXg==}
+    hasBin: true
+
+  tldts@7.4.19:
+    resolution: {integrity: sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==}
     hasBin: true
 
   toad-cache@3.7.4:
@@ -2342,6 +2349,10 @@ packages:
 
   undici@8.11.2:
     resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
+    engines: {node: '>=22.19.0'}
+
+  undici@8.12.2:
+    resolution: {integrity: sha512-XtuDWVdqTLr3NAxm2ly9/hU6kUsJOgGh1RASzMBbsw6aWCOaQzHdW+QQDfdERjfJ2V5vL5pRPa4RetO9UfivDg==}
     engines: {node: '>=22.19.0'}
 
   unified@11.0.5:
@@ -4363,9 +4374,9 @@ snapshots:
       powershell-utils: 0.2.1
       wsl-utils: 1.0.1
 
-  openai@7.32.0(undici@8.11.2)(ws@8.21.0)(zod@4.6.6):
+  openai@7.32.0(undici@8.12.2)(ws@8.21.0)(zod@4.6.6):
     optionalDependencies:
-      undici: 8.11.2
+      undici: 8.12.2
       ws: 8.21.0
       zod: 4.6.6
 
@@ -4802,9 +4813,17 @@ snapshots:
 
   tldts-core@7.4.18: {}
 
+  tldts-core@7.4.19:
+    optional: true
+
   tldts@7.4.18:
     dependencies:
       tldts-core: 7.4.18
+
+  tldts@7.4.19:
+    dependencies:
+      tldts-core: 7.4.19
+    optional: true
 
   toad-cache@3.7.4: {}
 
@@ -4816,7 +4835,7 @@ snapshots:
 
   tough-cookie@6.0.2:
     dependencies:
-      tldts: 7.4.18
+      tldts: 7.4.19
     optional: true
 
   tr46@0.0.3: {}
@@ -4873,6 +4892,8 @@ snapshots:
     optional: true
 
   undici@8.11.2: {}
+
+  undici@8.12.2: {}
 
   unified@11.0.5:
     dependencies:
