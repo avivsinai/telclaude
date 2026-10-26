@@ -110,7 +110,7 @@
     "commander": "^14.0.3",
     "dotenv": "^18.0.7",
     "fastify": "^5.12.5",
-    "googleapis": "^183.0.0",
+    "googleapis": "^185.0.0",
     "grammy": "^1.46.0",
     "ip-num": "^1.6.2",
     "json5": "^2.2.3",
