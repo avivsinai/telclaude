@@ -77,7 +77,7 @@
   "packageManager": "pnpm@9.15.0",
   "pnpm": {
     "overrides": {
-      "fastify": "5.12.5",
+      "fastify": "5.12.7",
       "minimatch": "9.0.7",
       "picomatch@<2.3.2": "2.3.2",
       "picomatch@>=4.0.0 <4.0.4": "4.0.4",
@@ -108,8 +108,8 @@
     "better-sqlite3": "^13.0.3",
     "chalk": "^6.0.0",
     "commander": "^14.0.3",
-    "dotenv": "^18.0.7",
-    "fastify": "^5.12.5",
+    "dotenv": "^18.0.8",
+    "fastify": "^5.12.7",
     "googleapis": "^183.0.0",
     "grammy": "^1.46.0",
     "ip-num": "^1.6.2",
@@ -117,18 +117,18 @@
     "keytar": "^7.9.0",
     "oauth-callback": "^3.1.1",
     "open": "^11.0.4",
-    "openai": "^7.32.0",
+    "openai": "^7.39.0",
     "otpauth": "^9.5.2",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "playwright-core": "1.59.1",
     "qrcode-terminal": "^0.12.0",
-    "rate-limiter-flexible": "^11.2.1",
+    "rate-limiter-flexible": "^11.2.3",
     "shell-quote": "^1.11.0",
     "telegram-markdown-v2": "^0.0.5",
     "tldts": "^7.4.18",
-    "undici": "^8.11.2",
-    "zod": "^4.6.6"
+    "undici": "^8.12.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
