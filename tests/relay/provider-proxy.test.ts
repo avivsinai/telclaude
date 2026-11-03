@@ -100,6 +100,16 @@ describe("provider proxy approval interception", () => {
 		expect(createProviderApprovalMock).not.toHaveBeenCalled();
 	});
 
+	it("refuses request paths that resolve to another origin", async () => {
+		for (const path of ["//attacker.test/v1/fetch", "/\\attacker.test/v1/fetch"]) {
+			await expect(proxyProviderRequest({ providerId: "google", path })).resolves.toMatchObject({
+				status: "error",
+				error: "Provider not available",
+			});
+		}
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
 	it("normalizes the Clalit HTTP 401 auth-required body into an error code", async () => {
 		vi.stubGlobal(
 			"fetch",

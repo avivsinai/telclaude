@@ -267,6 +267,11 @@ export async function proxyProviderRequest(
 	try {
 		const { url } = await validateProviderBaseUrl(provider.baseUrl);
 		providerUrl = new URL(normalizedPath, url);
+		// A path like "//host" or "/\\host" resolves to another origin; the relay
+		// auth headers must only reach the validated provider.
+		if (providerUrl.origin !== url.origin) {
+			throw new Error("request path leaves the provider origin");
+		}
 	} catch (err) {
 		logger.warn({ providerId, error: String(err) }, "provider URL validation failed");
 		return { status: "error", error: "Provider not available" };
