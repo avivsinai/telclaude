@@ -1,0 +1,129 @@
+name: Release request
+run-name: Release request ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact release version (X.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    release-request-${{
+      github.ref != 'refs/heads/main' &&
+      format('rejected-{0}', github.run_id) ||
+      github.repository
+    }}
+  cancel-in-progress: false
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Require main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Release requests must be dispatched from main (got ${GITHUB_REF})."
+          exit 1
+
+      - name: Validate version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::version must be X.Y.Z (got ${RELEASE_VERSION})."
+            exit 1
+          fi
+
+      - name: Require release GitHub App credentials
+        env:
+          APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [[ -z "$APP_CLIENT_ID" ]]; then
+            echo "::error::Missing repository variable RELEASE_APP_CLIENT_ID."
+            missing=1
+          fi
+          if [[ -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error::Missing repository secret RELEASE_APP_PRIVATE_KEY."
+            missing=1
+          fi
+          if [[ "$missing" -ne 0 ]]; then
+            echo "::error::Install the org release GitHub App on this repo and set RELEASE_APP_CLIENT_ID / RELEASE_APP_PRIVATE_KEY (same names as jenkins-cli and agent-message-queue)."
+            exit 1
+          fi
+
+      - name: Create repository-scoped release PR token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: true
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Configure git identity
+        env:
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          slug="${APP_SLUG:-github-actions}"
+          git config user.name "${slug}[bot]"
+          git config user.email "${slug}[bot]@users.noreply.github.com"
+
+      - name: Prepare release commit
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # PR CI re-runs lint/test/build; release.yml re-verifies after merge.
+          ./scripts/release.sh "$RELEASE_VERSION" --ci --skip-verify
+
+      - name: Push release branch and open PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION}"
+          branch="release/${tag}"
+          git push -u origin "HEAD:refs/heads/${branch}"
+
+          pr_body="## Release
+
+          - updates \`CHANGELOG.md\` for \`${tag}\`
+          - bumps \`package.json\` to \`${RELEASE_VERSION}\`
+          - merge triggers \`.github/workflows/release.yml\`, which verifies the merged release commit before tagging
+          - GitHub release assets are checksummed and attested; optional npm publishing is available through trusted publishing when enabled"
+
+          pr_url="$(
+            gh pr create \
+              --base "$DEFAULT_BRANCH" \
+              --head "$branch" \
+              --title "chore(release): ${tag}" \
+              --body "$pr_body"
+          )"
+          gh pr merge "$pr_url" --squash --auto --delete-branch
+          echo "Created release PR: ${pr_url}"
