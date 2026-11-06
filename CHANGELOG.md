@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cut a release from GitHub Actions** — Dispatch `.github/workflows/release-request.yml` with `version` (`X.Y.Z`). It runs the same prep as `scripts/release.sh`, pushes `release/vX.Y.Z`, and opens the squash-auto-merge `chore(release): vX.Y.Z` PR. Requires the org release GitHub App (`RELEASE_APP_CLIENT_ID` / `RELEASE_APP_PRIVATE_KEY`). `scripts/release.sh --ci` / `--no-push` still works locally for dry-runs.
+
 ## [0.10.0] - 2026-10-21
 ### Added
 

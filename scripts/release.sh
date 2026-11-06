@@ -21,6 +21,9 @@ Options:
   --skip-verify      Skip local verification gates
   --allow-empty      Allow releasing with an empty Unreleased section
   --no-auto-merge    Create the PR but do not enable auto-merge
+  --ci, --no-push    Prepare the release commit locally and stop. Allows
+                     detached HEAD at origin/<default-branch>. Used by
+                     .github/workflows/release-request.yml and for dry-runs.
   -h, --help         Show this help text
 EOF
 }
@@ -52,11 +55,40 @@ default_branch() {
   fi
 }
 
+ensure_committer_identity() {
+  if git config --get user.email >/dev/null 2>&1 && git config --get user.name >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -n "${GIT_AUTHOR_EMAIL:-}" && -n "${GIT_AUTHOR_NAME:-}" ]]; then
+    if [[ -z "${GIT_COMMITTER_EMAIL:-}" ]]; then
+      export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+    fi
+    if [[ -z "${GIT_COMMITTER_NAME:-}" ]]; then
+      export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+    fi
+    return 0
+  fi
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+}
+
+release_pr_body() {
+  cat <<EOF
+## Release
+
+- updates \`CHANGELOG.md\` for \`${TAG}\`
+- bumps \`package.json\` to \`${VERSION}\`
+- merge triggers \`.github/workflows/release.yml\`, which verifies the merged release commit before tagging
+- GitHub release assets are checksummed and attested; optional npm publishing is available through trusted publishing when enabled
+EOF
+}
+
 version=""
 release_date="$(date -u +%Y-%m-%d)"
 skip_verify=0
 allow_empty=0
 auto_merge=1
+no_push=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,6 +113,10 @@ while [[ $# -gt 0 ]]; do
       auto_merge=0
       shift
       ;;
+    --ci|--no-push)
+      no_push=1
+      shift
+      ;;
     --*)
       echo "error: unknown option: $1" >&2
       usage >&2
@@ -101,9 +137,13 @@ done
 [[ -n "$version" ]] || { usage >&2; exit 1; }
 
 require_command git
-require_command gh
-require_command pnpm
 require_command python3
+if [[ "$skip_verify" -eq 0 ]]; then
+  require_command pnpm
+fi
+if [[ "$no_push" -eq 0 ]]; then
+  require_command gh
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -123,10 +163,17 @@ git diff --cached --quiet --ignore-submodules -- || {
 }
 
 CURRENT_BRANCH="$(git branch --show-current)"
-[[ "$CURRENT_BRANCH" == "$DEFAULT_BRANCH" ]] || {
-  echo "error: releases must start from ${DEFAULT_BRANCH}; current branch is ${CURRENT_BRANCH}" >&2
-  exit 1
-}
+if [[ "$no_push" -eq 1 ]]; then
+  if [[ -n "$CURRENT_BRANCH" && "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]]; then
+    echo "error: releases must start from ${DEFAULT_BRANCH} (or detached HEAD at origin/${DEFAULT_BRANCH}); current branch is ${CURRENT_BRANCH}" >&2
+    exit 1
+  fi
+else
+  [[ "$CURRENT_BRANCH" == "$DEFAULT_BRANCH" ]] || {
+    echo "error: releases must start from ${DEFAULT_BRANCH}; current branch is ${CURRENT_BRANCH}" >&2
+    exit 1
+  }
+fi
 
 git fetch --quiet origin "$DEFAULT_BRANCH" --tags
 
@@ -212,19 +259,20 @@ git diff --cached --quiet && {
   exit 1
 }
 
+if [[ "$no_push" -eq 1 ]]; then
+  ensure_committer_identity
+fi
+
 git commit -m "chore(release): ${TAG}"
+
+if [[ "$no_push" -eq 1 ]]; then
+  echo "Prepared release commit ${TAG} on ${BRANCH} (not pushed)"
+  exit 0
+fi
+
 git push -u origin "$BRANCH"
 
-PR_BODY=$(
-  cat <<EOF
-## Release
-
-- updates \`CHANGELOG.md\` for \`${TAG}\`
-- bumps \`package.json\` to \`${VERSION}\`
-- merge triggers \`.github/workflows/release.yml\`, which verifies the merged release commit before tagging
-- GitHub release assets are checksummed and attested; optional npm publishing is available through trusted publishing when enabled
-EOF
-)
+PR_BODY="$(release_pr_body)"
 
 PR_URL="$(
   gh pr create \
