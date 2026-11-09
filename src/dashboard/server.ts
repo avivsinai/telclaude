@@ -191,7 +191,7 @@ export async function buildDashboardServer(
 
 	await server.listen({ port: opts.port, host });
 	const address = server.addresses()[0];
-	const actualPort = address?.port ?? opts.port;
+	const actualPort = typeof address === "object" && address !== null ? address.port : opts.port;
 	logger.info({ host, port: actualPort }, "dashboard listening");
 
 	return {
