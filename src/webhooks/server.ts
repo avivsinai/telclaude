@@ -380,7 +380,10 @@ export async function startWebhookServer(opts: {
 	const server = await buildWebhookServer({ config: opts.config, logLevel: opts.logLevel });
 	await server.listen({ port: opts.port ?? opts.config.port, host });
 	const address = server.addresses()[0];
-	const actualPort = address?.port ?? opts.port ?? opts.config.port;
+	const actualPort =
+		typeof address === "object" && address !== null
+			? address.port
+			: (opts.port ?? opts.config.port);
 	let closed = false;
 	logger.info({ host, port: actualPort }, "webhook receiver listening");
 	return {
