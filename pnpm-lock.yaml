@@ -57,8 +57,8 @@ importers:
         specifier: 5.12.8
         version: 5.12.8
       googleapis:
-        specifier: ^186.0.0
-        version: 186.0.0
+        specifier: ^188.0.0
+        version: 188.0.0
       grammy:
         specifier: ^1.46.0
         version: 1.46.0
@@ -79,7 +79,7 @@ importers:
         version: 11.0.4
       openai:
         specifier: ^7.47.0
-        version: 7.47.0(google-auth-library@11.3.2)(undici@8.12.3)(ws@8.21.0)(zod@4.6.7)
+        version: 7.47.0(google-auth-library@11.3.4)(undici@8.12.3)(ws@8.21.0)(zod@4.6.7)
       otpauth:
         specifier: ^9.5.2
         version: 9.5.2
@@ -1546,20 +1546,20 @@ packages:
   github-from-package@0.0.0:
     resolution: {integrity: sha512-SyHy3T1v2NUXn29OsWdxmK6RwHD+vkj3v8en8AOBZ1wBQ/hCAQ5bAQTD02kW4W9tUp/3Qh6J8r9EvntiyCmOOw==}
 
-  google-auth-library@11.3.2:
-    resolution: {integrity: sha512-rbm+5boOZzFvDFg2tvCGkgHtG+RrmDqCDi6voK+ILpoCDqGxxc5pcMH6WZzCQXGNqQqZcYJl5WNvb159rkriuA==}
+  google-auth-library@11.3.4:
+    resolution: {integrity: sha512-RaYCDoeYIIFTRgH8hesSxqLrmtC2l+DB3cSCS/SN1TPGjI2VpPdJmF3bfRLUn8VvP/4I2Af9fsktw2f9SvVSVg==}
     engines: {node: '>=22'}
 
-  google-logging-utils@2.1.1:
-    resolution: {integrity: sha512-jYZOPMaRGS3Hldyudft6bdibW9ZWUKBkMdB2TeSETkV1c2T9TR4zxEWZETHv9xJ8KHr2hgkNLaSa8kcEcwlpeQ==}
+  google-logging-utils@2.2.0:
+    resolution: {integrity: sha512-Q6HuSEyoaxi0AgqUrOYb2gc77fDl4QugRoHpreI8VpW/VzPsoKyxjL8tGKLmZpWlvC1uVBXM85tykoQpCGBF5g==}
     engines: {node: '>=22'}
 
   googleapis-common@9.3.1:
     resolution: {integrity: sha512-wtv/e7JYgmtpIPcSez2EFD/Wx49DPsRX2rj15D7hTwc7tDsP82dcwoX/I4+zE38mu6S9PcghizzzADLf+ZMunA==}
     engines: {node: '>=22'}
 
-  googleapis@186.0.0:
-    resolution: {integrity: sha512-ljnYwbM1IX6xM0q5tQHqAtnFdHBC9rPa5jidpoQB7wRiqBYOs5hOQPUPidF454tNLO5LCwB06EvkPg/93E1OJw==}
+  googleapis@188.0.0:
+    resolution: {integrity: sha512-dLGvMAlYOiemwYnhFoy1bDd+dnB6o8mGxnXhLCirAjAww8F/Qs59XY3EHm7p7RGENtDRTqyM7oV7DQ22V4BaOA==}
     engines: {node: '>=22.0.0'}
 
   gopd@1.2.0:
@@ -2311,8 +2311,15 @@ packages:
   tldts-core@7.4.20:
     resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
 
+  tldts-core@7.4.21:
+    resolution: {integrity: sha512-sj8bAOjYu9juPKgsB3A58Uj91ybcnsRzgEUxbEGACP32rfJ5o9EScerRIfX1c6GPCiQlMoy4rCu2qTVIQgL4UA==}
+
   tldts@7.4.19:
     resolution: {integrity: sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==}
+    hasBin: true
+
+  tldts@7.4.21:
+    resolution: {integrity: sha512-SomReMX1GpjzK4KzAMr8SKtn628eakKLlPWEEPOLnC2lfKXt5UZ5gh/y2I8cgRI2zWidULCx2p7vfYyjGSwnaw==}
     hasBin: true
 
   toad-cache@3.7.4:
@@ -3757,7 +3764,7 @@ snapshots:
   gcp-metadata@9.2.3:
     dependencies:
       gaxios: 8.3.2
-      google-logging-utils: 2.1.1
+      google-logging-utils: 2.2.0
       json-bigint: 1.0.0
     transitivePeerDependencies:
       - supports-color
@@ -3782,33 +3789,33 @@ snapshots:
 
   github-from-package@0.0.0: {}
 
-  google-auth-library@11.3.2:
+  google-auth-library@11.3.4:
     dependencies:
       base64-js: 1.5.1
       ecdsa-sig-formatter: 1.0.11
       gaxios: 8.3.2
       gcp-metadata: 9.2.3
-      google-logging-utils: 2.1.1
+      google-logging-utils: 2.2.0
       jws: 4.0.1
     transitivePeerDependencies:
       - supports-color
 
-  google-logging-utils@2.1.1: {}
+  google-logging-utils@2.2.0: {}
 
   googleapis-common@9.3.1:
     dependencies:
       extend: 3.0.2
       gaxios: 8.3.2
-      google-auth-library: 11.3.2
-      google-logging-utils: 2.1.1
+      google-auth-library: 11.3.4
+      google-logging-utils: 2.2.0
       qs: 6.17.1
       url-template: 2.0.8
     transitivePeerDependencies:
       - supports-color
 
-  googleapis@186.0.0:
+  googleapis@188.0.0:
     dependencies:
-      google-auth-library: 11.3.2
+      google-auth-library: 11.3.4
       googleapis-common: 9.3.1
     transitivePeerDependencies:
       - supports-color
@@ -4407,9 +4414,9 @@ snapshots:
       powershell-utils: 0.2.1
       wsl-utils: 1.0.1
 
-  openai@7.47.0(google-auth-library@11.3.2)(undici@8.12.3)(ws@8.21.0)(zod@4.6.7):
+  openai@7.47.0(google-auth-library@11.3.4)(undici@8.12.3)(ws@8.21.0)(zod@4.6.7):
     optionalDependencies:
-      google-auth-library: 11.3.2
+      google-auth-library: 11.3.4
       undici: 8.12.3
       ws: 8.21.0
       zod: 4.6.7
@@ -4849,9 +4856,17 @@ snapshots:
 
   tldts-core@7.4.20: {}
 
+  tldts-core@7.4.21:
+    optional: true
+
   tldts@7.4.19:
     dependencies:
       tldts-core: 7.4.20
+
+  tldts@7.4.21:
+    dependencies:
+      tldts-core: 7.4.21
+    optional: true
 
   toad-cache@3.7.4: {}
 
@@ -4863,7 +4878,7 @@ snapshots:
 
   tough-cookie@6.1.0:
     dependencies:
-      tldts: 7.4.19
+      tldts: 7.4.21
     optional: true
 
   tr46@0.0.3: {}
