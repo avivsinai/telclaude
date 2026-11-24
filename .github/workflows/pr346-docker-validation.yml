@@ -1,0 +1,91 @@
+name: PR 346 Docker validation
+
+on:
+  push:
+    branches: [codex/346-docker-validation-09a46c7]
+    paths: [.github/workflows/pr346-docker-validation.yml]
+
+permissions: {}
+
+concurrency:
+  group: telclaude-docker-validation-346-5d5cdb0
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: SQLite images (${{ matrix.platform }})
+    if: github.repository == 'avivsinai/telclaude' && github.ref == 'refs/heads/codex/346-docker-validation-09a46c7'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    env:
+      CANDIDATE_SHA: 2d943e480d8a28a7eb95f37977359dc8cbca1f95
+      CANDIDATE_TREE: 5d5cdb051434ebe15066b3006cefcea4ade2b2c0
+      LOCAL_CANDIDATE_SHA: 09a46c7180ea881511d393f72ccd5b0d6bddf71d
+      TARGET_PLATFORM: ${{ matrix.platform }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify the candidate source and native Docker engine
+        id: source
+        run: |
+          checkout="$RUNNER_TEMP/telclaude-candidate"
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git init --quiet "$checkout"
+          git -C "$checkout" -c credential.helper= fetch --no-tags --depth=1 \
+            https://github.com/avivsinai/telclaude.git "$CANDIDATE_SHA"
+          git -C "$checkout" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$checkout" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git -C "$checkout" rev-parse 'HEAD^{tree}')" = "$CANDIDATE_TREE"
+          test -z "$(git -C "$checkout" status --porcelain)"
+          test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "$TARGET_PLATFORM"
+          docker buildx version
+          printf 'Workflow %s\nCandidate %s\nLocal source %s\nTree %s\nPlatform %s\n' \
+            "$GITHUB_SHA" "$CANDIDATE_SHA" "$LOCAL_CANDIDATE_SHA" "$CANDIDATE_TREE" "$TARGET_PLATFORM"
+
+          cat > "$RUNNER_TEMP/pr346-build-image" <<'BUILD'
+          set -euo pipefail
+          service=$1
+          dockerfile=$2
+          shift 2
+          checkout="$RUNNER_TEMP/telclaude-candidate"
+          tag="telclaude-$service:validate-346"
+          docker buildx build --load --progress=plain --platform "$TARGET_PLATFORM" \
+            --target runtime --tag "$tag" --file "$checkout/$dockerfile" "$@" "$checkout"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$tag")" = "$TARGET_PLATFORM"
+          docker image inspect --format 'Final image {{.Id}} for {{.Os}}/{{.Architecture}}' "$tag"
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --no-healthcheck --user node --workdir /app \
+            --entrypoint /usr/local/bin/node "$tag" -e '
+              const assert = require("node:assert/strict");
+              const Database = require("better-sqlite3");
+              const db = new Database(":memory:");
+              try {
+                assert.equal(db.prepare("SELECT 1 AS ok").get().ok, 1);
+              } finally {
+                db.close();
+              }
+              console.log("SQLite open, query, and close passed");
+            '
+          BUILD
+
+      - name: Build and test the relay runtime image
+        run: |
+          bash "$RUNNER_TEMP/pr346-build-image" relay docker/Dockerfile \
+            --build-arg "GIT_COMMIT=2d943e4"
+
+      - name: Build and test the Google sidecar runtime image
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
+          bash "$RUNNER_TEMP/pr346-build-image" google-services docker/Dockerfile.google-services
