@@ -30,7 +30,7 @@ WORKDIR /build
 
 COPY package.json pnpm-lock.yaml .npmrc ./
 
-RUN pnpm install --ignore-scripts
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY . .
 
@@ -71,7 +71,15 @@ COPY --from=builder --chown=node:node /build/dist ./dist
 COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --from=builder --chown=node:node /build/package.json ./
 
-RUN node -e "require('better-sqlite3'); console.log('better-sqlite3 runtime OK')"
+# Exercise the native SQLite binding in the copied production tree.
+RUN node -e 'const assert = require("node:assert/strict"); \
+    const Database = require("better-sqlite3"); \
+    const db = new Database(":memory:"); \
+    try { \
+      assert.equal(db.prepare("SELECT 1 AS ok").get().ok, 1); \
+    } finally { \
+      db.close(); \
+    }'
 
 # Environment
 ENV NODE_ENV=production

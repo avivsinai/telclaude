@@ -39,7 +39,7 @@ COPY package.json pnpm-lock.yaml .npmrc ./
 # Install dependencies
 # --ignore-scripts prevents the "prepare" hook from running (which tries to build
 # before source files are copied)
-RUN pnpm install --ignore-scripts
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy source code
 COPY . .
@@ -182,9 +182,15 @@ COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
 COPY --chown=node:node docs/architecture.md ./docs/architecture.md
 COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
 
-# Prove the copied production tree can load the native SQLite binding in the
-# final runtime image, not only in the builder stage.
-RUN node -e "require('better-sqlite3'); console.log('better-sqlite3 runtime OK')"
+# Exercise the native SQLite binding in the copied production tree.
+RUN node -e 'const assert = require("node:assert/strict"); \
+    const Database = require("better-sqlite3"); \
+    const db = new Database(":memory:"); \
+    try { \
+      assert.equal(db.prepare("SELECT 1 AS ok").get().ok, 1); \
+    } finally { \
+      db.close(); \
+    }'
 
 # Copy firewall initialization scripts and entrypoint wrapper
 COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
